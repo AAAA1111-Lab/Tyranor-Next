@@ -15,6 +15,8 @@ public abstract class ArtemisLauncherBaseActivity extends com.ies_net.artemis.Ar
     private static final int FALLBACK_STAGE_V4_DIRECT = -1;
     private static final String KEY_ARTEMIS_ENGINE_PREFIX = "artemis_engine.";
     private static final String KEY_ARTEMIS_ENGINE_SUCCESS_PREFIX = "artemis_engine_success.";
+    private com.core.gl.ArtemisPerformanceOverlay graphicsOverlay;
+    private boolean officialGraphics;
     private long createdAtElapsed;
     private boolean userRequestedFinish;
     /** Loads the revision-specific Artemis native library (e.g. libartemis.so). Called once from onCreate. */
@@ -37,7 +39,10 @@ public abstract class ArtemisLauncherBaseActivity extends com.ies_net.artemis.Ar
     @Override
     public final void onCreate(Bundle bundle) {
         Log.i("YukiArtemis", "onCreate enter pid=" + android.os.Process.myPid());
+        officialGraphics = !"artemis-clean".equals(getIntent().getStringExtra(LaunchContract.ENGINE_LIB_NAME));
+        if (officialGraphics) com.core.gl.ArtemisOfficialBridge.prepare(this);
         super.onCreate(bundle);
+        if (officialGraphics) graphicsOverlay = new com.core.gl.ArtemisPerformanceOverlay(this, com.core.gl.ArtemisOfficialBridge.source());
         createdAtElapsed = SystemClock.elapsedRealtime();
         Log.i("YukiArtemis", "onCreate path=" + (getIntent() == null ? null : getIntent().getStringExtra(LaunchContract.PATH)) + " scoped=" + (getIntent() != null && getIntent().getBooleanExtra(LaunchContract.SCOPED_SAVE_DIR, false)) + " saveName=" + (getIntent() == null ? null : getIntent().getStringExtra(LaunchContract.SCOPED_SAVE_NAME)));
         loadEngineLibrary();
@@ -48,11 +53,13 @@ public abstract class ArtemisLauncherBaseActivity extends com.ies_net.artemis.Ar
         super.onResume();
         setRequestedOrientation(getIntent().getIntExtra(LaunchContract.ORIENTATION, 6));
         nativeResumeAllSound();
+        if (graphicsOverlay != null) graphicsOverlay.show();
     }
 
     @Override
     protected void onPause() {
         Log.i("YukiArtemis", "onPause finishing=" + isFinishing() + " pid=" + android.os.Process.myPid());
+        if (graphicsOverlay != null) graphicsOverlay.hide();
         nativePauseAllSound();
         super.onPause();
     }
@@ -75,6 +82,7 @@ public abstract class ArtemisLauncherBaseActivity extends com.ies_net.artemis.Ar
 
     @Override
     protected void onDestroy() {
+        if (graphicsOverlay != null) graphicsOverlay.hide();
         DoubleBackExit.clear(this);
         // 兼容回退改为「先按动态候选链/旧 stage 拉起下一版本（独立进程），未回退时再记录成功版本」：
         // 兼容版本在各自独立进程（如 :artemis.compat / :artemis.compat.v2）启动，当前进程
@@ -85,6 +93,7 @@ public abstract class ArtemisLauncherBaseActivity extends com.ies_net.artemis.Ar
         if (!retryStarted) recordSuccessfulArtemisVersionIfNeeded();
         Log.i("YukiArtemis", "onDestroy before super retry=" + retryStarted + " pid=" + android.os.Process.myPid());
         super.onDestroy();
+        if (officialGraphics) com.core.gl.ArtemisOfficialBridge.close();
         Log.i("YukiArtemis", "onDestroy killing pid=" + android.os.Process.myPid());
         try {
             android.os.Process.killProcess(android.os.Process.myPid());

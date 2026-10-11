@@ -3,7 +3,7 @@ project(tyranor_native)
 
 add_library(krkr_bridge_v2 SHARED krkr_bridge.cpp krkr_raw_frame_bridge.cpp)
 add_library(artemis_audio_bridge SHARED artemis_audio_bridge.cpp)
-add_library(artemis_loader SHARED artemis_loader.cpp)
+add_library(artemis_loader SHARED artemis_loader.cpp artemis_host_class.cpp artemis_official_graphics.cpp)
 add_library(siglus_bridge SHARED siglus_bridge.cpp)
 add_library(rfvp_bridge SHARED rfvp_bridge.cpp)
 add_library(games_bridge SHARED games_bridge.cpp)
@@ -16,10 +16,12 @@ find_library(gles-lib GLESv2)
 
 target_link_libraries(krkr_bridge_v2 ${log-lib} ${dl-lib} ${gles-lib})
 target_link_libraries(artemis_audio_bridge ${log-lib} ${dl-lib})
-target_link_libraries(artemis_loader ${log-lib} ${dl-lib} ${android-lib})
+target_link_libraries(artemis_loader ${log-lib} ${dl-lib} ${android-lib} ${egl-lib} ${gles-lib})
 target_link_libraries(siglus_bridge ${log-lib} ${dl-lib} ${android-lib})
 target_link_libraries(rfvp_bridge ${log-lib} ${dl-lib} ${android-lib})
 target_link_libraries(games_bridge ${log-lib} ${dl-lib} ${android-lib})
 
 add_library(graphics_timer SHARED graphics_timer.cpp)
 target_link_libraries(graphics_timer ${egl-lib} ${gles-lib})
+
+target_compile_features(artemis_loader PRIVATE cxx_std_17)
