@@ -40,7 +40,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -68,6 +67,9 @@ import androidx.documentfile.provider.DocumentFile
 import com.tyranor.next.R
 import com.tyranor.next.core.game.launch.EngineLauncher
 import com.tyranor.next.core.settings.AppSettingsStore
+import com.tyranor.next.core.settings.GraphicsCapabilities
+import com.tyranor.next.core.settings.GraphicsFamily
+import com.tyranor.next.core.settings.GraphicsSettings
 import com.tyranor.next.core.settings.EngineSettingsStore
 import com.tyranor.next.core.game.storage.GameLibraryFacade
 import com.tyranor.next.theme.AppThemeColors
@@ -424,29 +426,28 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
                             )
-                            TextButton(
+                            DialogTextButton(
+                                text = stringResource(R.string.common_delete),
                                 onClick = {
                                     GameLibraryFacade.removeRootAndGames(ctx, android.net.Uri.parse(dir))
                                     scanDirs = GameLibraryFacade.loadRoots(ctx)
                                 },
-                            ) {
-                                Text(stringResource(R.string.common_delete), color = MaterialTheme.colorScheme.error)
-                            }
+                            )
                         }
                     }
                 }
             },
             confirmButton = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    DialogTextButton(
+                        text = stringResource(R.string.settings_input_path),
                         onClick = { showPathDialog = true },
-                        modifier = Modifier.padding(end = 8.dp),
-                    ) { Text(stringResource(R.string.settings_input_path)) }
-                    TextButton(
+                    )
+                    DialogTextButton(
+                        text = stringResource(R.string.settings_add_dir),
                         onClick = { dirPicker.launch(null) },
-                        modifier = Modifier.padding(end = 8.dp),
-                    ) { Text(stringResource(R.string.settings_add_dir)) }
-                    TextButton(onClick = { showScanDirs = false }) { Text(stringResource(R.string.settings_done)) }
+                    )
+                    DialogTextButton(text = stringResource(R.string.settings_done), onClick = { showScanDirs = false })
                 }
             },
         )
@@ -495,17 +496,18 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 }
             },
             confirmButton = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    DialogTextButton(
+                        text = stringResource(R.string.common_confirm),
                         onClick = savePath,
-                        modifier = Modifier.padding(end = 8.dp),
-                    ) { Text(stringResource(R.string.common_confirm), style = MaterialTheme.typography.bodyMedium) }
-                    TextButton(
+                    )
+                    DialogTextButton(
+                        text = stringResource(R.string.common_cancel),
                         onClick = {
                             showPathDialog = false
                             pathInput = ""
                         },
-                    ) { Text(stringResource(R.string.common_cancel), style = MaterialTheme.typography.bodyMedium) }
+                    )
                 }
             },
         )
@@ -531,7 +533,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showGroupDialog = false }) { Text(stringResource(R.string.common_cancel)) }
+                DialogTextButton(text = stringResource(R.string.common_cancel), onClick = { showGroupDialog = false })
             },
         )
     }
@@ -648,23 +650,23 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                     null -> Unit
                     is UpdateDownloadPhase.Downloading -> Unit
                     is UpdateDownloadPhase.Completed, is UpdateDownloadPhase.Failed -> {
-                        TextButton(onClick = { closeUpdateDialog() }) { Text(stringResource(R.string.common_cancel)) }
+                        DialogTextButton(text = stringResource(R.string.common_cancel), onClick = { closeUpdateDialog() })
                     }
                 }
             },
             confirmButton = {
                 when (downloadPhase) {
                     null -> {
-                        TextButton(onClick = { closeUpdateDialog() }) { Text(stringResource(R.string.common_cancel)) }
+                        DialogTextButton(text = stringResource(R.string.common_cancel), onClick = { closeUpdateDialog() })
                     }
                     is UpdateDownloadPhase.Downloading -> {
-                        TextButton(onClick = { closeUpdateDialog() }) { Text(stringResource(R.string.update_download_cancel)) }
+                        DialogTextButton(text = stringResource(R.string.update_download_cancel), onClick = { closeUpdateDialog() })
                     }
                     is UpdateDownloadPhase.Completed -> {
-                        TextButton(onClick = { installUpdateApk(downloadPhase.apkFile) }) { Text(stringResource(R.string.update_install)) }
+                        DialogTextButton(text = stringResource(R.string.update_install), onClick = { installUpdateApk(downloadPhase.apkFile) })
                     }
                     is UpdateDownloadPhase.Failed -> {
-                        TextButton(onClick = { activeCandidate?.let { startApkDownload(it) } }) { Text(stringResource(R.string.update_retry)) }
+                        DialogTextButton(text = stringResource(R.string.update_retry), onClick = { activeCandidate?.let { startApkDownload(it) } })
                     }
                 }
             },
@@ -675,6 +677,11 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
 @Composable
 internal fun EngineSettingsDetailScreen(kind: EngineSettingsKind) {
     val ctx = LocalContext.current
+    val graphicsFamily = kind.graphicsFamily()
+    var graphics by remember(kind) {
+        mutableStateOf(graphicsFamily?.let { EngineSettingsStore.getGraphicsSettings(ctx, it) }
+            ?: GraphicsSettings.defaults(GraphicsFamily.KR))
+    }
     val engineSettingsSavedMessage = stringResource(R.string.engine_settings_saved)
 
     var krVersion by remember { mutableStateOf(EngineSettingsStore.getKrEngineVersion(ctx)) }
@@ -694,7 +701,6 @@ internal fun EngineSettingsDetailScreen(kind: EngineSettingsKind) {
     var krFps by remember { mutableStateOf(EngineSettingsStore.getKrFpsLimit(ctx)) }
     var krVCursorScale by remember { mutableStateOf(EngineSettingsStore.getKrVCursorScale(ctx)) }
     var krMenuOpa by remember { mutableStateOf(EngineSettingsStore.getKrMenuHandlerOpa(ctx)) }
-    var krAnime4k by remember { mutableStateOf(EngineSettingsStore.getKrAnime4kMode(ctx)) }
 
     var ons by remember { mutableStateOf(EngineSettingsStore.loadOns(ctx)) }
 
@@ -756,6 +762,7 @@ internal fun EngineSettingsDetailScreen(kind: EngineSettingsKind) {
 
     // 编辑→保存模型：控件仅更新本地状态，点顶部保存按钮才统一写盘
     fun saveAll() {
+        graphicsFamily?.let { EngineSettingsStore.setGraphicsSettings(ctx, it, graphics) }
         EngineSettingsStore.setKrEngineVersion(ctx, krVersion)
         EngineSettingsStore.setKrKernel(ctx, krKernel)
         EngineSettingsStore.setKrScopedSaveDir(ctx, krScoped)
@@ -773,7 +780,6 @@ internal fun EngineSettingsDetailScreen(kind: EngineSettingsKind) {
         EngineSettingsStore.setKrFpsLimit(ctx, krFps)
         EngineSettingsStore.setKrVCursorScale(ctx, krVCursorScale)
         EngineSettingsStore.setKrMenuHandlerOpa(ctx, krMenuOpa)
-        EngineSettingsStore.setKrAnime4kMode(ctx, krAnime4k)
         EngineSettingsStore.saveOns(ctx, ons)
         EngineSettingsStore.setArtKernel(ctx, artKernel)
         EngineSettingsStore.setArtEngineVersion(ctx, artVersion)
@@ -828,11 +834,19 @@ internal fun EngineSettingsDetailScreen(kind: EngineSettingsKind) {
                 kind,
                 krVersion, krKernel, krScoped, krSkipStartupDialogs, krFont, krForceFont, krRenderer, krDrawThread,
                 krSwCompress, krOglCompress, krMem, krTexsize, krAccurate, krFps, isSdl3, krIs134126,
-                krVCursorScale, krMenuOpa, krPatchOverlayMode, krAnime4k,
+                krVCursorScale, krMenuOpa, krPatchOverlayMode,
                 ons, artKernel, artVersion, artRotate, artPatch, artResolution, artSideCut, artSurfaceCache,
                 artFontCache, artPowerSaving, tyExternal, tyScoped, rpgMakerMod, rpgLegacyRenderer, rpgSaveInterop, rpgMvVersion, rpgMzVersion, rpg, renpyVersion, renpy, siglusLanguage, fbNls,
                 fvpNls, fvpSystemFont, fvpTextHidpi, fvpFont, fontLauncher, fvpFontLauncher, winlator, ppssppVersion, webShellPort,
                 topInset = innerPadding.calculateTopPadding(),
+                graphicsContent = {
+                    graphicsFamily?.let { family ->
+                        GlobalGraphicsSettings(
+                            settings = graphics,
+                            capability = GraphicsCapabilities.forRuntime(family, if (family == GraphicsFamily.KR) krKernel else artKernel, artVersion),
+                        ) { graphics = it }
+                    }
+                },
                 onKrVersion = { krVersion = it },
                 onKrKernel = { krKernel = it },
                 onKrScoped = { krScoped = it },
@@ -849,7 +863,6 @@ internal fun EngineSettingsDetailScreen(kind: EngineSettingsKind) {
                 onKrFps = { krFps = it },
                 onKrVCursorScale = { krVCursorScale = it },
                 onKrMenuOpa = { krMenuOpa = it },
-                onKrAnime4k = { krAnime4k = it },
                 onResetKrFont = { krFont = "" },
                 onOns = { ons = it },
                 onArtKernel = { artKernel = it },
@@ -920,10 +933,11 @@ private fun LazyListPlaceholder(
     krFont: String, krForceFont: Boolean,
     krRenderer: String, krDrawThread: String, krSwCompress: String, krOglCompress: String,
     krMem: String, krTexsize: String, krAccurate: String, krFps: String, isSdl3: Boolean, krIs134126: Boolean,
-    krVCursorScale: String, krMenuOpa: String, krPatchOverlayMode: String, krAnime4k: String,
+    krVCursorScale: String, krMenuOpa: String, krPatchOverlayMode: String,
     ons: EngineSettingsStore.Ons, artKernel: String, artVersion: String, artRotate: Boolean, artPatch: String,
     artResolution: String, artSideCut: String, artSurfaceCache: String, artFontCache: String,
-    artPowerSaving: String, tyExternal: Boolean, tyScoped: Boolean, rpgMakerMod: Boolean,
+    artPowerSaving: String,
+    tyExternal: Boolean, tyScoped: Boolean, rpgMakerMod: Boolean,
     rpgLegacyRenderer: Boolean, rpgSaveInterop: Boolean, rpgMvVersion: String, rpgMzVersion: String,
     rpg: EngineSettingsStore.RpgMaker,
     renpyVersion: String, renpy: EngineSettingsStore.RenPy, siglusLanguage: String,
@@ -934,13 +948,14 @@ private fun LazyListPlaceholder(
     ppssppVersion: String,
     webShellPort: Int,
     topInset: Dp,
+    graphicsContent: @Composable () -> Unit,
     onKrVersion: (String) -> Unit, onKrKernel: (String) -> Unit, onKrScoped: (Boolean) -> Unit,
     onKrSkipStartupDialogs: (Boolean) -> Unit,
     onKrPatchOverlayMode: (String) -> Unit,
     onKrForceFont: (Boolean) -> Unit, onKrRenderer: (String) -> Unit, onKrDrawThread: (String) -> Unit,
     onKrSwCompress: (String) -> Unit, onKrOglCompress: (String) -> Unit, onKrMem: (String) -> Unit,
     onKrTexsize: (String) -> Unit, onKrAccurate: (String) -> Unit, onKrFps: (String) -> Unit,
-    onKrVCursorScale: (String) -> Unit, onKrMenuOpa: (String) -> Unit, onKrAnime4k: (String) -> Unit,
+    onKrVCursorScale: (String) -> Unit, onKrMenuOpa: (String) -> Unit,
     onResetKrFont: () -> Unit, onOns: (EngineSettingsStore.Ons) -> Unit,
     onArtKernel: (String) -> Unit,
     onArtVersion: (String) -> Unit, onArtRotate: (Boolean) -> Unit, onArtPatch: (String) -> Unit,
@@ -1015,8 +1030,6 @@ private fun LazyListPlaceholder(
                 if (!isSdl3) {
                     SwitchPreference(title = stringResource(R.string.engine_settings_opengl_accurate_render), checked = krAccurate == "1", onCheckedChange = { b -> onKrAccurate(if (b) "1" else "0") })
                     SliderRow(stringResource(R.string.engine_settings_memory_usage), krMemMap, krMem, onSelect = onKrMem)
-                    // Anime4K 后处理仅 kirikiri2 内核路径支持（GLSurfaceView 注入），krkrsdl3 不提供
-                    DropdownRow(stringResource(R.string.engine_settings_anime4k), krAnime4kOptions(), krAnime4k, onKrAnime4k)
                 }
                 val rendererOptions = if (isSdl3) krSdl3RendererMap else krRendererMap
                 val selectedRenderer = if (isSdl3) {
@@ -1317,6 +1330,7 @@ private fun LazyListPlaceholder(
             }
         }
 
+        if (kind.graphicsFamily() != null) item { graphicsContent() }
         item { BottomInsetSpacer() }
     }
 
@@ -1432,6 +1446,15 @@ internal fun DropdownRow(
     options: List<Pair<String, String>>,
     current: String,
     onSelect: (String) -> Unit,
+) = DropdownRow(label, options, current, enabled = true, onSelect = onSelect)
+
+@Composable
+internal fun DropdownRow(
+    label: String,
+    options: List<Pair<String, String>>,
+    current: String,
+    enabled: Boolean,
+    onSelect: (String) -> Unit,
 ) {
     val keys = options.map { it.first }
     val labels = options.map { it.second }
@@ -1440,6 +1463,7 @@ internal fun DropdownRow(
         title = label,
         items = labels,
         selectedIndex = index,
+        enabled = enabled,
         onSelectedIndexChange = { onSelect(keys[it]) },
     )
 }

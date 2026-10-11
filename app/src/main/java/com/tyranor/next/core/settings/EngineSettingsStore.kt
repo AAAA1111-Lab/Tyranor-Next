@@ -45,6 +45,8 @@ object EngineSettingsStore {
     const val KEY_ARTEMIS_SURFACE_CACHE_SIZE = "artemis_surface_cache_size"
     const val KEY_ARTEMIS_FONT_CACHE_SIZE = "artemis_font_cache_size"
     const val KEY_ARTEMIS_POWER_SAVING = "artemis_power_saving"
+    const val KEY_ARTEMIS_ANIME4K_ENABLED = "artemis_anime4k_enabled"
+    const val KEY_ARTEMIS_ANIME4K_MODE = "artemis_anime4k_mode"
 
     // Ren'Py 应用级默认（外置模块版本选择）
     const val KEY_RENPY_ENGINE_VERSION = "renpy_engine_version"
@@ -129,7 +131,7 @@ object EngineSettingsStore {
     const val KR_PATCH_OVERLAY_FORCE = "force"
     const val KR_PATCH_OVERLAY_OFF = "off"
 
-    // Anime4K 画面超分模式（仅 kirikiri2 内核路径生效；取值与引擎侧 Anime4kRuntime 一致）
+    // Anime4K 画面超分模式（kirikiri2 与 Artemis clean 共用；取值与引擎侧 Anime4kRuntime 一致）
     const val ANIME4K_OFF = "off"
     const val ANIME4K_S = "s"
     const val ANIME4K_M = "m"
@@ -143,6 +145,10 @@ object EngineSettingsStore {
         ANIME4K_OFF, ANIME4K_S, ANIME4K_M, ANIME4K_L,
         ANIME4K_SOFT_S, ANIME4K_SOFT_M, ANIME4K_SOFT_L, ANIME4K_DEBLUR,
     )
+
+    /** Artemis 的启用开关独立于模式，模式不接受 off。 */
+    const val ART_ANIME4K_DEFAULT = ANIME4K_S
+    val ART_ANIME4K_MODES = ANIME4K_MODES - ANIME4K_OFF
 
     const val RENDERER_SOFTWARE = "software"
     const val RENDERER_OPENGL = "opengl"
@@ -636,6 +642,17 @@ object EngineSettingsStore {
     fun getArtPowerSaving(c: Context): String = artStringPref(c, KEY_ARTEMIS_POWER_SAVING, ART_TOGGLES)
     fun setArtPowerSaving(c: Context, v: String) = setArtStringPref(c, KEY_ARTEMIS_POWER_SAVING, v, ART_TOGGLES)
 
+    fun isArtAnime4kEnabled(c: Context): Boolean =
+        prefs(c).all[KEY_ARTEMIS_ANIME4K_ENABLED] as? Boolean ?: false
+    fun setArtAnime4kEnabled(c: Context, enabled: Boolean) =
+        prefs(c).edit().putBoolean(KEY_ARTEMIS_ANIME4K_ENABLED, enabled).apply()
+    fun getArtAnime4kMode(c: Context): String =
+        normalizeArtAnime4kMode(prefs(c).all[KEY_ARTEMIS_ANIME4K_MODE] as? String)
+    fun setArtAnime4kMode(c: Context, mode: String) =
+        prefs(c).edit().putString(KEY_ARTEMIS_ANIME4K_MODE, normalizeArtAnime4kMode(mode)).apply()
+    fun normalizeArtAnime4kMode(mode: String?): String =
+        mode?.trim()?.takeIf { it in ART_ANIME4K_MODES } ?: ART_ANIME4K_DEFAULT
+
     private fun artStringPref(c: Context, key: String, allowed: Set<String>): String {
         val value = prefs(c).getString(key, ART_CACHE_DEFAULT).orEmpty().trim()
         return if (value in allowed) value else ART_CACHE_DEFAULT
@@ -655,6 +672,25 @@ object EngineSettingsStore {
         }
     }
     fun setRenpyVersion(c: Context, v: String) = prefs(c).edit().putString(KEY_RENPY_ENGINE_VERSION, v).apply()
+
+    /** New versioned settings are authoritative; legacy values are adapted only before the first save. */
+    fun getGraphicsSettings(c: Context, family: GraphicsFamily): GraphicsSettings {
+        val saved = prefs(c)
+        return GraphicsSettingsCodec.readGlobal(
+            saved.contains(family.preferenceKey), saved.all[family.preferenceKey] as? String, family,
+        ) {
+            when (family) {
+                GraphicsFamily.KR -> GraphicsSettingsCodec.legacyGlobal(family, krMode = getKrAnime4kMode(c))
+                GraphicsFamily.ARTEMIS -> GraphicsSettingsCodec.legacyGlobal(
+                    family, artEnabled = isArtAnime4kEnabled(c), artMode = getArtAnime4kMode(c),
+                )
+                GraphicsFamily.SIGLUS -> GraphicsSettings.defaults(family)
+            }
+        }
+    }
+
+    fun setGraphicsSettings(c: Context, family: GraphicsFamily, settings: GraphicsSettings) =
+        prefs(c).edit().putString(family.preferenceKey, GraphicsSettingsCodec.encode(settings)).apply()
 
     // ---------- Siglus ----------
     fun getSiglusLanguage(c: Context): String =

@@ -52,6 +52,8 @@ object PerGameSettingsStore {
     const val F_ART_SURFACE_CACHE_SIZE = "art_surface_cache_size"
     const val F_ART_FONT_CACHE_SIZE = "art_font_cache_size"
     const val F_ART_POWER_SAVING = "art_power_saving"
+    const val F_ART_ANIME4K_ENABLED = "art_anime4k_enabled"
+    const val F_ART_ANIME4K_MODE = "art_anime4k_mode"
 
     // RPG Maker MV/MZ
     const val F_RPG_MAKER_MOD_ENABLED = "rpg_maker_mod_enabled"
@@ -145,6 +147,17 @@ object PerGameSettingsStore {
         return runCatching { GameOverridePartitions.assemble(row) }.getOrDefault(JSONObject())
     }
 
+    fun getGraphicsOverride(context: Context, gameId: String, family: GraphicsFamily): GraphicsOverride =
+        GraphicsSettingsCodec.readOverride(load(context, gameId), family)
+
+    /** Keeps the version marker even for full inheritance, and preserves every unrelated/legacy key. */
+    fun setGraphicsOverride(context: Context, gameId: String, family: GraphicsFamily, value: GraphicsOverride) {
+        if (gameId.isBlank()) return
+        val json = load(context, gameId)
+        json.put(family.overrideKey, GraphicsSettingsCodec.encode(value))
+        persist(context, gameId, json)
+    }
+
     /** 字符串字段覆盖值；null=未覆盖（跟随全局），""=覆盖为空串（如内置字体）。 */
     fun getStr(context: Context, gameId: String, key: String): String? {
         val j = load(context, gameId)
@@ -156,6 +169,12 @@ object PerGameSettingsStore {
         val j = load(context, gameId)
         return if (j.has(key)) j.optBoolean(key) else null
     }
+
+    /** 严格布尔覆盖：非法 JSON 类型也跟随全局，不将损坏值强制转换为 false。 */
+    fun getStrictBool(context: Context, gameId: String, key: String): Boolean? =
+        booleanOverride(load(context, gameId), key)
+
+    internal fun booleanOverride(json: JSONObject, key: String): Boolean? = json.opt(key) as? Boolean
 
     /** 设置字符串覆盖；value=null 表示移除该覆盖（跟随全局）。 */
     fun setStr(context: Context, gameId: String, key: String, value: String?) {

@@ -35,6 +35,8 @@ import com.core.nativeplugin.NativePluginConstants
 import com.core.rpgmaker.RpgMakerActivity
 import com.core.siglus.SiglusActivity
 import com.core.tyrano.TyranoActivity
+import com.tyranor.next.core.engine.graphics.GraphicsLaunchPolicy
+import com.tyranor.next.core.engine.graphics.putDisabledGraphicsRequest
 import com.tyranor.next.core.engine.EngineType
 import com.tyranor.next.core.engine.external.ExternalEmulatorLauncher
 import com.tyranor.next.core.engine.external.ExternalEmulatorRegistry
@@ -58,6 +60,9 @@ import com.tyranor.next.core.game.scan.EngineScanner
 import com.tyranor.next.core.game.storage.GameLibraryFacade
 import com.tyranor.next.core.game.storage.EngineDetectionRepository
 import com.tyranor.next.core.game.scan.GameDirFingerprint
+import com.tyranor.next.core.settings.GraphicsCapabilities
+import com.tyranor.next.core.settings.GraphicsFamily
+import com.tyranor.next.core.settings.GraphicsSettings
 import com.tyranor.next.core.settings.EffectiveEngineSettings
 import com.tyranor.next.core.settings.EngineSettingsResolver
 import com.tyranor.next.core.settings.EngineSettingsStore
@@ -176,6 +181,10 @@ object EngineLauncher {
                 Intent(app, Kirikiroid139::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     putExtra(LaunchContract.ORIGIN_MODE, true)
+                    putGraphicsSettings(
+                        EngineSettingsStore.getGraphicsSettings(app, GraphicsFamily.KR),
+                        GraphicsCapabilities.forRuntime(GraphicsFamily.KR, EngineSettingsStore.KERNEL_KIRIKIRI2),
+                    )
                     putExtra(LaunchContract.ORIENTATION, 6)
                     putExtra(LaunchContract.FOCUS, "true")
                 },
@@ -821,6 +830,7 @@ object EngineLauncher {
                 putExtra(LaunchContract.TYPE, "Tyrano")
             }
         }
+        if (!intent.hasExtra(LaunchContract.GRAPHICS_FILTER_CHAIN)) intent.putDisabledGraphicsRequest()
         // 注入 App 统一主题色与深浅色：引擎壳自绘 UI（确认/输入弹窗按钮等）经
         // EngineThemeColors.fromIntent / KrDialogStyle 读取，缺失时回落默认绿。
         // 主题色来自 ui 层写入的纯数据快照（ThemeColorPayloadStore），core 不反向依赖 theme。
@@ -850,6 +860,7 @@ object EngineLauncher {
         return try {
             currentCoroutineContext().ensureActive()
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            intent.putDisabledGraphicsRequest()
             context.startActivity(intent)
             // 应用已拉起即成功；最近记录写失败不改变启动结果（独立兜底）
             runCatching { GameLibraryFacade.recordRecentGame(context, game) }
@@ -919,6 +930,7 @@ object EngineLauncher {
         game: ScanGame,
         settings: ResolvedEngineSettings,
     ): Intent = Intent(context, SiglusActivity::class.java).apply {
+        putGraphicsSettings(settings.siglusGraphics, GraphicsCapabilities.forRuntime(GraphicsFamily.SIGLUS))
         putExtra(LaunchContract.PATH, path)
         putExtra(LaunchContract.GAME_PATH, path)
         putExtra(LaunchContract.PROJECT_ROOT, path)
@@ -1022,6 +1034,7 @@ object EngineLauncher {
             Log.i(TAG, "krkrsdl3 launch root=$path entry=$pickedLaunchEntry args=$args")
             // krkrsdl3 内核：gameargs 首项为启动文件绝对路径，后续为 TVP 命令行参数
             return Intent(context, Krkrsdl3Activity::class.java).apply {
+                putGraphicsSettings(settings.krGraphics, GraphicsCapabilities.forRuntime(GraphicsFamily.KR, kernel))
                 putStringArrayListExtra(LaunchContract.GAME_ARGS, args)
                 putExtra(LaunchContract.PATH, path)
                 putExtra(LaunchContract.GAME_PATH, pickedLaunchEntry)
@@ -1096,6 +1109,7 @@ object EngineLauncher {
             // 的根因：残留的 force_default_font=1 一直压住新设置的字体）。
             putExtra(LaunchContract.DEFAULT_FONT, defaultFont)
             putExtra(LaunchContract.FORCE_DEFAULT_FONT, forceFont)
+            putGraphicsSettings(settings.krGraphics, GraphicsCapabilities.forRuntime(GraphicsFamily.KR, kernel))
             // Anime4K 画面超分（单游戏覆盖 > 全局；仅 kirikiri2 内核路径支持）
             putExtra(com.core.gl.Anime4kRuntime.EXTRA_MODE, settings.krAnime4kMode)
             // 渲染/内存偏好 JSON：单游戏覆盖 与 全局 逐键合并；字段映射由 KrRenderPrefs 单一来源提供
@@ -1293,6 +1307,8 @@ object EngineLauncher {
             putExtra(LaunchContract.LAUNCH_MODE, LaunchContract.LAUNCH_MODE_ARTEMIS)
             putExtra(LaunchContract.ORIENTATION, if (rotate) 8 else 6)
             putExtra(LaunchContract.SCOPED_SAVE_DIR, false)
+            // 自动候选可能先选缺少输出入口的版本；保留请求，由各实际库决定是否执行。
+            putArtemisGraphicsSettings(settings, if (auto) EngineSettingsStore.ART_ENGINE_AUTO else version)
             // artemis_loader 按 "lib<engineLibName>.so" 拼路径，需传库名（不带 lib 前缀）
             putExtra(LaunchContract.ENGINE_LIB_NAME, libName)
             putExtra(LaunchContract.ARTEMIS_AUTO_FALLBACK, auto)
@@ -1326,6 +1342,29 @@ object EngineLauncher {
         putExtra(LaunchContract.ENGINE_LIB_NAME, NativePluginConstants.ARTEMIS_CLEAN_ENGINE_LIB_NAME)
         putExtra(LaunchContract.ARTEMIS_AUTO_FALLBACK, false)
         putExtra(LaunchContract.ARTEMIS_CURRENT_VERSION, "clean")
+    }
+
+    /** 官方内核携带滤镜请求，不通过增强选项隐式改写版本或回退链。 */
+    private fun Intent.putArtemisGraphicsSettings(settings: ResolvedEngineSettings, version: String = "") {
+        putGraphicsSettings(settings.artGraphics, GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, settings.artKernel, version))
+        for ((key, value) in ArtemisGraphicsLaunchPolicy.extras(
+            settings.artAnime4kEnabled, settings.artAnime4kMode,
+        )) {
+            when (value) {
+                is Boolean -> putExtra(key, value)
+                is String -> putExtra(key, value)
+            }
+        }
+    }
+
+    private fun Intent.putGraphicsSettings(settings: GraphicsSettings, capability: GraphicsCapabilities) {
+        for ((key, value) in GraphicsLaunchPolicy.extras(settings, capability)) {
+            when (value) {
+                is Int -> putExtra(key, value)
+                is Boolean -> putExtra(key, value)
+                is String -> putExtra(key, value)
+            }
+        }
     }
 
     private fun fallbackChainStartingWith(version: String): List<String> =

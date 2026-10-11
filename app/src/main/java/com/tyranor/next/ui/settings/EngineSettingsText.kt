@@ -3,6 +3,7 @@ package com.tyranor.next.ui.settings
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.stringResource
 import com.tyranor.next.R
+import com.tyranor.next.core.settings.GraphicsFilterCategory
 import com.tyranor.next.core.settings.EngineSettingsStore
 
 @Composable
@@ -41,6 +42,14 @@ internal fun krAnime4kOptions(): List<Pair<String, String>> = listOf(
     EngineSettingsStore.ANIME4K_SOFT_L to stringResource(R.string.engine_option_anime4k_soft_high),
     EngineSettingsStore.ANIME4K_DEBLUR to stringResource(R.string.engine_option_anime4k_deblur),
 )
+
+/** Artemis 通过独立开关启用，复用七种非 off 模式的显示映射。 */
+@Composable
+internal fun artAnime4kOptions(): List<Pair<String, String>> =
+    krAnime4kOptions().filter { it.first in EngineSettingsStore.ART_ANIME4K_MODES }
+
+@Composable
+internal fun artAnime4kOptionsMap(): Map<String, String> = artAnime4kOptions().toMap()
 
 @Composable
 internal fun krRendererOptions(): List<Pair<String, String>> = listOf(
@@ -425,3 +434,13 @@ internal fun rpgFontScaleOptionsMap(): Map<String, String> = rpgFontScaleOptions
 
 @Composable
 internal fun rpgVerticalAlignOptionsMap(): Map<String, String> = rpgVerticalAlignOptions().toMap()
+
+/** The core catalog adapts engine contributions to UI-only localized labels. */
+@Composable
+internal fun graphicsFilterOptions(): List<Pair<String, String>> =
+    com.tyranor.next.core.settings.GraphicsFilterCatalog.options(
+        androidx.compose.ui.platform.LocalConfiguration.current.locales[0].language)
+
+@Composable
+internal fun graphicsFilterCategoryTitle(category: GraphicsFilterCategory): String =
+    category.title(androidx.compose.ui.platform.LocalConfiguration.current.locales[0].language)

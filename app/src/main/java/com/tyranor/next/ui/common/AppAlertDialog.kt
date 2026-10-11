@@ -59,6 +59,7 @@ internal fun AppAlertDialog(
     text: @Composable () -> Unit,
     confirmButton: @Composable () -> Unit,
     dismissButton: (@Composable () -> Unit)? = null,
+    buttonArrangement: Arrangement.Horizontal = Arrangement.spacedBy(8.dp, Alignment.End),
 ) {
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
@@ -141,7 +142,7 @@ internal fun AppAlertDialog(
                     }
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                        horizontalArrangement = buttonArrangement,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         dismissButton?.invoke()

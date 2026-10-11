@@ -27,6 +27,18 @@ object EngineSettingsResolver {
 
         return ResolvedEngineSettings(
             ons = EffectiveEngineSettings.mergeOns(onsGlobal, onsOverride),
+            krGraphics = GraphicsSettingsCodec.resolve(
+                EngineSettingsStore.getGraphicsSettings(app, GraphicsFamily.KR),
+                GraphicsSettingsCodec.readOverride(override, GraphicsFamily.KR),
+            ),
+            artGraphics = GraphicsSettingsCodec.resolve(
+                EngineSettingsStore.getGraphicsSettings(app, GraphicsFamily.ARTEMIS),
+                GraphicsSettingsCodec.readOverride(override, GraphicsFamily.ARTEMIS),
+            ),
+            siglusGraphics = GraphicsSettingsCodec.resolve(
+                EngineSettingsStore.getGraphicsSettings(app, GraphicsFamily.SIGLUS),
+                GraphicsSettingsCodec.readOverride(override, GraphicsFamily.SIGLUS),
+            ),
             krEngineVersion = EffectiveEngineSettings.resolve(
                 str(PerGameSettingsStore.F_ENGINE_VERSION),
                 EngineSettingsStore.getKrEngineVersion(app),
@@ -83,6 +95,16 @@ object EngineSettingsResolver {
             artRotate = EffectiveEngineSettings.resolveBool(
                 bool(PerGameSettingsStore.F_ART_ROTATE),
                 EngineSettingsStore.isArtRotateScreen(app),
+            ),
+            artAnime4kEnabled = EffectiveEngineSettings.resolveBool(
+                PerGameSettingsStore.booleanOverride(override, PerGameSettingsStore.F_ART_ANIME4K_ENABLED),
+                EngineSettingsStore.isArtAnime4kEnabled(app),
+            ),
+            artAnime4kMode = EffectiveEngineSettings.resolveAllowed(
+                str(PerGameSettingsStore.F_ART_ANIME4K_MODE),
+                EngineSettingsStore.getArtAnime4kMode(app),
+                EngineSettingsStore.ART_ANIME4K_MODES,
+                EngineSettingsStore.ART_ANIME4K_DEFAULT,
             ),
             artAutoPatch = EffectiveEngineSettings.resolveAllowed(
                 str(PerGameSettingsStore.F_ART_PATCH),
@@ -223,6 +245,9 @@ object EngineSettingsResolver {
 /** 三级合并后的启动期生效设置（纯数据）。 */
 data class ResolvedEngineSettings(
     val ons: EngineSettingsStore.Ons,
+    val krGraphics: GraphicsSettings = GraphicsSettings.defaults(GraphicsFamily.KR),
+    val artGraphics: GraphicsSettings = GraphicsSettings.defaults(GraphicsFamily.ARTEMIS),
+    val siglusGraphics: GraphicsSettings = GraphicsSettings.defaults(GraphicsFamily.SIGLUS),
     val krEngineVersion: String,
     val krKernel: String,
     val krScopedSaveDir: Boolean,
@@ -236,6 +261,9 @@ data class ResolvedEngineSettings(
     /** Artemis 内核生效值（官方多 revision / 自研 clean-room）。 */
     val artKernel: String,
     val artRotate: Boolean,
+    /** 请求值保留到启动契约，由 clean 内核运行时决定是否支持。 */
+    val artAnime4kEnabled: Boolean = false,
+    val artAnime4kMode: String = EngineSettingsStore.ART_ANIME4K_DEFAULT,
     val artAutoPatch: String,
     val artResolution: String,
     val artSideCut: String,

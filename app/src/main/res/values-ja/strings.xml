@@ -368,6 +368,9 @@
     <string name="engine_settings_artemis_patch_failed">パッチに失敗：ゲームフォルダーが書き込み可能で PFS を含むか確認してください</string>
     <string name="engine_settings_artemis_patch_dir_unresolved">ゲームフォルダーのパスを解決できません</string>
     <string name="engine_settings_artemis_patch_permission_required">「すべてのファイルへのアクセス」権限が必要です。設定画面を開きました</string>
+    <string name="engine_settings_artemis_graphics">画質とパフォーマンス</string>
+    <string name="engine_settings_artemis_anime4k_enabled">Anime4K 画質強化</string>
+    <string name="engine_settings_artemis_anime4k_mode">強化モード</string>
     <string name="engine_settings_artemis_clean_hint">自研カーネルはゲームパックから直接読み込むため、公式のバージョン/パッチ/表示設定は適用されません。</string>
     <string name="engine_settings_web_shell_port_title">Web サーバーポート</string>
     <string name="engine_settings_web_shell_port_summary">固定ポート（既定 23333）で Web セーブのオリジンを安定させます。Tyrano / WebOther / VN 共用。変更すると既存セーブが見えなくなる場合があり、ポート使用中は一時ポートに自動切替します</string>
@@ -690,4 +693,34 @@
     <string name="android_add_duplicate">このアプリは既に追加済みです</string>
     <string name="android_add_already_added">ライブラリに追加済み</string>
     <string name="game_cover_flow_caption">%1$s - %2$s</string>
+
+    <!-- Shared ordered graphics-chain settings -->
+    <string name="graphics_settings_title">画面フィルター</string>
+    <string name="graphics_settings_enabled">フィルターチェーンを有効化</string>
+    <string name="graphics_chain_title">フィルターチェーン</string>
+    <string name="graphics_chain_custom">このゲーム専用のチェーンを設定</string>
+    <string name="graphics_chain_empty">チェーンが空のため、画面処理と性能モニターは実行されません。</string>
+    <string name="graphics_chain_node">%1$d. %2$s</string>
+    <string name="graphics_chain_up">上へ</string>
+    <string name="graphics_chain_down">下へ</string>
+    <string name="graphics_chain_remove">削除</string>
+    <string name="graphics_chain_add_type">追加するフィルター</string>
+    <string name="graphics_chain_add">フィルターを追加</string>
+    <string name="graphics_chain_clear">チェーンを空にする</string>
+    <string name="graphics_chain_limit">最大 %1$d ノード</string>
+    <string name="graphics_filter_back_categories">戻る</string>
+    <string name="graphics_settings_unsupported">このエンジンのバージョンはフィルター非対応です</string>
+    <string name="graphics_filter_parameters">パラメーター</string>
+    <string name="graphics_filter_sharpness">シャープネス</string>
+    <string name="graphics_filter_scale_type">種類</string>
+    <string name="graphics_filter_scale_fit">画面に合わせる</string>
+    <string name="graphics_filter_scale_factor">倍率</string>
+    <string name="graphics_filter_scale_multiplier">拡大・縮小倍率（0.25–4）</string>
+    <string name="graphics_filter_scale_none">拡縮なし</string>
+    <string name="graphics_analyzer_title">パフォーマンス分析</string>
+    <string name="graphics_refresh_interval">データ更新間隔</string>
+    <string name="graphics_refresh_seconds">%1$s 秒</string>
+    <string name="graphics_analyzer_position">位置</string>
+    <string name="graphics_analyzer_top_center">上中央</string>
+    <string name="graphics_analyzer_bottom_center">下中央</string>
 </resources>
