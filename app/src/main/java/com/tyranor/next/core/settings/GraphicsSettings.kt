@@ -82,8 +82,9 @@ data class GraphicsCapabilities(val input: GraphicsInput) {
     companion object {
         fun forRuntime(family: GraphicsFamily, kernel: String = "", version: String = ""): GraphicsCapabilities = GraphicsCapabilities(
             when {
-                family == GraphicsFamily.KR && kernel == "kirikiri2" -> GraphicsInput.SCREEN_FRAME
-                family == GraphicsFamily.ARTEMIS && kernel == "official" && version != "2" -> GraphicsInput.STAGE_FRAME
+                family == GraphicsFamily.KR && kernel == EngineSettingsStore.KERNEL_KIRIKIRI2 -> GraphicsInput.SCREEN_FRAME
+                family == GraphicsFamily.ARTEMIS && kernel == EngineSettingsStore.ART_KERNEL_OFFICIAL
+                    && version != EngineSettingsStore.ART_ENGINE_V2 -> GraphicsInput.STAGE_FRAME
                 family == GraphicsFamily.SIGLUS -> GraphicsInput.STAGE_FRAME
                 else -> GraphicsInput.UNSUPPORTED
             },

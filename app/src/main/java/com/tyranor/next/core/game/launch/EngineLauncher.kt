@@ -37,6 +37,7 @@ import com.core.siglus.SiglusActivity
 import com.core.tyrano.TyranoActivity
 import com.tyranor.next.core.engine.graphics.GraphicsLaunchPolicy
 import com.tyranor.next.core.engine.graphics.putDisabledGraphicsRequest
+import com.tyranor.next.core.engine.graphics.putGraphicsExtras
 import com.tyranor.next.core.engine.EngineType
 import com.tyranor.next.core.engine.external.ExternalEmulatorLauncher
 import com.tyranor.next.core.engine.external.ExternalEmulatorRegistry
@@ -1347,24 +1348,13 @@ object EngineLauncher {
     /** 官方内核携带滤镜请求，不通过增强选项隐式改写版本或回退链。 */
     private fun Intent.putArtemisGraphicsSettings(settings: ResolvedEngineSettings, version: String = "") {
         putGraphicsSettings(settings.artGraphics, GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, settings.artKernel, version))
-        for ((key, value) in ArtemisGraphicsLaunchPolicy.extras(
+        putGraphicsExtras(ArtemisGraphicsLaunchPolicy.extras(
             settings.artAnime4kEnabled, settings.artAnime4kMode,
-        )) {
-            when (value) {
-                is Boolean -> putExtra(key, value)
-                is String -> putExtra(key, value)
-            }
-        }
+        ))
     }
 
     private fun Intent.putGraphicsSettings(settings: GraphicsSettings, capability: GraphicsCapabilities) {
-        for ((key, value) in GraphicsLaunchPolicy.extras(settings, capability)) {
-            when (value) {
-                is Int -> putExtra(key, value)
-                is Boolean -> putExtra(key, value)
-                is String -> putExtra(key, value)
-            }
-        }
+        putGraphicsExtras(GraphicsLaunchPolicy.extras(settings, capability))
     }
 
     private fun fallbackChainStartingWith(version: String): List<String> =

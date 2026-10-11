@@ -3,8 +3,10 @@ package com.tyranor.next.core.engine.graphics
 import android.content.Intent
 
 /** Transport-only adapter, shared by built-in and external launchers. It never selects another family's defaults. */
-internal fun Intent.putDisabledGraphicsRequest() {
-    for ((key, value) in GraphicsLaunchPolicy.disabledExtras()) {
+internal fun Intent.putDisabledGraphicsRequest() { putGraphicsExtras(GraphicsLaunchPolicy.disabledExtras()) }
+
+internal fun Intent.putGraphicsExtras(extras: Map<String, Any>) {
+    for ((key, value) in extras) {
         when (value) {
             is Int -> putExtra(key, value)
             is Boolean -> putExtra(key, value)
