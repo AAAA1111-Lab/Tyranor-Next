@@ -92,6 +92,7 @@ public final class SiglusActivity extends AppCompatActivity implements
 
     private long lastBackMs = 0L;
     private boolean resumed, destroying, faulted, proxyPreparing, proxyAttached, proxyFailed;
+    private boolean fallbackPending;
     private boolean pointerActive;
     private double lastTouchX, lastTouchY;
     private SiglusGraphicsProxy graphicsProxy;
@@ -205,10 +206,7 @@ public final class SiglusActivity extends AppCompatActivity implements
         stopFrameLoop();
         cancelPointer();
         if (graphicsOverlay != null) graphicsOverlay.hide();
-        if (graphicsProxy != null && !graphicsProxy.detachOutput()) {
-            faulted = true;
-            Log.e(TAG, "Timed out parking the graphics consumer; frame loop remains stopped");
-        }
+        if (graphicsProxy != null) graphicsProxy.detachOutput();
         super.onPause();
     }
 
@@ -268,7 +266,7 @@ public final class SiglusActivity extends AppCompatActivity implements
 
     @Override
     public void surfaceCreated(@NonNull SurfaceHolder holder) {
-        if (graphicsProxy != null) {
+        if (graphicsProxy != null && (proxyAttached || proxyFailed)) {
             if (proxyFailed) restoreDirect(graphicsProxy);
             else if (proxyAttached) {
                 cancelPointer();
@@ -296,7 +294,7 @@ public final class SiglusActivity extends AppCompatActivity implements
     public void surfaceChanged(@NonNull SurfaceHolder holder, int format, int width, int height) {
         if (handle == 0L) {
             ensureEngine(holder);
-        } else if (graphicsProxy != null) {
+        } else if (graphicsProxy != null && (proxyAttached || proxyFailed)) {
             if (proxyFailed) restoreDirect(graphicsProxy);
             else if (proxyAttached) {
                 cancelPointer();
@@ -315,10 +313,7 @@ public final class SiglusActivity extends AppCompatActivity implements
         stopFrameLoop();
         cancelPointer();
         if (graphicsOverlay != null) graphicsOverlay.hide();
-        if (graphicsProxy != null && !graphicsProxy.detachOutput()) {
-            faulted = true;
-            Log.e(TAG, "Consumer detach timed out; preserving the game VM with stepping stopped");
-        }
+        if (graphicsProxy != null) graphicsProxy.detachOutput();
     }
 
     private int surfaceWidth(SurfaceHolder holder) {
@@ -419,36 +414,37 @@ public final class SiglusActivity extends AppCompatActivity implements
     }
 
     private void restoreDirect(SiglusGraphicsProxy proxy) {
-        if (graphicsProxy != proxy || destroying) return;
+        if (graphicsProxy != proxy || destroying || fallbackPending) return;
+        fallbackPending = true;
         stopFrameLoop();
         cancelPointer();
         if (graphicsOverlay != null) { graphicsOverlay.hide(); graphicsOverlay = null; }
         proxyFailed = true;
         proxyPreparing = false;
-        SurfaceHolder holder = surfaceView.getHolder();
-        boolean validScreen = holder.getSurface().isValid();
-        // Disconnect the GLES display producer before Rust connects to the
-        // same BufferQueue again. It remains parked while the VM is retained.
-        if (!proxy.detachOutput()) {
-            faulted = true;
-            surfaceReady = false;
-            Log.e(TAG, "Cannot disconnect display for fallback; keeping game state paused");
-            return;
-        }
-        if (proxyAttached && (!validScreen || !NativeSiglus.setSurface(handle, holder.getSurface(),
-                surfaceWidth(holder), surfaceHeight(holder)))) {
-            // Keep the producer alive while Rust still refers to it. A later
-            // screen callback may reattach; never recreate the game to recover.
-            surfaceReady = false;
-            Log.e(TAG, "Direct presentation unavailable; retaining producer and game state");
-            return;
-        }
-        graphicsProxy = null;
-        proxyAttached = proxyFailed = false;
-        surfaceReady = validScreen;
-        proxy.release();
-        Toast.makeText(this, uiString(R.string.graphics_siglus_fallback), Toast.LENGTH_LONG).show();
-        maybeStartFrameLoop();
+        surfaceReady = false;
+        // Rust must reconnect only after GLES has relinquished the BufferQueue.
+        // Read the current holder in completion: it may change while GL work is queued.
+        proxy.detachOutput(detached -> {
+            if (graphicsProxy != proxy || destroying) return;
+            fallbackPending = false;
+            if (!detached || handle == 0L) {
+                Log.e(TAG, "Cannot disconnect display for fallback; keeping game state paused");
+                return;
+            }
+            SurfaceHolder holder = surfaceView.getHolder();
+            if (!holder.getSurface().isValid() || !NativeSiglus.setSurface(handle, holder.getSurface(),
+                    surfaceWidth(holder), surfaceHeight(holder))) {
+                // Retry on a later Surface callback, preserving the producer and game VM.
+                Log.e(TAG, "Direct presentation unavailable; retaining producer and game state");
+                return;
+            }
+            graphicsProxy = null;
+            proxyAttached = proxyFailed = false;
+            surfaceReady = true;
+            proxy.release();
+            Toast.makeText(this, uiString(R.string.graphics_siglus_fallback), Toast.LENGTH_LONG).show();
+            maybeStartFrameLoop();
+        });
     }
 
     private void cancelPointer() {

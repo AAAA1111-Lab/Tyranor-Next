@@ -22,9 +22,7 @@ import com.core.gl.ArtemisPerformanceOverlay;
 import com.core.gl.GraphicsFilterChain;
 import com.core.gl.GraphicsFilterPipeline;
 
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 /**
  * Consumes a logical-sized Siglus producer on its own GLES thread. The engine
@@ -134,17 +132,24 @@ final class SiglusGraphicsProxy implements ArtemisPerformanceOverlay.Source {
         return ++outputGeneration;
     }
 
-    /** Stops new swaps immediately, then waits for already queued GL work to park. */
-    boolean detachOutput() {
+    /** Stops new swaps immediately; queued GL work parks without blocking Activity callbacks. */
+    void detachOutput() { detachOutput(null); }
+
+    /** Completion runs on the Activity thread after the display producer has disconnected. */
+    void detachOutput(Consumer<Boolean> completion) {
         nextOutput(false);
-        CountDownLatch parked = new CountDownLatch(1);
-        AtomicBoolean detached = new AtomicBoolean();
         if (!worker.post(() -> {
-            try { detached.set(detach()); }
-            finally { parked.countDown(); }
-        })) return closed;
-        try { return parked.await(3, TimeUnit.SECONDS) && detached.get(); }
-        catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); return false; }
+            boolean detached = false;
+            try {
+                detached = detach();
+                if (!detached) fail(new IllegalStateException("Display could not disconnect"));
+            } catch (RuntimeException failure) { fail(failure); }
+            boolean result = detached;
+            if (completion != null) main.post(() -> { if (!closed) completion.accept(result); });
+        }) && !closed) {
+            fail(new IllegalStateException("Graphics worker unavailable"));
+            if (completion != null) main.post(() -> { if (!closed) completion.accept(false); });
+        }
     }
 
     private void initialize() {
