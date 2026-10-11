@@ -28,7 +28,9 @@ import kotlin.math.round
 internal fun GraphicsNodeParameters(node: GraphicsNode, onDismiss: () -> Unit, onApply: (GraphicsNode) -> Unit) {
     var draft by remember(node) { mutableStateOf(node) }
     var scale by remember(node) { mutableStateOf(formatScale(node.scaleFactor)) }
-    val valid = draft.scaleMode != GraphicsScaleMode.FACTOR || validScale(scale) != null
+    val factor = if (draft.scaleMode == GraphicsScaleMode.FACTOR) validScale(scale) else 1.0
+    val result = factor?.let { draft.copy(widthScale = it, heightScale = it) }
+    val valid = result != null && GraphicsSettingsCodec.validChain(listOf(result))
     AppAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(graphicsFilterOptions().toMap().getValue(node.id), style = MaterialTheme.typography.titleMedium) },
@@ -74,9 +76,7 @@ internal fun GraphicsNodeParameters(node: GraphicsNode, onDismiss: () -> Unit, o
         dismissButton = { DialogTextButton(stringResource(R.string.common_cancel), onClick = onDismiss) },
         confirmButton = {
             DialogTextButton(stringResource(R.string.common_confirm), enabled = valid, onClick = {
-                val factor = if (draft.scaleMode == GraphicsScaleMode.FACTOR) validScale(scale) ?: return@DialogTextButton else 1.0
-                val result = draft.copy(widthScale = factor, heightScale = factor)
-                if (GraphicsSettingsCodec.validChain(listOf(result))) onApply(result)
+                if (valid) onApply(result)
             })
         },
     )

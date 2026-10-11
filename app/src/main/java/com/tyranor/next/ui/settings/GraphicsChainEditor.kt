@@ -106,11 +106,14 @@ internal fun GraphicsChainEditor(chain: List<GraphicsNode>, enabled: Boolean, on
                         commit(entries.filter { it.key != entry.key })
                     }
                     GraphicsNodeAction(R.drawable.ic_graphics_up, R.string.graphics_chain_up, enabled && index > 0 && dragging == null) {
-                        commit(entries.toMutableList().apply { add(index - 1, removeAt(index)) })
+                        val position = entries.indexOfFirst { it.key == entry.key }
+                        if (position > 0) commit(entries.toMutableList().apply { add(position - 1, removeAt(position)) })
                     }
                     GraphicsNodeAction(R.drawable.ic_graphics_down, R.string.graphics_chain_down,
                         enabled && index < entries.lastIndex && dragging == null) {
-                        commit(entries.toMutableList().apply { add(index + 1, removeAt(index)) })
+                        val position = entries.indexOfFirst { it.key == entry.key }
+                        if (position >= 0 && position < entries.lastIndex)
+                            commit(entries.toMutableList().apply { add(position + 1, removeAt(position)) })
                     }
 
                 }
