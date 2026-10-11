@@ -12,6 +12,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -161,22 +162,45 @@ bool identified(const Image& image) {
         "de22234bffa0545d276b705487ca0c3d35101386":
         image.path.size()>=14 && image.path.compare(image.path.size()-14,14,"/libgame134.so")==0?"97c91143725ba2cf99471c0aed309cf66703fc79":nullptr;
     if(!expected)return false;
-    for(size_t i=0;i<image.count;++i) if(image.phdr[i].p_type==PT_NOTE) {
-        const auto* at=reinterpret_cast<const unsigned char*>(image.base+image.phdr[i].p_vaddr);
-        size_t length=image.phdr[i].p_memsz;
-        while(length>=sizeof(Elf64_Nhdr)) {
-            const auto* note=reinterpret_cast<const Elf64_Nhdr*>(at);
-            size_t name=(note->n_namesz+3u)&~3u,desc=(note->n_descsz+3u)&~3u;
-            size_t total=sizeof(*note)+name+desc;if(total>length)break;
-            if(note->n_type==NT_GNU_BUILD_ID&&note->n_namesz==4&&note->n_descsz==20&&
-               std::memcmp(at+sizeof(*note),"GNU",4)==0) {
-                char hex[41]={};const unsigned char* id=at+sizeof(*note)+name;
-                for(int j=0;j<20;++j) {hex[2*j]="0123456789abcdef"[id[j]>>4];hex[2*j+1]="0123456789abcdef"[id[j]&15];}
-                return std::strcmp(hex,expected)==0;
-            } at+=total;length-=total;
+    for (size_t i = 0; i < image.count; ++i) {
+        const auto& noteSegment = image.phdr[i];
+        if (noteSegment.p_type != PT_NOTE) continue;
+        bool readable = false;
+        for (size_t j = 0; j < image.count; ++j) {
+            const auto& load = image.phdr[j];
+            if (load.p_type != PT_LOAD || !(load.p_flags & PF_R) || noteSegment.p_vaddr < load.p_vaddr) continue;
+            Elf64_Addr offset = noteSegment.p_vaddr - load.p_vaddr;
+            if (offset <= load.p_memsz && noteSegment.p_memsz <= load.p_memsz - offset) readable = true;
         }
-    } return false;
+        if (!readable || noteSegment.p_vaddr > std::numeric_limits<uintptr_t>::max() - image.base) continue;
+        uintptr_t start = image.base + noteSegment.p_vaddr;
+        if (noteSegment.p_memsz > std::numeric_limits<uintptr_t>::max() - start) continue;
+        const auto* at = reinterpret_cast<const unsigned char*>(start);
+        size_t length = noteSegment.p_memsz;
+        while (length >= sizeof(Elf64_Nhdr)) {
+            Elf64_Nhdr note{};
+            std::memcpy(&note, at, sizeof(note));
+            size_t name = (static_cast<size_t>(note.n_namesz) + 3u) & ~size_t{3};
+            size_t desc = (static_cast<size_t>(note.n_descsz) + 3u) & ~size_t{3};
+            if (name > length - sizeof(note) || desc > length - sizeof(note) - name) break;
+            if (note.n_type == NT_GNU_BUILD_ID && note.n_namesz == 4 && note.n_descsz == 20
+                    && std::memcmp(at + sizeof(note), "GNU", 4) == 0) {
+                char hex[41]{};
+                const unsigned char* id = at + sizeof(note) + name;
+                for (size_t n = 0; n < 20; ++n) {
+                    hex[2 * n] = "0123456789abcdef"[id[n] >> 4];
+                    hex[2 * n + 1] = "0123456789abcdef"[id[n] & 15];
+                }
+                return std::strcmp(hex, expected) == 0;
+            }
+            size_t total = sizeof(note) + name + desc;
+            at += total;
+            length -= total;
+        }
+    }
+    return false;
 }
+
 struct Change { void** slot; void* before; void* after; int protection; };
 bool collect(const Image& image,std::vector<Change>& changes,void** slot,void* before,void* after) {
     if(!before||!after||*slot!=before)return false;

@@ -2,30 +2,29 @@ package com.core.gl;
 
 import android.content.Context;
 import androidx.annotation.Keep;
+import com.core.nativeplugin.NativePluginConstants;
 import java.io.File;
-import java.io.FileInputStream;
-import java.security.MessageDigest;
 
 /** Leases a processed game-window texture to Cocos for one nativeRender call. */
 @Keep
 public final class KirikiroidRawFrameBridge {
-    /** Internal result codes; the UI maps these values to localized resources. */
+    /** Host installation state; native failure stages retain their numeric protocol. */
     public enum InstallStatus {
-        DISABLED, UNCONFIGURED, UNSUPPORTED_LIBRARY, HASH_MISMATCH, LIBRARY_READ_FAILED,
+        DISABLED, UNCONFIGURED, UNSUPPORTED_LIBRARY, LIBRARY_PATH_FAILED,
         WAITING_FOR_CONTEXT, INSTALLED, NATIVE_UNAVAILABLE, NATIVE_ARGUMENT,
         NATIVE_LIBRARY_LOOKUP, NATIVE_IMAGE_LOOKUP, NATIVE_BUILD_ID, NATIVE_SYMBOLS,
         NATIVE_VTABLE, NATIVE_RELOCATION, NATIVE_CALLBACK, NATIVE_PROTECTION,
         NATIVE_ROLLBACK, NATIVE_UNKNOWN
     }
     private static volatile InstallStatus installStatus = InstallStatus.UNCONFIGURED;
-    private static String verifiedLibrary;
+    private static String configuredLibrary;
     private static boolean installed, frameSeen;
     private static GraphicsFilterPipeline pipeline;
     private KirikiroidRawFrameBridge() {}
 
     /** Runs during library loading, before the GL renderer starts. */
     public static void configureLibrary(String library) {
-        verifiedLibrary = null;
+        configuredLibrary = null;
         installStatus = InstallStatus.UNCONFIGURED;
         if (!Anime4kRuntime.isEnabled()) {
             installStatus = InstallStatus.DISABLED;
@@ -33,32 +32,20 @@ public final class KirikiroidRawFrameBridge {
         }
         if (library == null || library.isEmpty()) return;
         try {
-            // The Android linker resolves filesystem aliases when recording
-            // loaded images. Verify the same canonical file before install.
-            String canonicalLibrary = new File(library).getCanonicalPath();
-            String expected = canonicalLibrary.endsWith("/libgame.so")
-                    ? "05e2ff4c77f1561608ad7703153d2fb09855bf223237a85dc2267fff1388564f"
-                    : canonicalLibrary.endsWith("/libgame134.so")
-                    ? "71f616c68db94caa7afccc60a20ba7ea48cbb562c762dbd91dd533593b5de238" : null;
-            if (expected == null) {
+            // Match linker path aliases; nativeInstall verifies the already loaded
+            // image's Build ID and all hook entry points before making changes.
+            File canonicalLibrary = new File(library).getCanonicalFile();
+            String name = canonicalLibrary.getName();
+            if (!NativePluginConstants.LIB_GAME_139.equals(name)
+                    && !NativePluginConstants.LIB_GAME_134.equals(name)) {
                 installStatus = InstallStatus.UNSUPPORTED_LIBRARY;
                 return;
             }
-            try (FileInputStream input = new FileInputStream(canonicalLibrary)) {
-                MessageDigest digest = MessageDigest.getInstance("SHA-256");
-                byte[] buffer = new byte[32768];
-                int count;
-                while ((count = input.read(buffer)) != -1) digest.update(buffer, 0, count);
-                StringBuilder hex = new StringBuilder(64);
-                for (byte b : digest.digest()) hex.append(Character.forDigit((b >>> 4) & 15,16)).append(Character.forDigit(b & 15,16));
-                if (expected.contentEquals(hex)) {
-                    verifiedLibrary = canonicalLibrary;
-                    installStatus = InstallStatus.WAITING_FOR_CONTEXT;
-                } else installStatus = InstallStatus.HASH_MISMATCH;
-            }
+            configuredLibrary = canonicalLibrary.getPath();
+            installStatus = InstallStatus.WAITING_FOR_CONTEXT;
         } catch (Exception unavailable) {
-            verifiedLibrary = null;
-            installStatus = InstallStatus.LIBRARY_READ_FAILED;
+            configuredLibrary = null;
+            installStatus = InstallStatus.LIBRARY_PATH_FAILED;
         }
     }
     public static InstallStatus installStatus() { return installStatus; }
@@ -83,9 +70,9 @@ public final class KirikiroidRawFrameBridge {
         pipeline = null;
         installed = false;
         if (!Anime4kRuntime.isEnabled()) installStatus = InstallStatus.DISABLED;
-        else if (verifiedLibrary != null) {
+        else if (configuredLibrary != null) {
             try {
-                installStatus = statusForStage(nativeInstall(verifiedLibrary));
+                installStatus = statusForStage(nativeInstall(configuredLibrary));
                 installed = installStatus == InstallStatus.INSTALLED;
             } catch (UnsatisfiedLinkError unavailable) {
                 installStatus = InstallStatus.NATIVE_UNAVAILABLE;
