@@ -711,4 +711,6 @@
     <string name="graphics_analyzer_position">Position</string>
     <string name="graphics_analyzer_top_center">Top center</string>
     <string name="graphics_analyzer_bottom_center">Bottom center</string>
+    <string name="graphics_filter_decrease">−</string>
+    <string name="graphics_filter_increase">+</string>
 </resources>

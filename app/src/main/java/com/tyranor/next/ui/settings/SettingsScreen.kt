@@ -89,6 +89,7 @@ import com.tyranor.next.ui.common.BottomInsetSpacer
 import com.tyranor.next.ui.common.DialogTextButton
 import com.tyranor.next.ui.common.NoIndication
 import com.tyranor.next.ui.common.TopBarIcon
+import com.tyranor.next.ui.common.formatUiDecimal
 import com.tyranor.next.ui.common.glassNavBottomInset
 import com.tyranor.next.core.updater.GitHubUpdateChecker
 import com.tyranor.next.core.updater.UpdateApkDownloader
@@ -428,6 +429,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                             )
                             DialogTextButton(
                                 text = stringResource(R.string.common_delete),
+                                color = MaterialTheme.colorScheme.error,
                                 onClick = {
                                     GameLibraryFacade.removeRootAndGames(ctx, android.net.Uri.parse(dir))
                                     scanDirs = GameLibraryFacade.loadRoots(ctx)
@@ -1527,7 +1529,7 @@ internal fun krkrPercentOptions(): List<Pair<String, String>> =
 internal fun krkrVcursorOptions(): List<Pair<String, String>> =
     listOf("" to stringResource(R.string.engine_option_engine_default)) +
         (1..150).map {
-            val v = String.format(java.util.Locale.US, "%.2f", it / 100.0)
+            val v = formatUiDecimal(it / 100.0, fractionDigits = 2)
             v to v
         }
 /** 游戏目录 URI → 可读目录名（取 SAF documentId 的最后一段，失败回退原 uri）。 */

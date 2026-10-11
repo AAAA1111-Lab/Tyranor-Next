@@ -4,8 +4,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.stringResource
 import com.tyranor.next.R
 import com.tyranor.next.core.settings.GraphicsRefreshInterval
+import com.tyranor.next.ui.common.formatUiDecimal
 import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
-import java.util.Locale
 
 @Composable
 internal fun GraphicsRefreshIntervalPreference(
@@ -19,7 +19,7 @@ internal fun GraphicsRefreshIntervalPreference(
         items = refreshLabels(),
         selectedIndex = presets.indexOf(GraphicsRefreshInterval.normalize(intervalMs)),
         enabled = enabled,
-        onSelectedIndexChange = { onChange(presets[it]) },
+        onSelectedIndexChange = { index -> presets.getOrNull(index)?.let(onChange) },
     )
 }
 
@@ -31,14 +31,18 @@ internal fun GraphicsRefreshIntervalOverridePreference(
     onChange: (Int?) -> Unit,
 ) {
     val presets = GraphicsRefreshInterval.PRESETS_MS
-    val inherited = stringResource(R.string.engine_settings_follow_global) + " (" +
-        stringResource(R.string.graphics_refresh_seconds, refreshSeconds(GraphicsRefreshInterval.normalize(globalIntervalMs))) + ")"
+    val inherited = stringResource(
+        R.string.engine_settings_follow_global_with_value,
+        stringResource(R.string.graphics_refresh_seconds, refreshSeconds(GraphicsRefreshInterval.normalize(globalIntervalMs))),
+    )
     OverlayDropdownPreference(
         title = stringResource(R.string.graphics_refresh_interval),
         items = listOf(inherited) + refreshLabels(),
         selectedIndex = overrideIntervalMs?.let { presets.indexOf(GraphicsRefreshInterval.normalize(it)) + 1 } ?: 0,
         enabled = enabled,
-        onSelectedIndexChange = { onChange(if (it == 0) null else presets[it - 1]) },
+        onSelectedIndexChange = { index ->
+            if (index == 0) onChange(null) else presets.getOrNull(index - 1)?.let(onChange)
+        },
     )
 }
 
@@ -48,4 +52,4 @@ private fun refreshLabels(): List<String> = GraphicsRefreshInterval.PRESETS_MS.m
 }
 
 internal fun refreshSeconds(ms: Int): String =
-    String.format(Locale.ROOT, "%.3f", ms / 1000.0).trimEnd('0').trimEnd('.')
+    formatUiDecimal(ms / 1000.0, fractionDigits = 3, trimTrailingZeros = true)

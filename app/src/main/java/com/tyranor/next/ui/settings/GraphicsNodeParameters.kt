@@ -21,7 +21,7 @@ import com.tyranor.next.ui.common.AppSearchField
 import com.tyranor.next.ui.common.DialogMiuixSlider
 import com.tyranor.next.ui.common.DialogTextButton
 import com.tyranor.next.ui.common.SlidingTabRow
-import java.util.Locale
+import com.tyranor.next.ui.common.formatUiDecimal
 import kotlin.math.round
 
 @Composable
@@ -41,7 +41,7 @@ internal fun GraphicsNodeParameters(node: GraphicsNode, onDismiss: () -> Unit, o
                         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text(stringResource(R.string.graphics_filter_sharpness), modifier = Modifier.weight(1f),
                                 style = MaterialTheme.typography.titleMedium)
-                            Text(String.format(Locale.ROOT, "%.2f", draft.sharpness), style = MaterialTheme.typography.bodyMedium)
+                            Text(formatUiDecimal(draft.sharpness, fractionDigits = 2), style = MaterialTheme.typography.bodyMedium)
                         }
                         DialogMiuixSlider(value = draft.sharpness.toFloat(),
                             onValueChange = { draft = draft.copy(sharpness = round(it.toDouble() * 100) / 100) },
@@ -59,10 +59,12 @@ internal fun GraphicsNodeParameters(node: GraphicsNode, onDismiss: () -> Unit, o
                         }) },
                         selectedIndex = modes.indexOf(draft.scaleMode),
                         onTabSelected = { index ->
-                            draft = draft.copy(scaleMode = modes[index])
-                            if (draft.scaleMode != GraphicsScaleMode.FACTOR) {
-                                draft = draft.copy(widthScale = 1.0, heightScale = 1.0)
-                                scale = "1"
+                            modes.getOrNull(index)?.let { mode ->
+                                draft = draft.copy(scaleMode = mode)
+                                if (mode != GraphicsScaleMode.FACTOR) {
+                                    draft = draft.copy(widthScale = 1.0, heightScale = 1.0)
+                                    scale = "1"
+                                }
                             }
                         },
                         modifier = Modifier.padding(horizontal = 16.dp),
@@ -89,10 +91,10 @@ private fun ScaleParameter(title: String, value: String, onChange: (String) -> U
         AppSearchField(query = value, onQueryChange = onChange, modifier = Modifier.weight(1f),
             leadingIcon = androidx.compose.ui.res.painterResource(R.drawable.ic_graphics_parameters),
             iconContentDescription = title, textStyle = MaterialTheme.typography.bodyMedium)
-        DialogTextButton("−", enabled = (validScale(value) ?: 0.25) > 0.25) {
+        DialogTextButton(stringResource(R.string.graphics_filter_decrease), enabled = (validScale(value) ?: 0.25) > 0.25) {
             onChange(formatScale(((validScale(value) ?: 1.0) - 0.25).coerceAtLeast(0.25)))
         }
-        DialogTextButton("+", enabled = (validScale(value) ?: 4.0) < 4.0) {
+        DialogTextButton(stringResource(R.string.graphics_filter_increase), enabled = (validScale(value) ?: 4.0) < 4.0) {
             onChange(formatScale(((validScale(value) ?: 1.0) + 0.25).coerceAtMost(4.0)))
         }
     }

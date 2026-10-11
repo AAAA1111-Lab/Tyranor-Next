@@ -11,6 +11,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.node.DelegatableNode
 import androidx.compose.ui.unit.dp
 import com.tyranor.next.theme.AppComponentShape
@@ -34,13 +35,14 @@ object NoIndication : IndicationNodeFactory {
 fun DialogTextButton(
     text: String,
     enabled: Boolean = true,
+    color: Color = MaterialTheme.colorScheme.primary,
     onClick: () -> Unit,
 ) {
     Text(
         text = text,
         style = MaterialTheme.typography.bodyMedium,
         color = if (enabled) {
-            MaterialTheme.colorScheme.primary
+            color
         } else {
             TextColor.copy(alpha = 0.38f)
         },

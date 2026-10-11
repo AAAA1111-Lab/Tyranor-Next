@@ -46,7 +46,11 @@ internal fun GlobalGraphicsSettings(
             title = stringResource(R.string.graphics_analyzer_position),
             items = graphicsPositionLabels(), selectedIndex = settings.analyzerPosition.ordinal,
             enabled = GraphicsSettingsCodec.effectiveAnalyzer(settings, capability),
-            onSelectedIndexChange = { onChange(settings.copy(analyzerPosition = GraphicsAnalyzerPosition.entries[it])) },
+            onSelectedIndexChange = { index ->
+                GraphicsAnalyzerPosition.entries.getOrNull(index)?.let { position ->
+                    onChange(settings.copy(analyzerPosition = position))
+                }
+            },
         )
         GraphicsRefreshIntervalPreference(
             intervalMs = settings.refreshIntervalMs,
@@ -94,7 +98,12 @@ internal fun PerGameGraphicsSettings(
             items = listOf(stringResource(R.string.engine_settings_follow_global)) + graphicsPositionLabels(),
             selectedIndex = override.analyzerPosition?.let { it.ordinal + 1 } ?: 0,
             enabled = GraphicsSettingsCodec.effectiveAnalyzer(resolved, capability),
-            onSelectedIndexChange = { onChange(override.copy(analyzerPosition = if (it == 0) null else GraphicsAnalyzerPosition.entries[it - 1])) },
+            onSelectedIndexChange = { index ->
+                if (index == 0) onChange(override.copy(analyzerPosition = null))
+                else GraphicsAnalyzerPosition.entries.getOrNull(index - 1)?.let { position ->
+                    onChange(override.copy(analyzerPosition = position))
+                }
+            },
         )
         GraphicsRefreshIntervalOverridePreference(
             globalIntervalMs = global.refreshIntervalMs,
@@ -118,7 +127,6 @@ internal fun EngineType.graphicsFamily(): GraphicsFamily? = when (this) {
     EngineType.SIGLUS -> GraphicsFamily.SIGLUS
     else -> null
 }
-
 
 @Composable
 private fun graphicsPositionLabels(): List<String> = listOf(

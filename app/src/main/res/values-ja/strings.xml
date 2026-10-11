@@ -711,4 +711,6 @@
     <string name="graphics_analyzer_position">位置</string>
     <string name="graphics_analyzer_top_center">上中央</string>
     <string name="graphics_analyzer_bottom_center">下中央</string>
+    <string name="graphics_filter_decrease">−</string>
+    <string name="graphics_filter_increase">+</string>
 </resources>
