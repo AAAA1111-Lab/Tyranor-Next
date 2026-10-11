@@ -222,3 +222,7 @@ docs/   设计文档、逆向分析、功能计划与优化方案
 - [OnscripterYuri](https://github.com/YuriSizuku/OnscripterYuri): ONS引擎
 - [UsefulUnpack](https://github.com/znso4pa/usefulunpack)（znso4pa，MIT）：XP3 / KSD 解封包 Rust 实现（`engine/rust` 的 `lib.rs` / `common.rs` / `ksd.rs` 来源，许可证见 `engine/rust/LICENSE.usefulunpack`）
 - 各引擎运行时均基于其开源许可引入
+
+## 共用画质滤镜链
+
+为受支持的 Kirikiroid2、Siglus 和官方 Artemis 提供有序滤镜、单游戏配置与移动端性能分析器。支持范围、尺寸来源、独立滤镜依赖及已知限制见 [画质滤镜说明](docs/graphics-filters.md)。
