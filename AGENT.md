@@ -298,6 +298,7 @@ Column(fillMaxSize)                                // 页面根
 - 指示器底色与文字颜色由组件内部按外观风格分派，**调用方不得传色值**：
   默认风格指示器 `NavWhite`、选中文字 `TextColor`（不跟随主题色，加粗作选中标识）、未选中 `onSurfaceVariant`；
   复古玻璃 `GlassSurfaceHigh` + `GlassText`/`GlassTextSecondary`；高级玻璃 `AdvancedGlassSurfaceHigh` + `GlassText`/`AdvancedGlassTextSecondary`。
+- **弹窗内标签栏**由 `AppAlertDialog` 自动提供颜色上下文：指示器取 `DialogItemSurface`，默认风格未选中文字取 `UnselectedGrey`，玻璃系沿用各自次级文字色；与弹窗面板形成反差，调用方仍不得传色值。页内标签栏的取色规则不变。
 - 标签高度统一 42dp，文字统一 `MaterialTheme.typography.titleMedium`，选中加粗；无障碍统一 `selectable(selected, role = Tab)`。
 - 参数：`tabs`（标签文案）、`selectedIndex`（越界自动收敛）、`onTabSelected`、`modifier`（仅外边距）、`scrollable`（形态开关，默认 false）。
 
