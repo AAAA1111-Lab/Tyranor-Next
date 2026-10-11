@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(tyranor_native)
 
-add_library(krkr_bridge_v2 SHARED krkr_bridge.cpp)
+add_library(krkr_bridge_v2 SHARED krkr_bridge.cpp krkr_raw_frame_bridge.cpp)
 add_library(artemis_audio_bridge SHARED artemis_audio_bridge.cpp)
 add_library(artemis_loader SHARED artemis_loader.cpp)
 add_library(siglus_bridge SHARED siglus_bridge.cpp)
@@ -14,7 +14,7 @@ find_library(android-lib android)
 find_library(egl-lib EGL)
 find_library(gles-lib GLESv2)
 
-target_link_libraries(krkr_bridge_v2 ${log-lib} ${dl-lib})
+target_link_libraries(krkr_bridge_v2 ${log-lib} ${dl-lib} ${gles-lib})
 target_link_libraries(artemis_audio_bridge ${log-lib} ${dl-lib})
 target_link_libraries(artemis_loader ${log-lib} ${dl-lib} ${android-lib})
 target_link_libraries(siglus_bridge ${log-lib} ${dl-lib} ${android-lib})
