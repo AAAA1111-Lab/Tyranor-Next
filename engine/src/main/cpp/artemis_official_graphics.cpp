@@ -286,22 +286,45 @@ bool installArtemisOfficialGraphics(void* handle,ANativeActivity* activity,const
         __android_log_print(ANDROID_LOG_ERROR,"ArtemisOfficial","Host bridge unavailable from Activity class loader");
         return false;
     }
-    jmethodID verify=env->GetStaticMethodID(cls,"verifyLibrary","(Ljava/lang/String;)Z");
-    jstring file=env->NewStringUTF(path.c_str());
-    bool verified=verify && file && env->CallStaticBooleanMethod(cls,verify,file);
-    if(file)env->DeleteLocalRef(file);
-    if(env->ExceptionCheck()){env->ExceptionClear();verified=false;}
-    if(!verified){env->DeleteLocalRef(cls);return false;}
-    vm=activity->vm;bridge=static_cast<jclass>(env->NewGlobalRef(cls));env->DeleteLocalRef(cls);
-    connectMethod=env->GetStaticMethodID(bridge,"connect","(Landroid/view/Surface;IIII)Landroid/view/Surface;");
-    submittedMethod=env->GetStaticMethodID(bridge,"submitted","(JIIZ)V");
-    healthyMethod=env->GetStaticMethodID(bridge,"healthy","()Z");
-    disconnectMethod=env->GetStaticMethodID(bridge,"disconnect","()Z");
-    resizeMethod=env->GetStaticMethodID(bridge,"resizeProducer","(II)Z");
-    statusMethod=env->GetStaticMethodID(bridge,"nativeStatus","(I)V");
-    if(env->ExceptionCheck()||!connectMethod||!submittedMethod||!healthyMethod||!disconnectMethod||!resizeMethod||!statusMethod){env->ExceptionClear();return false;}
-    stageDisplay=reinterpret_cast<StageDisplay>(dlsym(handle,kDisplay));
-    Dl_info info{};if(!stageDisplay || !dladdr(reinterpret_cast<void*>(stageDisplay),&info))return false;
+    // Resolve the reporting entry first and clear each lookup exception before
+    // making another JNI call. CheckJNI must not abort a recoverable fallback.
+    auto method = [&](const char* name, const char* signature) -> jmethodID {
+        jmethodID result = env->GetStaticMethodID(cls, name, signature);
+        if (env->ExceptionCheck()) { env->ExceptionClear(); return nullptr; }
+        return result;
+    };
+    statusMethod = method("nativeStatus", "(I)V");
+    auto failed = [&]() {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        if (statusMethod) {
+            env->CallStaticVoidMethod(cls, statusMethod, 1);
+            if (env->ExceptionCheck()) env->ExceptionClear();
+        }
+        env->DeleteLocalRef(cls);
+        return false;
+    };
+    if (!statusMethod) return failed();
+    jmethodID verify = method("verifyLibrary", "(Ljava/lang/String;)Z");
+    if (!verify) return failed();
+    jstring file = env->NewStringUTF(path.c_str());
+    if (env->ExceptionCheck() || !file) return failed();
+    bool verified = env->CallStaticBooleanMethod(cls, verify, file);
+    env->DeleteLocalRef(file);
+    if (env->ExceptionCheck() || !verified) return failed();
+    connectMethod = method("connect", "(Landroid/view/Surface;IIII)Landroid/view/Surface;");
+    submittedMethod = method("submitted", "(JIIZ)V");
+    healthyMethod = method("healthy", "()Z");
+    disconnectMethod = method("disconnect", "()Z");
+    resizeMethod = method("resizeProducer", "(II)Z");
+    if (!connectMethod || !submittedMethod || !healthyMethod || !disconnectMethod || !resizeMethod)
+        return failed();
+    stageDisplay = reinterpret_cast<StageDisplay>(dlsym(handle, kDisplay));
+    Dl_info info{};
+    if (!stageDisplay || !dladdr(reinterpret_cast<void*>(stageDisplay), &info)) return failed();
+    vm = activity->vm;
+    bridge = static_cast<jclass>(env->NewGlobalRef(cls));
+    if (env->ExceptionCheck() || !bridge) return failed();
+    env->DeleteLocalRef(cls);
     Image image;image.base=reinterpret_cast<uintptr_t>(info.dli_fbase);dl_iterate_phdr(findImage,&image);
     const Elf64_Dyn* dynamic=nullptr;size_t count=0;
     for(size_t i=0;i<image.count;++i)if(image.phdr[i].p_type==PT_DYNAMIC){dynamic=reinterpret_cast<const Elf64_Dyn*>(image.base+image.phdr[i].p_vaddr);count=image.phdr[i].p_memsz/sizeof(Elf64_Dyn);}
