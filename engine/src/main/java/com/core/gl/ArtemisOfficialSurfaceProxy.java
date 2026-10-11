@@ -16,6 +16,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /** Independent GLES3 consumer; the official producer retains its original GLES2 context. */
@@ -59,28 +60,51 @@ final class ArtemisOfficialSurfaceProxy {
         thread.start();worker=new Handler(thread.getLooper());
     }
     Surface connect(Surface nextScreen, int width, int height, int producerWidth, int producerHeight) {
+        AtomicReference<Surface> pendingScreen = new AtomicReference<>(nextScreen);
+        AtomicBoolean cancelled = new AtomicBoolean();
         AtomicReference<Surface> result = new AtomicReference<>();
         AtomicReference<RuntimeException> error = new AtomicReference<>();
         CountDownLatch done = new CountDownLatch(1);
         if (!worker.post(() -> {
+            // Claim before using the Surface. A timeout may release an unclaimed
+            // Surface even if this job never runs; claimed ones stay GL-owned.
+            Surface target = pendingScreen.getAndSet(null);
+            if (target == null) { done.countDown();return; }
+            boolean transferred = false;
             try {
-                if (closed || failed) throw new IllegalStateException("Consumer unavailable");
+                if (cancelled.get() || closed || failed) throw new IllegalStateException("Consumer unavailable");
                 if (texture == null) initialize(producerWidth, producerHeight);
+                if (cancelled.get() || closed || failed) throw new IllegalStateException("Consumer unavailable");
                 if (!detach()) throw new IllegalStateException("Previous display still connected");
+                if (cancelled.get() || closed || failed) throw new IllegalStateException("Consumer unavailable");
                 texture.setDefaultBufferSize(producerWidth, producerHeight);
-                screen = nextScreen;screenWidth=width;screenHeight=height;
+                screen = target;screenWidth=width;screenHeight=height;transferred=true;
                 output=EGL14.eglCreateWindowSurface(display,config,screen,new int[]{EGL14.EGL_NONE},0);
                 if (output==EGL14.EGL_NO_SURFACE || !current(output)) throw new IllegalStateException("Display unavailable");
+                if (cancelled.get() || closed || failed) throw new IllegalStateException("Consumer unavailable");
                 EGL14.eglSwapInterval(display,0);stats.surface(width,height);outputWanted=true;
                 result.set(producer);
             } catch (RuntimeException failure) {
-                if (screen != nextScreen) nextScreen.release();
                 error.set(failure);fail(failure);
+            } finally {
+                try {
+                    if (!transferred) target.release();
+                    else if (screen == target && (cancelled.get() || closed || failed)) {
+                        outputWanted=false;
+                        // If detach fails, keep ownership until native retries
+                        // disconnect; never release an active EGL window here.
+                        detach();
+                    }
+                } finally { done.countDown(); }
             }
-            finally { done.countDown(); }
-        })) { nextScreen.release();return null; }
+        })) { pendingScreen.getAndSet(null).release();return null; }
         if (!await(done)) {
-            outputWanted=false; failed=true; state=GraphicsStatus.NATIVE_FAILED;
+            cancelled.set(true);outputWanted=false;failed=true;state=GraphicsStatus.NATIVE_FAILED;
+            Surface unclaimed = pendingScreen.getAndSet(null);
+            if (unclaimed != null) unclaimed.release();
+            // Covers completion racing the timeout after the job's final check.
+            // Cleanup remains serialized with EGL use on the consumer thread.
+            worker.post(() -> { if (screen == nextScreen) { outputWanted=false;detach(); } });
             throw new IllegalStateException("Consumer connection timed out");
         }
         if (error.get()!=null) throw error.get();
