@@ -368,9 +368,6 @@
     <string name="engine_settings_artemis_patch_failed">补丁失败：请确认游戏目录可写且包含 PFS 封包</string>
     <string name="engine_settings_artemis_patch_dir_unresolved">无法解析游戏目录路径，请确认已导入可访问的目录</string>
     <string name="engine_settings_artemis_patch_permission_required">需要「所有文件访问」权限，已尝试打开设置页</string>
-    <string name="engine_settings_artemis_graphics">画质与性能</string>
-    <string name="engine_settings_artemis_anime4k_enabled">Anime4K 画质增强</string>
-    <string name="engine_settings_artemis_anime4k_mode">增强模式</string>
     <string name="engine_settings_artemis_clean_hint">自研内核直接从游戏包读取资源与配置，官方版本/补丁/显示注入项不适用。</string>
     <string name="engine_settings_web_shell_port_title">Web 服务端口</string>
     <string name="engine_settings_web_shell_port_summary">固定端口（默认 23333）保证网页存档域稳定；Tyrano / WebOther / VN 共用，改动后旧存档可能不再可见，端口被占用时会自动改用临时端口</string>
@@ -418,14 +415,6 @@
     <string name="engine_option_rpg_mv_v2">TynMV-0.2</string>
     <string name="engine_option_rpg_mz_v0">Tyranor-2.3.4</string>
     <string name="engine_option_rpg_mz_v2">TynMZ-0.1</string>
-    <string name="engine_settings_anime4k">画面超分</string>
-    <string name="engine_option_anime4k_fast">快速（S）</string>
-    <string name="engine_option_anime4k_balanced">平衡（M）</string>
-    <string name="engine_option_anime4k_high">高质量（L）</string>
-    <string name="engine_option_anime4k_soft_fast">轻柔·快速</string>
-    <string name="engine_option_anime4k_soft_balanced">轻柔·平衡</string>
-    <string name="engine_option_anime4k_soft_high">轻柔·高质量</string>
-    <string name="engine_option_anime4k_deblur">去模糊（DoG）</string>
 
     <string name="cover_source_local">本地封面</string>
     <string name="cover_source_custom">自定义封面</string>
@@ -700,7 +689,6 @@
     <string name="graphics_chain_title">滤镜链</string>
     <string name="graphics_chain_custom">为此游戏设置滤镜链</string>
     <string name="graphics_chain_empty">滤镜链为空，不执行画面处理或性能监测。</string>
-    <string name="graphics_chain_node">%1$d. %2$s</string>
     <string name="graphics_chain_up">上移</string>
     <string name="graphics_chain_down">下移</string>
     <string name="graphics_chain_remove">移除</string>

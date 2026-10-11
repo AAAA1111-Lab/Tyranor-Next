@@ -50,7 +50,6 @@
     <string name="art_graphics_es3_unavailable">GLES 3 利用不可 · 元の画面</string>
     <string name="art_graphics_native_failed">フレーム API 失敗 · 元の画面</string>
     <string name="art_graphics_filter_failed">フィルター失敗 · 元の画面</string>
-    <string name="art_graphics_official_unsupported">公式カーネルはモニター API 非対応</string>
     <string name="art_graphics_waiting">エンジンの画面を待機中</string>
     <string name="art_graphics_size_unavailable">処理サイズ利用不可 · 元の画面</string>
 

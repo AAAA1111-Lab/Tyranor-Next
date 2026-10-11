@@ -368,9 +368,6 @@
     <string name="engine_settings_artemis_patch_failed">パッチに失敗：ゲームフォルダーが書き込み可能で PFS を含むか確認してください</string>
     <string name="engine_settings_artemis_patch_dir_unresolved">ゲームフォルダーのパスを解決できません</string>
     <string name="engine_settings_artemis_patch_permission_required">「すべてのファイルへのアクセス」権限が必要です。設定画面を開きました</string>
-    <string name="engine_settings_artemis_graphics">画質とパフォーマンス</string>
-    <string name="engine_settings_artemis_anime4k_enabled">Anime4K 画質強化</string>
-    <string name="engine_settings_artemis_anime4k_mode">強化モード</string>
     <string name="engine_settings_artemis_clean_hint">自研カーネルはゲームパックから直接読み込むため、公式のバージョン/パッチ/表示設定は適用されません。</string>
     <string name="engine_settings_web_shell_port_title">Web サーバーポート</string>
     <string name="engine_settings_web_shell_port_summary">固定ポート（既定 23333）で Web セーブのオリジンを安定させます。Tyrano / WebOther / VN 共用。変更すると既存セーブが見えなくなる場合があり、ポート使用中は一時ポートに自動切替します</string>
@@ -418,14 +415,6 @@
     <string name="engine_option_rpg_mv_v2">TynMV-0.2</string>
     <string name="engine_option_rpg_mz_v0">Tyranor-2.3.4</string>
     <string name="engine_option_rpg_mz_v2">TynMZ-0.1</string>
-    <string name="engine_settings_anime4k">アップスケーリング</string>
-    <string name="engine_option_anime4k_fast">高速（S）</string>
-    <string name="engine_option_anime4k_balanced">バランス（M）</string>
-    <string name="engine_option_anime4k_high">高品質（L）</string>
-    <string name="engine_option_anime4k_soft_fast">ソフト・高速</string>
-    <string name="engine_option_anime4k_soft_balanced">ソフト・バランス</string>
-    <string name="engine_option_anime4k_soft_high">ソフト・高品質</string>
-    <string name="engine_option_anime4k_deblur">ぼかし除去（DoG）</string>
 
     <string name="cover_source_local">ローカルカバー</string>
     <string name="cover_source_custom">カスタムカバー</string>
@@ -700,7 +689,6 @@
     <string name="graphics_chain_title">フィルターチェーン</string>
     <string name="graphics_chain_custom">このゲーム専用のチェーンを設定</string>
     <string name="graphics_chain_empty">チェーンが空のため、画面処理と性能モニターは実行されません。</string>
-    <string name="graphics_chain_node">%1$d. %2$s</string>
     <string name="graphics_chain_up">上へ</string>
     <string name="graphics_chain_down">下へ</string>
     <string name="graphics_chain_remove">削除</string>

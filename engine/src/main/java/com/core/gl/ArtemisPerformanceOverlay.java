@@ -113,7 +113,6 @@ public final class ArtemisPerformanceOverlay {
             case GraphicsStatus.NATIVE_FAILED: return R.string.art_graphics_native_failed;
             case GraphicsStatus.FILTER_FAILED: return R.string.art_graphics_filter_failed;
             case GraphicsStatus.SIZE_UNAVAILABLE: return R.string.art_graphics_size_unavailable;
-            case GraphicsStatus.OFFICIAL_UNSUPPORTED: return R.string.art_graphics_official_unsupported;
             default: return R.string.art_graphics_waiting;
         }
     }

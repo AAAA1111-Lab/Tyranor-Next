@@ -50,7 +50,6 @@
     <string name="art_graphics_es3_unavailable">GLES 3 不可用 · 使用原始画面</string>
     <string name="art_graphics_native_failed">帧接口失败 · 使用原始画面</string>
     <string name="art_graphics_filter_failed">滤镜失败 · 使用原始画面</string>
-    <string name="art_graphics_official_unsupported">官方内核不支持此监测接口</string>
     <string name="art_graphics_waiting">等待引擎画面</string>
     <string name="art_graphics_size_unavailable">处理尺寸不可用 · 使用原始画面</string>
 

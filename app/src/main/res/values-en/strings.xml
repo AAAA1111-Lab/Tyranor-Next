@@ -368,9 +368,6 @@
     <string name="engine_settings_artemis_patch_failed">Patch failed: make sure the game folder is writable and contains PFS archives</string>
     <string name="engine_settings_artemis_patch_dir_unresolved">Cannot resolve the game folder path</string>
     <string name="engine_settings_artemis_patch_permission_required">All-files access is required; the settings page was opened</string>
-    <string name="engine_settings_artemis_graphics">Graphics and performance</string>
-    <string name="engine_settings_artemis_anime4k_enabled">Anime4K enhancement</string>
-    <string name="engine_settings_artemis_anime4k_mode">Enhancement mode</string>
     <string name="engine_settings_artemis_clean_hint">The clean-room kernel reads resources and config directly from the game pack; official version/patch/display options do not apply.</string>
     <string name="engine_settings_web_shell_port_title">Web server port</string>
     <string name="engine_settings_web_shell_port_summary">A fixed port (default 23333) keeps the web save origin stable; shared by Tyrano / WebOther / VN. Changing it may hide existing saves; a temporary port is used automatically when the port is in use</string>
@@ -418,14 +415,6 @@
     <string name="engine_option_rpg_mv_v2">TynMV-0.2</string>
     <string name="engine_option_rpg_mz_v0">Tyranor-2.3.4</string>
     <string name="engine_option_rpg_mz_v2">TynMZ-0.1</string>
-    <string name="engine_settings_anime4k">Upscaling</string>
-    <string name="engine_option_anime4k_fast">Fast (S)</string>
-    <string name="engine_option_anime4k_balanced">Balanced (M)</string>
-    <string name="engine_option_anime4k_high">High (L)</string>
-    <string name="engine_option_anime4k_soft_fast">Soft · Fast</string>
-    <string name="engine_option_anime4k_soft_balanced">Soft · Balanced</string>
-    <string name="engine_option_anime4k_soft_high">Soft · High</string>
-    <string name="engine_option_anime4k_deblur">Deblur (DoG)</string>
 
     <string name="cover_source_local">Local cover</string>
     <string name="cover_source_custom">Custom cover</string>
@@ -700,7 +689,6 @@
     <string name="graphics_chain_title">Filter chain</string>
     <string name="graphics_chain_custom">Use a custom chain for this game</string>
     <string name="graphics_chain_empty">The chain is empty. No graphics processing or performance monitoring will run.</string>
-    <string name="graphics_chain_node">%1$d. %2$s</string>
     <string name="graphics_chain_up">Move up</string>
     <string name="graphics_chain_down">Move down</string>
     <string name="graphics_chain_remove">Remove</string>

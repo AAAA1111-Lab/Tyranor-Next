@@ -31,7 +31,6 @@ public final class Anime4kPostProcessor {
     public static final long TARGET_MEMORY_BUDGET_BYTES = 256L * 1024L * 1024L;
     // Contributed CNN models can use eight simultaneous inputs. ES3 guarantees 16.
     private static final int MAX_BINDINGS = 8;
-    private static final Anime4kPostProcessor INSTANCE = new Anime4kPostProcessor();
 
     private static final String VERTEX_SHADER =
             "#version 300 es\n" +
@@ -233,9 +232,6 @@ public final class Anime4kPostProcessor {
         return processor;
     }
 
-    /** KR2 adapter instance; its host must configure the assets before resource creation. */
-    public static Anime4kPostProcessor getInstance() { return INSTANCE; }
-
     /** Configure only before GL initialization, or after release/abandonContext. */
     public void configure(Context context, String shaderAsset) {
         if (context == null || shaderAsset == null
@@ -278,16 +274,6 @@ public final class Anime4kPostProcessor {
         mFailed = false;
     }
 
-    public void onSurfaceCreated() { abandonContext(); }
-
-    /** KR2 compatibility: shader/target construction stays lazy until the first frame. */
-    public void onSurfaceChanged(int width, int height) {
-        if (width > 0 && height > 0) {
-            mWidth = width;
-            mHeight = height;
-        }
-    }
-
     public boolean isFailed() { return mFailed; }
     public int bypassReason() { return mBypassReason; }
     public long targetBytes() { return mGlReady ? mTargetBytes : 0; }
@@ -319,7 +305,7 @@ public final class Anime4kPostProcessor {
             if (!ensureTargets(width, height, outWidth, outHeight, false)) return 0;
             prepareDrawState();
             if (mTileCoreSize > 0) runTiledPasses(textureId, width, height);
-            else if (!mScaleOnly) runPasses(textureId, width, height, false);
+            else if (!mScaleOnly) runPasses(textureId, width, height);
             runScale(mScaleOnly ? textureId : mRestore.texture[0],
                     mScaleOnly ? width : mRestore.width, mScaleOnly ? height : mRestore.height);
             mBypassReason = BYPASS_NONE;
@@ -330,35 +316,6 @@ public final class Anime4kPostProcessor {
         } catch (RuntimeException failure) {
             fail(failure);
             return 0;
-        } finally {
-            mState.restore();
-        }
-    }
-
-    /** KR2 compatibility: copy its default framebuffer then write the final pass to it. */
-    public void drawFrame() {
-        if (mFailed || mWidth <= 0 || mHeight <= 0) return;
-        mState.capture(mMaxBindings);
-        try {
-            if (!ensureTargets(mWidth, mHeight, mWidth, mHeight, true)) return;
-            prepareDrawState();
-            GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, 0);
-            // GL_READ_BUFFER is framebuffer-local; restore the default buffer's value
-            // before restoring the caller's READ_FRAMEBUFFER binding.
-            GLES30.glGetIntegerv(GLES30.GL_READ_BUFFER, mQuery, 0);
-            int defaultReadBuffer = mQuery[0];
-            try {
-                GLES30.glReadBuffer(GLES30.GL_BACK);
-                GLES30.glActiveTexture(GLES30.GL_TEXTURE0);
-                GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, mScreenCopy.texture[0]);
-                GLES30.glCopyTexSubImage2D(GLES30.GL_TEXTURE_2D, 0, 0, 0,
-                        0, 0, mWidth, mHeight);
-            } finally {
-                GLES30.glReadBuffer(defaultReadBuffer);
-            }
-            runPasses(mScreenCopy.texture[0], mWidth, mHeight, true);
-        } catch (RuntimeException failure) {
-            fail(failure);
         } finally {
             mState.restore();
         }
@@ -897,7 +854,7 @@ public final class Anime4kPostProcessor {
                     GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, mTileInput.fbo[0]);
                     GLES30.glBlitFramebuffer(x, y, x + scratchWidth, y + scratchHeight,
                             0, 0, scratchWidth, scratchHeight, GLES30.GL_COLOR_BUFFER_BIT, GLES30.GL_NEAREST);
-                    runPasses(mTileInput.texture[0], scratchWidth, scratchHeight, false);
+                    runPasses(mTileInput.texture[0], scratchWidth, scratchHeight);
                     GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, mTileRestore.fbo[0]);
                     GLES30.glReadBuffer(GLES30.GL_COLOR_ATTACHMENT0);
                     GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, mRestore.fbo[0]);
@@ -916,7 +873,7 @@ public final class Anime4kPostProcessor {
         }
     }
 
-    private void runPasses(int mainTexture, int width, int height, boolean finalToScreen) {
+    private void runPasses(int mainTexture, int width, int height) {
         mTextures.clear();
         for (int p = 0; p < mPrograms.size(); p++) {
             PassProgram pp = mPrograms.get(p);
@@ -924,8 +881,7 @@ public final class Anime4kPostProcessor {
             TexFbo target = finalPass ? (mTileCoreSize > 0 ? mTileRestore : mRestore)
                     : mIntermediateTargets[mTargetPlan.slots[p]];
             if (target == null) throw new IllegalStateException("missing Anime4K render target");
-            GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER,
-                    finalPass && finalToScreen ? 0 : target.fbo[0]);
+            GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, target.fbo[0]);
             GLES30.glViewport(0, 0, target.width, target.height);
             GLES30.glUseProgram(pp.program);
             if (pp.outputSizeLoc >= 0) GLES30.glUniform2f(pp.outputSizeLoc, target.width, target.height);
@@ -937,7 +893,7 @@ public final class Anime4kPostProcessor {
                 TexFbo input = main ? null : mTextures.get(name);
                 if (!main && input == null) throw new IllegalStateException("unresolved bind: " + name);
                 int texture = main ? mainTexture : input.texture[0];
-                if (!(finalPass && finalToScreen) && texture == target.texture[0]) {
+                if (texture == target.texture[0]) {
                     throw new IllegalStateException("Anime4K texture feedback loop");
                 }
                 GLES30.glActiveTexture(GLES30.GL_TEXTURE0 + i);
