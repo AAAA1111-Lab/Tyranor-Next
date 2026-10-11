@@ -1,0 +1,6 @@
+Anime4K_Denoise_Bilateral_Mean.glsl -text -whitespace
+Anime4K_Denoise_Bilateral_Median.glsl -text -whitespace
+Anime4K_Denoise_Bilateral_Mode.glsl -text -whitespace
+Anime4K_Thin_HQ.glsl -text -whitespace
+Anime4K_Darken_HQ.glsl -text -whitespace
+LICENSE -text
