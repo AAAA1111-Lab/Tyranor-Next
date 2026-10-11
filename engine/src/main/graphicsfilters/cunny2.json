@@ -1,0 +1,301 @@
+{
+  "filters": [
+    {
+      "id": "cunny_veryfast_nvl",
+      "category": "CuNNy2",
+      "categoryOrder": 30,
+      "order": 0,
+      "title": {
+        "zh": "CuNNy-veryfast-NVL",
+        "en": "CuNNy-veryfast-NVL",
+        "ja": "CuNNy-veryfast-NVL"
+      },
+      "categoryTitle": {
+        "zh": "CuNNy2",
+        "en": "CuNNy2",
+        "ja": "CuNNy2"
+      },
+      "shortName": "CN-vf",
+      "color": "#FFAF36BF",
+      "asset": "cunny2/CuNNy-veryfast-NVL",
+      "nativeScale": 2,
+      "haloPerPass": 1,
+      "sharpnessAdjustable": false,
+      "scaleModes": [
+        "none"
+      ],
+      "defaultScaleMode": "none",
+      "defaultSharpness": 0.4,
+      "outputSized": false,
+      "forceParameters": false,
+      "visible": true,
+      "migrationTarget": null,
+      "retired": false,
+      "maxOutputScale": 1
+    },
+    {
+      "id": "cunny_faster_nvl",
+      "category": "CuNNy2",
+      "categoryOrder": 30,
+      "order": 1,
+      "title": {
+        "zh": "CuNNy-faster-NVL",
+        "en": "CuNNy-faster-NVL",
+        "ja": "CuNNy-faster-NVL"
+      },
+      "categoryTitle": {
+        "zh": "CuNNy2",
+        "en": "CuNNy2",
+        "ja": "CuNNy2"
+      },
+      "shortName": "CN-fr",
+      "color": "#FFAF36BF",
+      "asset": "cunny2/CuNNy-faster-NVL",
+      "nativeScale": 2,
+      "haloPerPass": 1,
+      "sharpnessAdjustable": false,
+      "scaleModes": [
+        "none"
+      ],
+      "defaultScaleMode": "none",
+      "defaultSharpness": 0.4,
+      "outputSized": false,
+      "forceParameters": false,
+      "visible": true,
+      "migrationTarget": null,
+      "retired": false,
+      "maxOutputScale": 1
+    },
+    {
+      "id": "cunny_fast_nvl",
+      "category": "CuNNy2",
+      "categoryOrder": 30,
+      "order": 2,
+      "title": {
+        "zh": "CuNNy-fast-NVL",
+        "en": "CuNNy-fast-NVL",
+        "ja": "CuNNy-fast-NVL"
+      },
+      "categoryTitle": {
+        "zh": "CuNNy2",
+        "en": "CuNNy2",
+        "ja": "CuNNy2"
+      },
+      "shortName": "CN-f",
+      "color": "#FFAF36BF",
+      "asset": "cunny2/CuNNy-fast-NVL",
+      "nativeScale": 2,
+      "haloPerPass": 1,
+      "sharpnessAdjustable": false,
+      "scaleModes": [
+        "none"
+      ],
+      "defaultScaleMode": "none",
+      "defaultSharpness": 0.4,
+      "outputSized": false,
+      "forceParameters": false,
+      "visible": true,
+      "migrationTarget": null,
+      "retired": false,
+      "maxOutputScale": 1
+    },
+    {
+      "id": "cunny_3x12_nvl",
+      "category": "CuNNy2",
+      "categoryOrder": 30,
+      "order": 3,
+      "title": {
+        "zh": "CuNNy-3x12-NVL",
+        "en": "CuNNy-3x12-NVL",
+        "ja": "CuNNy-3x12-NVL"
+      },
+      "categoryTitle": {
+        "zh": "CuNNy2",
+        "en": "CuNNy2",
+        "ja": "CuNNy2"
+      },
+      "shortName": "CN3x12",
+      "color": "#FFAF36BF",
+      "asset": "cunny2/CuNNy-3x12-NVL",
+      "nativeScale": 2,
+      "haloPerPass": 1,
+      "sharpnessAdjustable": false,
+      "scaleModes": [
+        "none"
+      ],
+      "defaultScaleMode": "none",
+      "defaultSharpness": 0.4,
+      "outputSized": false,
+      "forceParameters": false,
+      "visible": true,
+      "migrationTarget": null,
+      "retired": false,
+      "maxOutputScale": 1
+    },
+    {
+      "id": "cunny_4x12_nvl",
+      "category": "CuNNy2",
+      "categoryOrder": 30,
+      "order": 4,
+      "title": {
+        "zh": "CuNNy-4x12-NVL",
+        "en": "CuNNy-4x12-NVL",
+        "ja": "CuNNy-4x12-NVL"
+      },
+      "categoryTitle": {
+        "zh": "CuNNy2",
+        "en": "CuNNy2",
+        "ja": "CuNNy2"
+      },
+      "shortName": "CN4x12",
+      "color": "#FFAF36BF",
+      "asset": "cunny2/CuNNy-4x12-NVL",
+      "nativeScale": 2,
+      "haloPerPass": 1,
+      "sharpnessAdjustable": false,
+      "scaleModes": [
+        "none"
+      ],
+      "defaultScaleMode": "none",
+      "defaultSharpness": 0.4,
+      "outputSized": false,
+      "forceParameters": false,
+      "visible": true,
+      "migrationTarget": null,
+      "retired": false,
+      "maxOutputScale": 1
+    },
+    {
+      "id": "cunny_4x16_nvl",
+      "category": "CuNNy2",
+      "categoryOrder": 30,
+      "order": 5,
+      "title": {
+        "zh": "CuNNy-4x16-NVL",
+        "en": "CuNNy-4x16-NVL",
+        "ja": "CuNNy-4x16-NVL"
+      },
+      "categoryTitle": {
+        "zh": "CuNNy2",
+        "en": "CuNNy2",
+        "ja": "CuNNy2"
+      },
+      "shortName": "CN4x16",
+      "color": "#FFAF36BF",
+      "asset": "cunny2/CuNNy-4x16-NVL",
+      "nativeScale": 2,
+      "haloPerPass": 1,
+      "sharpnessAdjustable": false,
+      "scaleModes": [
+        "none"
+      ],
+      "defaultScaleMode": "none",
+      "defaultSharpness": 0.4,
+      "outputSized": false,
+      "forceParameters": false,
+      "visible": true,
+      "migrationTarget": null,
+      "retired": false,
+      "maxOutputScale": 1
+    },
+    {
+      "id": "cunny_4x24_nvl",
+      "category": "CuNNy2",
+      "categoryOrder": 30,
+      "order": 6,
+      "title": {
+        "zh": "CuNNy-4x24-NVL",
+        "en": "CuNNy-4x24-NVL",
+        "ja": "CuNNy-4x24-NVL"
+      },
+      "categoryTitle": {
+        "zh": "CuNNy2",
+        "en": "CuNNy2",
+        "ja": "CuNNy2"
+      },
+      "shortName": "CN4x24",
+      "color": "#FFAF36BF",
+      "asset": "cunny2/CuNNy-4x24-NVL",
+      "nativeScale": 2,
+      "haloPerPass": 1,
+      "sharpnessAdjustable": false,
+      "scaleModes": [
+        "none"
+      ],
+      "defaultScaleMode": "none",
+      "defaultSharpness": 0.4,
+      "outputSized": false,
+      "forceParameters": false,
+      "visible": true,
+      "migrationTarget": null,
+      "retired": false,
+      "maxOutputScale": 1
+    },
+    {
+      "id": "cunny_4x32_nvl",
+      "category": "CuNNy2",
+      "categoryOrder": 30,
+      "order": 7,
+      "title": {
+        "zh": "CuNNy-4x32-NVL",
+        "en": "CuNNy-4x32-NVL",
+        "ja": "CuNNy-4x32-NVL"
+      },
+      "categoryTitle": {
+        "zh": "CuNNy2",
+        "en": "CuNNy2",
+        "ja": "CuNNy2"
+      },
+      "shortName": "CN4x32",
+      "color": "#FFAF36BF",
+      "asset": "cunny2/CuNNy-4x32-NVL",
+      "nativeScale": 2,
+      "haloPerPass": 1,
+      "sharpnessAdjustable": false,
+      "scaleModes": [
+        "none"
+      ],
+      "defaultScaleMode": "none",
+      "defaultSharpness": 0.4,
+      "outputSized": false,
+      "forceParameters": false,
+      "visible": false,
+      "migrationTarget": null,
+      "retired": true,
+      "maxOutputScale": 1
+    },
+    {
+      "id": "cunny_8x32_nvl",
+      "category": "CuNNy2",
+      "categoryOrder": 30,
+      "order": 8,
+      "title": {
+        "zh": "CuNNy-8x32-NVL",
+        "en": "CuNNy-8x32-NVL",
+        "ja": "CuNNy-8x32-NVL"
+      },
+      "categoryTitle": {
+        "zh": "CuNNy2",
+        "en": "CuNNy2",
+        "ja": "CuNNy2"
+      },
+      "shortName": "CN8x32",
+      "color": "#FFAF36BF",
+      "asset": "cunny2/CuNNy-8x32-NVL",
+      "nativeScale": 2,
+      "haloPerPass": 1,
+      "sharpnessAdjustable": false,
+      "scaleModes": [
+        "none"
+      ],
+      "defaultScaleMode": "none",
+      "defaultSharpness": 0.4,
+      "outputSized": false,
+      "forceParameters": false,
+      "visible": false,
+      "migrationTarget": null,
+      "retired": true,
+      "maxOutputScale": 1
+    }
+  ]
+}
