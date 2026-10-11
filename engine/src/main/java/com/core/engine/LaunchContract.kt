@@ -30,6 +30,11 @@ object LaunchContract {
     /** Web 壳默认固定端口（与 Tyranor 原版 webGamePort 默认值一致，便于沿用既有存档域）。 */
     const val WEB_SHELL_PORT_DEFAULT = 23333
     const val UI_LANGUAGE_TAG = "uiLanguageTag"
+    const val GRAPHICS_FILTER_CHAIN = "graphicsFilterChain"
+    const val GRAPHICS_FILTER_ENABLED = "graphicsFilterEnabled"
+    const val GRAPHICS_FILTER_ANALYZER = "graphicsFilterAnalyzer"
+    const val GRAPHICS_FILTER_ANALYZER_POSITION = "graphicsFilterAnalyzerPosition"
+    const val GRAPHICS_FILTER_REFRESH_INTERVAL_MS = "graphicsFilterRefreshIntervalMs"
 
     // ---------- 主题 ----------
 
@@ -73,6 +78,8 @@ object LaunchContract {
 
     // ---------- Artemis ----------
 
+    /** Artemis clean 画质开关；官方内核保留请求值但不支持执行。 */
+    const val ARTEMIS_ANIME4K_ENABLED = "artemisAnime4kEnabled"
     const val ARTEMIS_AUTO_FALLBACK = "artemisAutoFallback"
     const val ARTEMIS_FALLBACK_STAGE = "artemisFallbackStage"
     const val ARTEMIS_CURRENT_VERSION = "artemisCurrentVersion"

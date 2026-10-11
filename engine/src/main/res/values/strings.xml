@@ -45,4 +45,16 @@
     <string name="engine_fb_skip_off">停止跳过</string>
     <string name="engine_fb_menu">菜单</string>
     <string name="engine_ons_video_skip_hint">轻触画面跳过</string>
+    <string name="art_graphics_active">滤镜链已启用</string>
+    <string name="art_graphics_missing_abi">内核缺少帧接口 · 使用原始画面</string>
+    <string name="art_graphics_es3_unavailable">GLES 3 不可用 · 使用原始画面</string>
+    <string name="art_graphics_native_failed">帧接口失败 · 使用原始画面</string>
+    <string name="art_graphics_filter_failed">滤镜失败 · 使用原始画面</string>
+    <string name="art_graphics_official_unsupported">官方内核不支持此监测接口</string>
+    <string name="art_graphics_waiting">等待引擎画面</string>
+    <string name="art_graphics_size_unavailable">处理尺寸不可用 · 使用原始画面</string>
+
+    <string name="graphics_siglus_fallback">画质增强不可用，已恢复原画显示</string>
+    <string name="graphics_analyzer_resolution_flow">输入 %1$s；处理输出 %2$s；显示区域 %3$s</string>
+    <string name="graphics_analyzer_presentation">Resize</string>
 </resources>

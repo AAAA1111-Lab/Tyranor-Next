@@ -102,3 +102,14 @@ tasks.register('jsHarness', Exec) {
 tasks.named('check') {
     dependsOn 'jsHarness'
 }
+
+// Each filter family owns its registration and assets; no optional filter IDs in shared code.
+def graphicsCatalog = tasks.register('generateGraphicsFilters', GenerateGraphicsFilters) {
+    descriptors.set(layout.projectDirectory.dir('src/main/graphicsfilters'))
+    outputDirectory.set(layout.buildDirectory.dir('generated/graphicsFilters'))
+}
+androidComponents {
+    onVariants(selector().all()) { variant ->
+        variant.sources.java.addGeneratedSourceDirectory(graphicsCatalog) { it.outputDirectory }
+    }
+}

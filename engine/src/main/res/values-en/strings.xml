@@ -45,4 +45,16 @@
     <string name="engine_fb_skip_off">Stop skip</string>
     <string name="engine_fb_menu">Menu</string>
     <string name="engine_ons_video_skip_hint">Tap to skip</string>
+    <string name="art_graphics_active">Filter chain enabled</string>
+    <string name="art_graphics_missing_abi">Frame API missing · original frame</string>
+    <string name="art_graphics_es3_unavailable">GLES 3 unavailable · original frame</string>
+    <string name="art_graphics_native_failed">Frame API failed · original frame</string>
+    <string name="art_graphics_filter_failed">Filter failed · original frame</string>
+    <string name="art_graphics_official_unsupported">Official kernel has no monitoring API</string>
+    <string name="art_graphics_waiting">Waiting for engine frames</string>
+    <string name="art_graphics_size_unavailable">Processing size unavailable · original frame</string>
+
+    <string name="graphics_siglus_fallback">Enhancement unavailable. Original presentation restored.</string>
+    <string name="graphics_analyzer_resolution_flow">Input %1$s; processed output %2$s; display area %3$s</string>
+    <string name="graphics_analyzer_presentation">Resize</string>
 </resources>

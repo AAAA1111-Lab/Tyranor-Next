@@ -45,4 +45,16 @@
     <string name="engine_fb_skip_off">スキップ解除</string>
     <string name="engine_fb_menu">メニュー</string>
     <string name="engine_ons_video_skip_hint">画面をタップしてスキップ</string>
+    <string name="art_graphics_active">フィルターチェーン有効</string>
+    <string name="art_graphics_missing_abi">フレーム API なし · 元の画面</string>
+    <string name="art_graphics_es3_unavailable">GLES 3 利用不可 · 元の画面</string>
+    <string name="art_graphics_native_failed">フレーム API 失敗 · 元の画面</string>
+    <string name="art_graphics_filter_failed">フィルター失敗 · 元の画面</string>
+    <string name="art_graphics_official_unsupported">公式カーネルはモニター API 非対応</string>
+    <string name="art_graphics_waiting">エンジンの画面を待機中</string>
+    <string name="art_graphics_size_unavailable">処理サイズ利用不可 · 元の画面</string>
+
+    <string name="graphics_siglus_fallback">画質補正を利用できないため、元の画面表示に戻しました。</string>
+    <string name="graphics_analyzer_resolution_flow">入力 %1$s；処理出力 %2$s；表示領域 %3$s</string>
+    <string name="graphics_analyzer_presentation">Resize</string>
 </resources>

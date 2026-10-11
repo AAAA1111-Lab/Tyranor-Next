@@ -1,0 +1,54 @@
+import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
+import org.gradle.api.DefaultTask
+import org.gradle.api.GradleException
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.tasks.*
+
+/** Catalog data comes only from independently removable descriptors. */
+abstract class GenerateGraphicsFilters extends DefaultTask {
+    @InputDirectory @PathSensitive(PathSensitivity.RELATIVE)
+    abstract DirectoryProperty getDescriptors()
+    @OutputDirectory abstract DirectoryProperty getOutputDirectory()
+
+    @TaskAction void generate() {
+        def definitions = descriptors.get().asFile.listFiles().findAll { it.name.endsWith('.json') }
+            .sort { it.name }.collectMany { new JsonSlurper().parse(it).filters }
+        def ids = [] as Set
+        definitions.each { d ->
+            if (!(d.id ==~ /[a-z0-9_]+/) || !ids.add(d.id)) fail('invalid or duplicate id')
+            if (!(d.category instanceof String) || !d.category || !(d.shortName instanceof String)) fail('missing label')
+            ['title', 'categoryTitle'].each { field ->
+                if (!['zh','en','ja'].every { d[field][it] instanceof String && d[field][it] }) fail('missing localized label')
+            }
+            if (!(d.color ==~ /#[0-9A-Fa-f]{8}/) || !(d.nativeScale in [1,2]) || !(d.haloPerPass in [0,1]) || !(d.maxOutputScale in [1,2])) fail('invalid geometry or color')
+            if (d.asset != null && !(d.asset ==~ /[A-Za-z0-9_-]+(\/[A-Za-z0-9_-]+)?/)) fail('invalid asset path')
+            if (!d.scaleModes || !d.scaleModes.every { it in ['none','fit','factor'] } || !(d.defaultScaleMode in d.scaleModes)) fail('invalid scale modes')
+            if (!(d.defaultSharpness instanceof Number) || d.defaultSharpness < 0 || d.defaultSharpness > 1) fail('invalid sharpness')
+            if (!(d.categoryOrder instanceof Integer) || !(d.order instanceof Integer)) fail('invalid order')
+            ['sharpnessAdjustable','outputSized','forceParameters','visible','retired'].each { if (!(d[it] instanceof Boolean)) fail('invalid flag') }
+            if (d.visible && (d.retired || d.migrationTarget != null)) fail('migration nodes must be hidden')
+        }
+        definitions.each { d ->
+            if (d.migrationTarget != null && !definitions.any { it.id == d.migrationTarget && it.visible }) fail('missing migration target')
+        }
+        definitions.sort { a,b -> a.categoryOrder <=> b.categoryOrder ?: a.category <=> b.category ?: a.order <=> b.order ?: a.id <=> b.id }
+        def quoted = { value -> value == null ? 'null' : JsonOutput.toJson(value) }
+        def strings = { values -> 'new String[]{' + values.collect(quoted).join(',') + '}' }
+        def lines = definitions.collect { d ->
+            def args = [quoted(d.id), quoted(d.category), d.categoryOrder, d.order,
+                strings(['zh','en','ja'].collect { d.title[it] }), strings(['zh','en','ja'].collect { d.categoryTitle[it] }),
+                quoted(d.shortName), '0x' + d.color.substring(1), quoted(d.asset), d.nativeScale, d.haloPerPass,
+                d.sharpnessAdjustable, strings(d.scaleModes), quoted(d.defaultScaleMode), d.defaultSharpness,
+                d.outputSized, d.forceParameters, d.visible, quoted(d.migrationTarget), d.retired, d.maxOutputScale]
+            '            new GraphicsFilterDefinition(' + args.join(', ') + ')'
+        }
+        def source = 'package com.core.gl;\n\n// Generated from engine/src/main/graphicsfilters; do not edit.\n' +
+            'final class GraphicsFilterCatalog {\n    static GraphicsFilterDefinition[] create() {\n' +
+            '        return new GraphicsFilterDefinition[]{\n' + lines.join(',\n') + '\n        };\n    }\n}\n'
+        def target = new File(outputDirectory.get().asFile, 'com/core/gl/GraphicsFilterCatalog.java')
+        target.parentFile.mkdirs()
+        target.setText(source, 'UTF-8')
+    }
+    private static void fail(String detail) { throw new GradleException('Graphics filter descriptor: ' + detail) }
+}
