@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -20,6 +21,7 @@ import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import com.tyranor.next.theme.DialogItemSurface
 import top.yukonga.miuix.kmp.basic.Slider
 import top.yukonga.miuix.kmp.basic.SliderDefaults
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -82,8 +84,8 @@ internal fun DialogMiuixSlider(value: Float, onValueChange: (Float) -> Unit, mod
             hapticEffect = SliderDefaults.SliderHapticEffect.None,
             colors = SliderDefaults.sliderColors(
                 disabledForegroundColor = MiuixTheme.colorScheme.primary,
-                disabledBackgroundColor = MiuixTheme.colorScheme.sliderBackground,
-                disabledThumbColor = MiuixTheme.colorScheme.onPrimary,
+                disabledBackgroundColor = DialogItemSurface,
+                disabledThumbColor = Color.White,
             ),
             modifier = Modifier.fillMaxWidth().height(28.dp),
         )

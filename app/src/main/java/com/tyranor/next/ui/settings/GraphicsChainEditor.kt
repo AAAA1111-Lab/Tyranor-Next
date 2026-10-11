@@ -14,6 +14,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.res.painterResource
@@ -25,9 +26,11 @@ import com.tyranor.next.core.settings.GraphicsFilterCatalog
 import com.tyranor.next.core.settings.GraphicsNode
 import com.tyranor.next.core.settings.GraphicsSettingsCodec
 import com.tyranor.next.theme.DialogItemSurface
+import com.tyranor.next.theme.AppComponentShape
+import com.tyranor.next.theme.TextColor
+import com.tyranor.next.theme.glassBorder
 import com.tyranor.next.ui.common.NoRippleTextButton
 import kotlinx.coroutines.launch
-import top.yukonga.miuix.kmp.theme.MiuixTheme
 import java.util.UUID
 
 /** Transient keys distinguish duplicate nodes without adding UI identity to persisted settings. */
@@ -61,7 +64,7 @@ internal fun GraphicsChainEditor(chain: List<GraphicsNode>, enabled: Boolean, on
                         .bringIntoViewRequester(reveal)
                         .zIndex(if (moving) 1f else 0f)
                         .graphicsLayer { translationY = if (moving) offset else 0f }
-                        .then(if (moving) Modifier.background(DialogItemSurface) else Modifier)
+                        .then(if (moving) Modifier.clip(AppComponentShape).background(DialogItemSurface).glassBorder() else Modifier)
                         .pointerInput(entry.key, enabled) {
                             if (!enabled) return@pointerInput
                             detectDragGesturesAfterLongPress(
@@ -96,7 +99,7 @@ internal fun GraphicsChainEditor(chain: List<GraphicsNode>, enabled: Boolean, on
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(labels.getValue(node.id), style = MaterialTheme.typography.titleMedium,
-                        color = MiuixTheme.colorScheme.onBackground.copy(alpha = if (node.enabled) 1f else 0.38f),
+                        color = TextColor.copy(alpha = if (node.enabled) 1f else 0.38f),
                         modifier = Modifier.weight(1f).padding(end = 8.dp))
                     if (GraphicsFilterCatalog.adjustable(node.id)) {
                         GraphicsNodeAction(R.drawable.ic_graphics_parameters, R.string.graphics_filter_parameters,
@@ -145,6 +148,6 @@ private fun GraphicsNodeAction(icon: Int, label: Int, enabled: Boolean, onClick:
         interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onClick),
         contentAlignment = Alignment.Center) {
         Icon(painterResource(icon), contentDescription = description, modifier = Modifier.size(22.dp),
-            tint = MiuixTheme.colorScheme.onBackground.copy(alpha = if (enabled) 1f else 0.38f))
+            tint = TextColor.copy(alpha = if (enabled) 1f else 0.38f))
     }
 }

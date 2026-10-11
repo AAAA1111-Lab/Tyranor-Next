@@ -14,6 +14,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.node.DelegatableNode
 import androidx.compose.ui.unit.dp
 import com.tyranor.next.theme.AppComponentShape
+import com.tyranor.next.theme.TextColor
 
 /**
  * 弹窗点击反馈规范（AGENT.md「弹窗点击反馈统一规范」）：
@@ -37,11 +38,11 @@ fun DialogTextButton(
 ) {
     Text(
         text = text,
-        style = MaterialTheme.typography.labelLarge,
+        style = MaterialTheme.typography.bodyMedium,
         color = if (enabled) {
             MaterialTheme.colorScheme.primary
         } else {
-            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+            TextColor.copy(alpha = 0.38f)
         },
         modifier = Modifier
             .clip(AppComponentShape)
