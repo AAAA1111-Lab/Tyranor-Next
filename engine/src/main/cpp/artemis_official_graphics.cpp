@@ -187,7 +187,7 @@ EGLBoolean swap(EGLDisplay display,EGLSurface surface) {
     return eglSwapBuffers(display,state.actual);
 }
 void displayStage(void* stage) {
-    // The fixed-library SHA-256 allowlist guards this layout. Constructors request int
+    // The bundled-library Build ID gate selects this layout. Constructors request int
     // width/height; the SIMD SCVTF in SetupScale converts those integer bits.
     int width=0,height=0;
     std::memcpy(&width,static_cast<char*>(stage)+0x100,sizeof(width));
@@ -257,6 +257,44 @@ int findImage(dl_phdr_info* info,size_t,void* data) {
     if(static_cast<uintptr_t>(info->dlpi_addr)!=image.base)return 0;
     image.phdr=info->dlpi_phdr;image.count=info->dlpi_phnum;return 1;
 }
+// Identify the loaded image without opening or hashing its entire file on the UI thread.
+std::string loadedBuildId(const Image& image) {
+    for (size_t i = 0; i < image.count; ++i) {
+        const auto& noteSegment = image.phdr[i];
+        if (noteSegment.p_type != PT_NOTE) continue;
+        bool readable = false;
+        for (size_t j = 0; j < image.count; ++j) {
+            const auto& load = image.phdr[j];
+            if (load.p_type != PT_LOAD || !(load.p_flags & PF_R) || noteSegment.p_vaddr < load.p_vaddr) continue;
+            Elf64_Addr offset = noteSegment.p_vaddr - load.p_vaddr;
+            if (offset <= load.p_memsz && noteSegment.p_memsz <= load.p_memsz - offset) readable = true;
+        }
+        if (!readable) continue;
+        const auto* at = reinterpret_cast<const unsigned char*>(image.base + noteSegment.p_vaddr);
+        size_t length = noteSegment.p_memsz;
+        while (length >= sizeof(Elf64_Nhdr)) {
+            Elf64_Nhdr note{};
+            std::memcpy(&note, at, sizeof(note));
+            size_t name = (static_cast<size_t>(note.n_namesz) + 3u) & ~size_t{3};
+            size_t desc = (static_cast<size_t>(note.n_descsz) + 3u) & ~size_t{3};
+            if (name > length - sizeof(note) || desc > length - sizeof(note) - name) break;
+            if (note.n_type == NT_GNU_BUILD_ID && note.n_namesz == 4 && note.n_descsz == 20
+                    && std::memcmp(at + sizeof(note), "GNU", 4) == 0) {
+                char hex[41]{};
+                const unsigned char* id = at + sizeof(note) + name;
+                for (size_t n = 0; n < 20; ++n) {
+                    hex[2 * n] = "0123456789abcdef"[id[n] >> 4];
+                    hex[2 * n + 1] = "0123456789abcdef"[id[n] & 15];
+                }
+                return hex;
+            }
+            size_t total = sizeof(note) + name + desc;
+            at += total;
+            length -= total;
+        }
+    }
+    return {};
+}
 struct Change {void** slot;void* before;void* after;int protection;};
 bool collect(const Image& image,std::vector<Change>& changes,void** slot,void* before,void* after) {
     if(!before || !after || *slot!=before)return false;
@@ -304,12 +342,23 @@ bool installArtemisOfficialGraphics(void* handle,ANativeActivity* activity,const
         return false;
     };
     if (!statusMethod) return failed();
-    jmethodID verify = method("verifyLibrary", "(Ljava/lang/String;)Z");
+    stageDisplay = reinterpret_cast<StageDisplay>(dlsym(handle, kDisplay));
+    Dl_info info{};
+    if (!stageDisplay || !dladdr(reinterpret_cast<void*>(stageDisplay), &info)) return failed();
+    Image image;
+    image.base = reinterpret_cast<uintptr_t>(info.dli_fbase);
+    dl_iterate_phdr(findImage, &image);
+    std::string identity = loadedBuildId(image);
+    if (identity.empty()) return failed();
+    jmethodID verify = method("verifyLibrary", "(Ljava/lang/String;Ljava/lang/String;)Z");
     if (!verify) return failed();
     jstring file = env->NewStringUTF(path.c_str());
     if (env->ExceptionCheck() || !file) return failed();
-    bool verified = env->CallStaticBooleanMethod(cls, verify, file);
+    jstring buildId = env->NewStringUTF(identity.c_str());
+    if (env->ExceptionCheck() || !buildId) { env->DeleteLocalRef(file); return failed(); }
+    bool verified = env->CallStaticBooleanMethod(cls, verify, file, buildId);
     env->DeleteLocalRef(file);
+    env->DeleteLocalRef(buildId);
     if (env->ExceptionCheck() || !verified) return failed();
     connectMethod = method("connect", "(Landroid/view/Surface;IIII)Landroid/view/Surface;");
     submittedMethod = method("submitted", "(JIIZ)V");
@@ -318,14 +367,10 @@ bool installArtemisOfficialGraphics(void* handle,ANativeActivity* activity,const
     resizeMethod = method("resizeProducer", "(II)Z");
     if (!connectMethod || !submittedMethod || !healthyMethod || !disconnectMethod || !resizeMethod)
         return failed();
-    stageDisplay = reinterpret_cast<StageDisplay>(dlsym(handle, kDisplay));
-    Dl_info info{};
-    if (!stageDisplay || !dladdr(reinterpret_cast<void*>(stageDisplay), &info)) return failed();
     vm = activity->vm;
     bridge = static_cast<jclass>(env->NewGlobalRef(cls));
     if (env->ExceptionCheck() || !bridge) return failed();
     env->DeleteLocalRef(cls);
-    Image image;image.base=reinterpret_cast<uintptr_t>(info.dli_fbase);dl_iterate_phdr(findImage,&image);
     const Elf64_Dyn* dynamic=nullptr;size_t count=0;
     for(size_t i=0;i<image.count;++i)if(image.phdr[i].p_type==PT_DYNAMIC){dynamic=reinterpret_cast<const Elf64_Dyn*>(image.base+image.phdr[i].p_vaddr);count=image.phdr[i].p_memsz/sizeof(Elf64_Dyn);}
     const Elf64_Sym* symbols=nullptr;const char* strings=nullptr;const Elf64_Rela* relocs=nullptr;size_t bytes=0;bool rela=false;
