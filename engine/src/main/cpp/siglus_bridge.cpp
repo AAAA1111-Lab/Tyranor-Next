@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 
 #define LOG_TAG "siglus_bridge"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
@@ -34,6 +35,7 @@ using submit_messagebox_result_fn_t = void (*)(void* handle, uint64_t request_id
 using step_fn_t = int32_t (*)(void* handle, uint32_t dt_ms);
 using resize_fn_t = void (*)(void* handle, uint32_t w_px, uint32_t h_px);
 using set_surface_fn_t = int32_t (*)(void* handle, void* native_window_ptr, uint32_t w_px, uint32_t h_px);
+using stage_geometry_fn_t = int32_t (*)(void* handle, uint32_t* out_geometry, uint32_t out_count);
 using touch_fn_t = void (*)(void* handle, int32_t phase, double x_px, double y_px);
 using key_event_fn_t = void (*)(void* handle, int32_t key_code, const char* text_utf8, int32_t is_repeat);
 using ime_area_fn_t = int32_t (*)(void* handle, int32_t* out_xywh);
@@ -51,6 +53,7 @@ struct SiglusApi {
     step_fn_t step = nullptr;
     resize_fn_t resize = nullptr;
     set_surface_fn_t set_surface = nullptr;
+    stage_geometry_fn_t stage_geometry = nullptr;
     touch_fn_t touch = nullptr;
     key_event_fn_t key_event = nullptr;
     ime_area_fn_t ime_area = nullptr;
@@ -64,6 +67,27 @@ struct SiglusApi {
 static SiglusApi g_api;
 static std::once_flag g_api_once;
 static void* g_lib_handle = nullptr;
+
+// The shim owns the fromSurface reference until Rust drops its corresponding
+// surface. Engine-handle calls are serialized by the Activity's main thread;
+// the mutex protects lookup by late Java callbacks, never a call into Rust.
+static std::mutex g_window_mutex;
+static std::unordered_map<void*, ANativeWindow*> g_windows;
+
+static bool live_handle(void* handle) {
+    std::lock_guard<std::mutex> lock(g_window_mutex);
+    return g_windows.find(handle) != g_windows.end();
+}
+
+static ANativeWindow* replace_owned_window(void* handle, ANativeWindow* window) {
+    std::lock_guard<std::mutex> lock(g_window_mutex);
+    ANativeWindow* previous = nullptr;
+    auto found = g_windows.find(handle);
+    if (found != g_windows.end()) previous = found->second;
+    if (window != nullptr) g_windows[handle] = window;
+    else g_windows.erase(handle);
+    return previous;
+}
 
 static JavaVM* g_java_vm = nullptr;
 static jclass g_native_class = nullptr;         // com/core/siglus/NativeSiglus
@@ -93,6 +117,9 @@ static void load_api_once() {
         g_api.step = reinterpret_cast<step_fn_t>(load_symbol("siglus_android_step"));
         g_api.resize = reinterpret_cast<resize_fn_t>(load_symbol("siglus_android_resize"));
         g_api.set_surface = reinterpret_cast<set_surface_fn_t>(load_symbol("siglus_android_set_surface"));
+        // Optional, versioned downstream extension. Missing in old libraries.
+        g_api.stage_geometry = reinterpret_cast<stage_geometry_fn_t>(
+                dlsym(g_lib_handle, "siglus_android_get_stage_geometry_v1"));
         g_api.touch = reinterpret_cast<touch_fn_t>(load_symbol("siglus_android_touch"));
         g_api.key_event = reinterpret_cast<key_event_fn_t>(load_symbol("siglus_android_key_event"));
         g_api.ime_area = reinterpret_cast<ime_area_fn_t>(load_symbol("siglus_android_ime_area"));
@@ -245,7 +272,7 @@ extern "C" JNIEXPORT jlong JNICALL
 Java_com_core_siglus_NativeSiglus_create(JNIEnv* env, jclass, jobject surface, jint width_px,
                                          jint height_px, jdouble native_scale, jstring game_dir) {
     load_api_once();
-    if (g_api.create == nullptr) {
+    if (g_api.create == nullptr || surface == nullptr) {
         LOGE("create: engine symbols unavailable");
         return 0;
     }
@@ -257,6 +284,7 @@ Java_com_core_siglus_NativeSiglus_create(JNIEnv* env, jclass, jobject surface, j
     std::string dir = jstring_to_string(env, game_dir);
     if (dir.empty()) {
         LOGE("create: empty game dir");
+        ANativeWindow_release(window);
         return 0;
     }
     void* handle = g_api.create(window, static_cast<uint32_t>(width_px > 0 ? width_px : 1),
@@ -264,6 +292,9 @@ Java_com_core_siglus_NativeSiglus_create(JNIEnv* env, jclass, jobject surface, j
                                 native_scale, dir.c_str());
     if (handle == nullptr) {
         LOGE("create: engine returned null handle");
+        ANativeWindow_release(window);
+    } else {
+        replace_owned_window(handle, window);
     }
     return reinterpret_cast<jlong>(handle);
 }
@@ -280,7 +311,7 @@ Java_com_core_siglus_NativeSiglus_setNativeMessageboxCallback(JNIEnv*, jclass, j
 extern "C" JNIEXPORT void JNICALL
 Java_com_core_siglus_NativeSiglus_submitMessageboxResult(JNIEnv*, jclass, jlong handle,
                                                          jlong request_id, jlong value) {
-    if (g_api.submit_messagebox_result == nullptr || handle == 0) {
+    if (g_api.submit_messagebox_result == nullptr || !live_handle(reinterpret_cast<void*>(handle))) {
         return;
     }
     g_api.submit_messagebox_result(reinterpret_cast<void*>(handle),
@@ -309,7 +340,7 @@ Java_com_core_siglus_NativeSiglus_resize(JNIEnv*, jclass, jlong handle, jint wid
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_core_siglus_NativeSiglus_setSurface(JNIEnv* env, jclass, jlong handle, jobject surface,
                                              jint width_px, jint height_px) {
-    if (g_api.set_surface == nullptr || handle == 0) {
+    if (g_api.set_surface == nullptr || surface == nullptr || !live_handle(reinterpret_cast<void*>(handle))) {
         return JNI_FALSE;
     }
     ANativeWindow* window = ANativeWindow_fromSurface(env, surface);
@@ -319,7 +350,15 @@ Java_com_core_siglus_NativeSiglus_setSurface(JNIEnv* env, jclass, jlong handle, 
     int32_t ok = g_api.set_surface(reinterpret_cast<void*>(handle), window,
                                    static_cast<uint32_t>(width_px > 0 ? width_px : 1),
                                    static_cast<uint32_t>(height_px > 0 ? height_px : 1));
-    return ok != 0 ? JNI_TRUE : JNI_FALSE;
+    if (ok == 0) {
+        ANativeWindow_release(window);
+        return JNI_FALSE;
+    }
+    // The previous Rust Surface was dropped before set_surface returned. Even
+    // when both pointers are equal, fromSurface acquired a distinct reference.
+    ANativeWindow* previous = replace_owned_window(reinterpret_cast<void*>(handle), window);
+    if (previous != nullptr) ANativeWindow_release(previous);
+    return JNI_TRUE;
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -408,5 +447,26 @@ Java_com_core_siglus_NativeSiglus_destroy(JNIEnv*, jclass, jlong handle) {
     if (g_api.destroy == nullptr || handle == 0) {
         return;
     }
-    g_api.destroy(reinterpret_cast<void*>(handle));
+    void* owned_handle = reinterpret_cast<void*>(handle);
+    ANativeWindow* window = replace_owned_window(owned_handle, nullptr);
+    if (window == nullptr) return; // Ignore duplicate/late destroy calls.
+    g_api.destroy(owned_handle);
+    ANativeWindow_release(window);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_core_siglus_SiglusStageBridge_geometry(JNIEnv* env, jclass, jlong handle, jintArray out_geometry) {
+    load_api_once();
+    if (g_api.stage_geometry == nullptr || !live_handle(reinterpret_cast<void*>(handle))
+            || out_geometry == nullptr || env->GetArrayLength(out_geometry) < 10) return JNI_FALSE;
+    uint32_t geometry[10] = {};
+    if (g_api.stage_geometry(reinterpret_cast<void*>(handle), geometry, 10) == 0) return JNI_FALSE;
+    jint values[10];
+    for (int i = 0; i < 10; ++i) {
+        if (i < 8 && geometry[i] > INT32_MAX) return JNI_FALSE;
+        values[i] = static_cast<jint>(geometry[i]);
+    }
+    if (values[0] <= 0 || values[1] <= 0 || values[2] <= 0 || values[3] <= 0) return JNI_FALSE;
+    env->SetIntArrayRegion(out_geometry, 0, 10, values);
+    return env->ExceptionCheck() ? JNI_FALSE : JNI_TRUE;
 }

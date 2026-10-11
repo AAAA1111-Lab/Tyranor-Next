@@ -1,0 +1,23 @@
+{
+  "upstream": "https://github.com/xmoezzz/siglus_rs",
+  "revision": "5f358ef1360b0439e92aed2b749e8f25d8721954",
+  "archiveSha256": "d60b508c5a2e77f5f34cfc686c4f3141799c7106897475c939d2e310d19afbc3",
+  "cargoLockSha256": "76412e48b8ce98c92d51e757daabfdb0b0d1e85e6453315862a81154e30f87eb",
+  "rustVersion": "1.99.0",
+  "rustCommit": "b940084d7eb6a299eb4bfeb8e34901bc051e7ac4",
+  "target": "aarch64-linux-android",
+  "androidApi": 26,
+  "ndkVersion": "30.0.16248370",
+  "package": "game_launcher",
+  "patches": [
+    {
+      "file": "0001-stage-geometry-v1.patch",
+      "sha256": "d658383c63c06cbb259e12a804fec9dd11cc553f542f5284510340958b22ded4"
+    }
+  ],
+  "geometryAbi": "siglus_android_get_stage_geometry_v1",
+  "geometryWords": 10,
+  "previousLibrarySha256": "1df70b3bb03fce9816baa854e9c553de8a516fa648480391dadbf18211291b3b",
+  "previousExportsFile": "engine/patches/siglus/previous-exports.txt",
+  "previousExportsSha256": "3f062c8276c898f85d742fdc1b15ce79f426e2f80f467a1799f7445d0be474d5"
+}
