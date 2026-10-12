@@ -11,6 +11,7 @@ internal fun Intent.putGraphicsExtras(extras: Map<String, Any>) {
             is Int -> putExtra(key, value)
             is Boolean -> putExtra(key, value)
             is String -> putExtra(key, value)
+            else -> error("Unsupported graphics extra type: ${value::class.java.name}")
         }
     }
 }

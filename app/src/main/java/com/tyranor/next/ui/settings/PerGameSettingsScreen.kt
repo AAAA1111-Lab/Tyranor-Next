@@ -902,7 +902,7 @@ fun PerGameSettingsScreen(game: ScanGame) {
                         override = graphicsOverride,
                         capability = GraphicsCapabilities.forRuntime(
                             graphicsFamily, if (graphicsFamily == GraphicsFamily.KR) effectiveKrKernel else effectiveArtKernel,
-                            artVersion ?: globalArtVersion,
+                            if (graphicsFamily == GraphicsFamily.KR) effVersion else artVersion ?: globalArtVersion,
                         ),
                     ) { graphicsOverride = it }
                 }

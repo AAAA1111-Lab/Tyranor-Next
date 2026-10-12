@@ -6,7 +6,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 /** Version gate for bundled, loader-validated ELF images, not a file-integrity checksum. */
-final class ArtemisLibraryIdentity {
+public final class ArtemisLibraryIdentity {
     private static final Map<String, String> BUILD_IDS;
     static {
         Map<String, String> ids = new HashMap<>();
@@ -19,7 +19,7 @@ final class ArtemisLibraryIdentity {
     }
     private ArtemisLibraryIdentity() {}
 
-    static boolean supports(String filename) { return BUILD_IDS.containsKey(filename); }
+    public static boolean supports(String filename) { return BUILD_IDS.containsKey(filename); }
 
     static boolean matches(String path, String buildId) {
         if (path == null || buildId == null) return false;

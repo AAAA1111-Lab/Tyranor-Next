@@ -128,12 +128,11 @@ class GraphicsSettingsCodecTest {
     @Test fun capabilitiesDistinguishScreenFramesAndUnsupportedFamilies() {
         val kr = GraphicsCapabilities.forRuntime(GraphicsFamily.KR, "kirikiri2")
         assertTrue(kr.supported)
-        assertFalse(kr.originalFrameScaling)
         assertFalse(GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, "clean").supported)
         assertFalse(GraphicsCapabilities.forRuntime(GraphicsFamily.KR, "krkrsdl3").supported)
-        assertTrue(GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, "official", "6").originalFrameScaling)
+        assertTrue(GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, "official", "6").supported)
         assertFalse(GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, "official", "2").supported)
-        assertTrue(GraphicsCapabilities.forRuntime(GraphicsFamily.SIGLUS).originalFrameScaling)
+        assertTrue(GraphicsCapabilities.forRuntime(GraphicsFamily.SIGLUS).supported)
     }
     @Test fun analyzerAndOverridesRoundTripWithoutBorrowingDebugFlags() {
         val global = GraphicsSettings(enabled = true, analyzer = false)

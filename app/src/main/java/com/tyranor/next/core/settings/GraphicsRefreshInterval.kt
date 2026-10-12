@@ -8,6 +8,5 @@ object GraphicsRefreshInterval {
     const val MIN_MS = GraphicsMonitorOptions.MIN_REFRESH_MS
     const val MAX_MS = GraphicsMonitorOptions.MAX_REFRESH_MS
     val PRESETS_MS: List<Int> = GraphicsMonitorOptions.refreshPresets().toList()
-    fun valid(value: Int): Boolean = value in MIN_MS..MAX_MS
     fun normalize(value: Int): Int = GraphicsMonitorOptions.normalizeRefresh(value)
 }

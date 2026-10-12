@@ -56,19 +56,19 @@ class ArtemisGraphicsSettingsTest {
         )
         for (key in keys) {
             for (invalid in listOf(JSONObject.NULL, "false", 0, JSONObject())) {
-                val override = PerGameSettingsStore.booleanOverride(JSONObject().put(key, invalid), key)
+                val override = GraphicsSettingsCodec.legacyOverride(JSONObject().put(key, invalid), GraphicsFamily.ARTEMIS).enabled
                 assertNull(override)
                 assertTrue(EffectiveEngineSettings.resolveBool(override, true))
             }
-            assertNull(PerGameSettingsStore.booleanOverride(JSONObject(), key))
+            assertNull(GraphicsSettingsCodec.legacyOverride(JSONObject(), GraphicsFamily.ARTEMIS).enabled)
             assertFalse(
                 EffectiveEngineSettings.resolveBool(
-                    PerGameSettingsStore.booleanOverride(JSONObject().put(key, false), key), true,
+                    GraphicsSettingsCodec.legacyOverride(JSONObject().put(key, false), GraphicsFamily.ARTEMIS).enabled, true,
                 ),
             )
             assertTrue(
                 EffectiveEngineSettings.resolveBool(
-                    PerGameSettingsStore.booleanOverride(JSONObject().put(key, true), key), false,
+                    GraphicsSettingsCodec.legacyOverride(JSONObject().put(key, true), GraphicsFamily.ARTEMIS).enabled, false,
                 ),
             )
         }

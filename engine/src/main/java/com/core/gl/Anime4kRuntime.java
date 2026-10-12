@@ -5,12 +5,10 @@ import android.content.Context;
 import android.content.Intent;
 import com.core.engine.LaunchContract;
 
-/** KR2 runtime configuration; legacy single-mode callers remain supported. */
+/** KR2 filter-chain runtime. Historical class name and EXTRA_MODE preserve external single-mode launch compatibility. */
 public final class Anime4kRuntime {
     public static final String EXTRA_MODE = "tyranor_anime4k";
-    public static final String MODE_OFF = "off", MODE_S = "s", MODE_M = "m", MODE_L = "l",
-            MODE_SOFT_S = "soft_s", MODE_SOFT_M = "soft_m", MODE_SOFT_L = "soft_l", MODE_DEBLUR = "deblur";
-    private static volatile boolean enabled, requested, rawInput, analyzing;
+    private static volatile boolean enabled, requested, analyzing;
     private static volatile GraphicsFilterChain chain = GraphicsFilterChain.parse("v1:");
     private static volatile int status = GraphicsStatus.WAITING;
     private static final ArtemisGraphicsStats STATS = new ArtemisGraphicsStats();
@@ -57,18 +55,9 @@ public final class Anime4kRuntime {
     public static boolean isEnabled() { return enabled; }
     public static boolean useGles3Context() { return enabled; }
     public static boolean isAnalyzing() { return analyzing; }
-    /** Compatibility alias for existing bridge callers; only the analyzer requests counters. */
-    public static boolean isMonitoring() { return analyzing; }
     public static GraphicsFilterChain chain() { return chain; }
     public static int status() { return status; }
     public static ArtemisGraphicsStats stats() { return STATS; }
-    public static String shaderAsset() {
-        for (int i = 0; i < chain.steps().size(); i++) {
-            String asset = GraphicsFilterChain.shaderAsset(chain.steps().get(i).id);
-            if (asset != null) return asset;
-        }
-        return "Anime4K_Restore_CNN_S";
-    }
     public static void onContextCreated() {
         STATS.reset();
         if (enabled) status = GraphicsStatus.READY;
@@ -85,8 +74,6 @@ public final class Anime4kRuntime {
             STATS.presented();
         }
     }
-    public static boolean hasRawInput() { return rawInput; }
-    static void setRawInput(boolean raw) { rawInput = raw; }
     static void onRawFrame(int sw,int sh,int width,int height,GraphicsFilterPipeline processor) {
         status = sw <= 0 || sh <= 0 ? GraphicsStatus.SIZE_UNAVAILABLE
                 : processor != null && processor.isFailed() ? GraphicsStatus.FILTER_FAILED
@@ -102,7 +89,7 @@ public final class Anime4kRuntime {
         }
     }
     public static void reset() {
-        enabled = requested = rawInput = analyzing = false;
+        enabled = requested = analyzing = false;
         chain = GraphicsFilterChain.parse("v1:");
         status = GraphicsStatus.WAITING;
         STATS.reset();

@@ -2,7 +2,6 @@ package com.core.gl;
 
 import android.content.Context;
 import androidx.annotation.Keep;
-import com.core.nativeplugin.NativePluginConstants;
 import java.io.File;
 
 /** Leases a processed game-window texture to Cocos for one nativeRender call. */
@@ -36,8 +35,7 @@ public final class KirikiroidRawFrameBridge {
             // image's Build ID and all hook entry points before making changes.
             File canonicalLibrary = new File(library).getCanonicalFile();
             String name = canonicalLibrary.getName();
-            if (!NativePluginConstants.LIB_GAME_139.equals(name)
-                    && !NativePluginConstants.LIB_GAME_134.equals(name)) {
+            if (!KirikiroidLibraryIdentity.supports(name)) {
                 installStatus = InstallStatus.UNSUPPORTED_LIBRARY;
                 return;
             }
@@ -83,7 +81,6 @@ public final class KirikiroidRawFrameBridge {
             pipeline = new GraphicsFilterPipeline(context, Anime4kRuntime.chain());
             if (Anime4kRuntime.isAnalyzing()) pipeline.setProfiler(Anime4kRuntime.stats(), Anime4kRuntime.isAnalyzing());
         }
-        Anime4kRuntime.setRawInput(installed);
     }
     public static boolean isInstalled() { return installed; }
     public static void beginFrame(int width, int height) {

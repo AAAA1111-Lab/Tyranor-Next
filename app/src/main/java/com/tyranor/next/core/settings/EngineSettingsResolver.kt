@@ -70,12 +70,6 @@ object EngineSettingsResolver {
                 bool(PerGameSettingsStore.F_SKIP_STARTUP_DIALOGS),
                 EngineSettingsStore.isKrSkipStartupDialogs(app),
             ),
-            krAnime4kMode = EffectiveEngineSettings.resolveAllowed(
-                str(PerGameSettingsStore.F_ANIME4K_MODE),
-                EngineSettingsStore.getKrAnime4kMode(app),
-                EngineSettingsStore.ANIME4K_MODES,
-                EngineSettingsStore.ANIME4K_OFF,
-            ),
             krRenderer = EffectiveEngineSettings.resolve(
                 str(PerGameSettingsStore.F_RENDERER),
                 EngineSettingsStore.getKrRenderer(app),
@@ -95,16 +89,6 @@ object EngineSettingsResolver {
             artRotate = EffectiveEngineSettings.resolveBool(
                 bool(PerGameSettingsStore.F_ART_ROTATE),
                 EngineSettingsStore.isArtRotateScreen(app),
-            ),
-            artAnime4kEnabled = EffectiveEngineSettings.resolveBool(
-                PerGameSettingsStore.booleanOverride(override, PerGameSettingsStore.F_ART_ANIME4K_ENABLED),
-                EngineSettingsStore.isArtAnime4kEnabled(app),
-            ),
-            artAnime4kMode = EffectiveEngineSettings.resolveAllowed(
-                str(PerGameSettingsStore.F_ART_ANIME4K_MODE),
-                EngineSettingsStore.getArtAnime4kMode(app),
-                EngineSettingsStore.ART_ANIME4K_MODES,
-                EngineSettingsStore.ART_ANIME4K_DEFAULT,
             ),
             artAutoPatch = EffectiveEngineSettings.resolveAllowed(
                 str(PerGameSettingsStore.F_ART_PATCH),
@@ -255,15 +239,11 @@ data class ResolvedEngineSettings(
     val krForceDefaultFont: Boolean,
     val krPatchOverlayMode: String,
     val krSkipStartupDialogs: Boolean,
-    val krAnime4kMode: String,
     val krRenderer: String,
     val artVersion: String,
     /** Artemis 内核生效值（官方多 revision / 自研 clean-room）。 */
     val artKernel: String,
     val artRotate: Boolean,
-    /** 请求值保留到启动契约，由 clean 内核运行时决定是否支持。 */
-    val artAnime4kEnabled: Boolean = false,
-    val artAnime4kMode: String = EngineSettingsStore.ART_ANIME4K_DEFAULT,
     val artAutoPatch: String,
     val artResolution: String,
     val artSideCut: String,

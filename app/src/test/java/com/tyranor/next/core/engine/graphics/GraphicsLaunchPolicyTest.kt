@@ -39,7 +39,7 @@ class GraphicsLaunchPolicyTest {
     @Test fun siglusUsesTheSharedOrderedChainWithoutChangingItsRuntime() {
         val capability = GraphicsCapabilities.forRuntime(GraphicsFamily.SIGLUS)
         val extras = GraphicsLaunchPolicy.extras(saved, capability)
-        assertTrue(capability.originalFrameScaling)
+        assertTrue(capability.supported)
         assertEquals("v1:m,!deblur,lanczos", extras[LaunchContract.GRAPHICS_FILTER_CHAIN])
         assertEquals(true, extras[LaunchContract.GRAPHICS_FILTER_ENABLED])
         assertEquals(true, extras[LaunchContract.GRAPHICS_FILTER_ANALYZER])
@@ -78,4 +78,22 @@ class GraphicsLaunchPolicyTest {
         assertEquals(false, GraphicsLaunchPolicy.extras(settings, GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, "official", "2"))[LaunchContract.GRAPHICS_FILTER_ANALYZER])
     }
 
+
+    @Test fun autoKernelPreservesMigratedModeAndUnsupportedVersionsStayDisabled() {
+        val migrated = GraphicsSettingsCodec.legacyGlobal(GraphicsFamily.KR, krMode = "m")
+        for (kernel in listOf("auto", "kirikiri2")) {
+            for (version in listOf("auto", "1.3.9", "1.3.4")) {
+                val capability = GraphicsCapabilities.forRuntime(GraphicsFamily.KR, kernel, version)
+                assertTrue(capability.supported)
+                val extras = GraphicsLaunchPolicy.extras(migrated, capability)
+                assertEquals(true, extras[LaunchContract.GRAPHICS_FILTER_ENABLED])
+                assertEquals(GraphicsSettingsCodec.encodeChain(migrated.chain), extras[LaunchContract.GRAPHICS_FILTER_CHAIN])
+            }
+            for (version in listOf("1.2.6", "unknown")) {
+                val capability = GraphicsCapabilities.forRuntime(GraphicsFamily.KR, kernel, version)
+                assertFalse(capability.supported)
+                assertEquals(false, GraphicsLaunchPolicy.extras(migrated, capability)[LaunchContract.GRAPHICS_FILTER_ENABLED])
+            }
+        }
+    }
 }

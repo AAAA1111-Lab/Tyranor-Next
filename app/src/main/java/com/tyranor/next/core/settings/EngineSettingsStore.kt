@@ -644,12 +644,8 @@ object EngineSettingsStore {
 
     fun isArtAnime4kEnabled(c: Context): Boolean =
         prefs(c).all[KEY_ARTEMIS_ANIME4K_ENABLED] as? Boolean ?: false
-    fun setArtAnime4kEnabled(c: Context, enabled: Boolean) =
-        prefs(c).edit().putBoolean(KEY_ARTEMIS_ANIME4K_ENABLED, enabled).apply()
     fun getArtAnime4kMode(c: Context): String =
         normalizeArtAnime4kMode(prefs(c).all[KEY_ARTEMIS_ANIME4K_MODE] as? String)
-    fun setArtAnime4kMode(c: Context, mode: String) =
-        prefs(c).edit().putString(KEY_ARTEMIS_ANIME4K_MODE, normalizeArtAnime4kMode(mode)).apply()
     fun normalizeArtAnime4kMode(mode: String?): String =
         mode?.trim()?.takeIf { it in ART_ANIME4K_MODES } ?: ART_ANIME4K_DEFAULT
 

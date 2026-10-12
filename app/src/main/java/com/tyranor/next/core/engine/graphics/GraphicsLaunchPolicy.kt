@@ -11,7 +11,7 @@ internal object GraphicsLaunchPolicy {
     /** Neutral expansion contract for hosts without a graphics settings family. */
     fun disabledExtras(): Map<String, Any> = extras(
         GraphicsSettings(enabled = false, chain = emptyList()),
-        GraphicsCapabilities(com.tyranor.next.core.settings.GraphicsInput.UNSUPPORTED),
+        GraphicsCapabilities(false),
     )
 
     fun extras(settings: GraphicsSettings, capability: GraphicsCapabilities): Map<String, Any> {

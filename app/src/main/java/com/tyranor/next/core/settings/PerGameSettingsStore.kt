@@ -170,12 +170,6 @@ object PerGameSettingsStore {
         return if (j.has(key)) j.optBoolean(key) else null
     }
 
-    /** 严格布尔覆盖：非法 JSON 类型也跟随全局，不将损坏值强制转换为 false。 */
-    fun getStrictBool(context: Context, gameId: String, key: String): Boolean? =
-        booleanOverride(load(context, gameId), key)
-
-    internal fun booleanOverride(json: JSONObject, key: String): Boolean? = json.opt(key) as? Boolean
-
     /** 设置字符串覆盖；value=null 表示移除该覆盖（跟随全局）。 */
     fun setStr(context: Context, gameId: String, key: String, value: String?) {
         if (gameId.isBlank()) return

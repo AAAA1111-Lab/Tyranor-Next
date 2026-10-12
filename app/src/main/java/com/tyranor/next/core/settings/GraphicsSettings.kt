@@ -2,6 +2,9 @@ package com.tyranor.next.core.settings
 
 import com.core.gl.GraphicsFilterChain
 import com.core.gl.GraphicsFilterDefinitions
+import com.core.gl.ArtemisLibraryIdentity
+import com.core.gl.KirikiroidLibraryIdentity
+import com.core.nativeplugin.NativePluginConstants
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -73,22 +76,37 @@ data class GraphicsOverride(
     val savedChain: List<GraphicsNode>? = null,
 )
 
-enum class GraphicsInput { UNSUPPORTED, SCREEN_FRAME, STAGE_FRAME }
-
-data class GraphicsCapabilities(val input: GraphicsInput) {
-    val supported: Boolean get() = input != GraphicsInput.UNSUPPORTED
-    val originalFrameScaling: Boolean get() = input == GraphicsInput.STAGE_FRAME
-
+/** UI and launch requests share the bridge's library-name gate; native installation still verifies Build IDs. */
+data class GraphicsCapabilities(val supported: Boolean) {
     companion object {
-        fun forRuntime(family: GraphicsFamily, kernel: String = "", version: String = ""): GraphicsCapabilities = GraphicsCapabilities(
-            when {
-                family == GraphicsFamily.KR && kernel == EngineSettingsStore.KERNEL_KIRIKIRI2 -> GraphicsInput.SCREEN_FRAME
-                family == GraphicsFamily.ARTEMIS && kernel == EngineSettingsStore.ART_KERNEL_OFFICIAL
-                    && version != EngineSettingsStore.ART_ENGINE_V2 -> GraphicsInput.STAGE_FRAME
-                family == GraphicsFamily.SIGLUS -> GraphicsInput.STAGE_FRAME
-                else -> GraphicsInput.UNSUPPORTED
-            },
-        )
+        fun forRuntime(family: GraphicsFamily, kernel: String = "", version: String = ""): GraphicsCapabilities {
+            val supported = when (family) {
+                GraphicsFamily.KR -> {
+                    val library = when (version) {
+                        "", EngineSettingsStore.KR_AUTO, EngineSettingsStore.KR_139 -> NativePluginConstants.LIB_GAME_139
+                        EngineSettingsStore.KR_134 -> NativePluginConstants.LIB_GAME_134
+                        EngineSettingsStore.KR_126 -> NativePluginConstants.LIB_GAME_126
+                        else -> null
+                    }
+                    kernel in setOf(EngineSettingsStore.KR_AUTO, EngineSettingsStore.KERNEL_KIRIKIRI2) &&
+                        KirikiroidLibraryIdentity.supports(library)
+                }
+                GraphicsFamily.ARTEMIS -> {
+                    val library = when (version) {
+                        "", EngineSettingsStore.ART_ENGINE_AUTO, EngineSettingsStore.ART_ENGINE_V1 -> NativePluginConstants.LIB_ARTEMIS
+                        EngineSettingsStore.ART_ENGINE_V2 -> NativePluginConstants.LIB_ARTEMIS_COMPATIBLE
+                        EngineSettingsStore.ART_ENGINE_V3 -> NativePluginConstants.LIB_ARTEMIS_COMPATIBLE_V2
+                        EngineSettingsStore.ART_ENGINE_V4 -> NativePluginConstants.LIB_ARTEMIS_V4
+                        EngineSettingsStore.ART_ENGINE_V5 -> NativePluginConstants.LIB_ARTEMIS_V5
+                        EngineSettingsStore.ART_ENGINE_V6 -> NativePluginConstants.LIB_ARTEMIS_V6
+                        else -> null
+                    }
+                    kernel == EngineSettingsStore.ART_KERNEL_OFFICIAL && ArtemisLibraryIdentity.supports(library)
+                }
+                GraphicsFamily.SIGLUS -> true
+            }
+            return GraphicsCapabilities(supported)
+        }
     }
 }
 

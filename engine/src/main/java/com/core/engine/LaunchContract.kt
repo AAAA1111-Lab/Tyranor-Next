@@ -79,7 +79,6 @@ object LaunchContract {
     // ---------- Artemis ----------
 
     /** Artemis clean 画质开关；官方内核保留请求值但不支持执行。 */
-    const val ARTEMIS_ANIME4K_ENABLED = "artemisAnime4kEnabled"
     const val ARTEMIS_AUTO_FALLBACK = "artemisAutoFallback"
     const val ARTEMIS_FALLBACK_STAGE = "artemisFallbackStage"
     const val ARTEMIS_CURRENT_VERSION = "artemisCurrentVersion"
