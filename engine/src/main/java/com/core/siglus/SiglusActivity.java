@@ -74,6 +74,7 @@ public final class SiglusActivity extends AppCompatActivity implements
     private static final long BACK_EXIT_WINDOW_MS = 2000L;
     private static final int MAX_FRAME_DT_MS = 250;
     private static final long FALLBACK_RETRY_MS = 1000L;
+    private static final int MAX_FALLBACK_RETRIES = 5;
 
     private FrameLayout rootLayout;
     private SurfaceView surfaceView;
@@ -94,6 +95,7 @@ public final class SiglusActivity extends AppCompatActivity implements
     private long lastBackMs = 0L;
     private boolean resumed, destroying, faulted, proxyPreparing, proxyAttached, proxyFailed;
     private boolean fallbackPending;
+    private int fallbackRetries;
     private boolean pointerActive;
     private double lastTouchX, lastTouchY;
     private SiglusGraphicsProxy graphicsProxy;
@@ -195,6 +197,7 @@ public final class SiglusActivity extends AppCompatActivity implements
     protected void onResume() {
         super.onResume();
         resumed = true;
+        fallbackRetries = 0; // A new foreground session permits another bounded recovery attempt.
         applyImmersive();
         if (graphicsProxy != null && proxyFailed) {
             restoreDirect(graphicsProxy);
@@ -426,6 +429,7 @@ public final class SiglusActivity extends AppCompatActivity implements
     private void restoreDirect(SiglusGraphicsProxy proxy) {
         if (graphicsProxy != proxy || destroying || fallbackPending) return;
         fallbackPending = true;
+        surfaceView.removeCallbacks(fallbackRetry);
         stopFrameLoop();
         cancelPointer();
         if (graphicsOverlay != null) { graphicsOverlay.hide(); graphicsOverlay = null; }
@@ -439,7 +443,6 @@ public final class SiglusActivity extends AppCompatActivity implements
             fallbackPending = false;
             if (handle == 0L) return;
             if (!detached) {
-                Log.e(TAG, "Display fallback is still pending; retaining Surface ownership and game state");
                 scheduleFallbackRetry();
                 return;
             }
@@ -447,11 +450,11 @@ public final class SiglusActivity extends AppCompatActivity implements
             if (!resumed || !holder.getSurface().isValid() || !NativeSiglus.setSurface(handle, holder.getSurface(),
                     surfaceWidth(holder), surfaceHeight(holder))) {
                 // Retry on a later Surface callback, preserving the producer and game VM.
-                Log.e(TAG, "Direct presentation unavailable; retaining producer and game state");
                 scheduleFallbackRetry();
                 return;
             }
             surfaceView.removeCallbacks(fallbackRetry);
+            fallbackRetries = 0;
             graphicsProxy = null;
             proxyAttached = proxyFailed = false;
             surfaceReady = true;
@@ -463,8 +466,18 @@ public final class SiglusActivity extends AppCompatActivity implements
 
     private void scheduleFallbackRetry() {
         surfaceView.removeCallbacks(fallbackRetry);
-        if (resumed && !destroying && surfaceView.getHolder().getSurface().isValid())
-            surfaceView.postDelayed(fallbackRetry, FALLBACK_RETRY_MS);
+        if (!resumed || destroying || !surfaceView.getHolder().getSurface().isValid()) return;
+        if (fallbackRetries >= MAX_FALLBACK_RETRIES) {
+            // Keep the VM and producer alive. A late owner-thread completion or
+            // a new lifecycle/Surface callback can resume without polling forever.
+            if (fallbackRetries == MAX_FALLBACK_RETRIES) {
+                Log.e(TAG, "Direct fallback retries exhausted; awaiting a new Surface or owner completion");
+                fallbackRetries++;
+            }
+            return;
+        }
+        if (fallbackRetries == 0) Log.w(TAG, "Direct fallback pending; retrying with bounded backoff");
+        surfaceView.postDelayed(fallbackRetry, FALLBACK_RETRY_MS << fallbackRetries++);
     }
 
     private void cancelPointer() {

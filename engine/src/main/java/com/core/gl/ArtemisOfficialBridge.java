@@ -68,6 +68,12 @@ public final class ArtemisOfficialBridge implements ArtemisPerformanceOverlay.So
         return current == null || current.disconnect();
     }
     public static void nativeStatus(int status) { state = status; }
+    /** Called only after native successfully binds official direct output. */
+    public static void directRestored() {
+        ArtemisOfficialSurfaceProxy current = proxy;
+        if (current != null) current.directRestored();
+        state = GraphicsStatus.WAITING;
+    }
     /** Called after NativeActivity.onDestroy joined its worker. */
     public static synchronized void close() {
         if (proxy != null) proxy.release();

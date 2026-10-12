@@ -27,7 +27,7 @@ StageDisplay stageDisplay = nullptr;
 JavaVM* vm = nullptr;
 jclass bridge = nullptr;
 jmethodID connectMethod = nullptr, submittedMethod = nullptr, healthyMethod = nullptr,
-        disconnectMethod = nullptr, resizeMethod = nullptr, statusMethod = nullptr;
+        disconnectMethod = nullptr, resizeMethod = nullptr, statusMethod = nullptr, directRestoredMethod = nullptr;
 struct Env {
     JNIEnv* value = nullptr; bool attached = false;
     Env() {
@@ -85,20 +85,31 @@ bool healthy() {
     Env env;if(!env.value)return false;
     bool result = env.value->CallStaticBooleanMethod(bridge,healthyMethod);return !env.clear() && result;
 }
+void directRestored() {
+    Env env;
+    if(env.value){env.value->CallStaticVoidMethod(bridge,directRestoredMethod);env.clear();}
+    status(5);
+}
+EGLSurface createDirectSurface(EGLDisplay display,EGLConfig config,EGLNativeWindowType window,const EGLint* attributes) {
+    EGLSurface result=eglCreateWindowSurface(display,config,window,attributes);
+    if(result!=EGL_NO_SURFACE){directOutput=true;gesture=false;directRestored();}
+    else status(3);
+    return result;
+}
 EGLSurface createSurface(EGLDisplay display,EGLConfig config,EGLNativeWindowType window,const EGLint* attributes) {
     if(!allowed || !surfaces.empty())return eglCreateWindowSurface(display,config,window,attributes);
     const char* extensions=eglQueryString(display,EGL_EXTENSIONS);
     if(!extensions || !std::strstr(extensions,"EGL_ANDROID_presentation_time")) {
-        status(3);return eglCreateWindowSurface(display,config,window,attributes);
+        status(3);return createDirectSurface(display,config,window,attributes);
     }
     presentationTime=reinterpret_cast<PFNEGLPRESENTATIONTIMEANDROIDPROC>(eglGetProcAddress("eglPresentationTimeANDROID"));
-    if(!presentationTime)return eglCreateWindowSurface(display,config,window,attributes);
-    Env env;if(!env.value)return eglCreateWindowSurface(display,config,window,attributes);
+    if(!presentationTime)return createDirectSurface(display,config,window,attributes);
+    Env env;if(!env.value)return createDirectSurface(display,config,window,attributes);
     auto* screen=reinterpret_cast<ANativeWindow*>(window);
     int width=ANativeWindow_getWidth(screen),height=ANativeWindow_getHeight(screen);
-    if(width<=0 || height<=0)return eglCreateWindowSurface(display,config,window,attributes);
+    if(width<=0 || height<=0)return createDirectSurface(display,config,window,attributes);
     jobject screenSurface=ANativeWindow_toSurface(env.value,screen);
-    if(!screenSurface || env.clear())return eglCreateWindowSurface(display,config,window,attributes);
+    if(!screenSurface || env.clear())return createDirectSurface(display,config,window,attributes);
     const bool stageTarget = stageTargetWidth > 0 && stageTargetHeight > 0;
     const int producerWidth = stageTarget ? stageTargetWidth : width;
     const int producerHeight = stageTarget ? stageTargetHeight : height;
@@ -106,22 +117,22 @@ EGLSurface createSurface(EGLDisplay display,EGLConfig config,EGLNativeWindowType
             width,height,producerWidth,producerHeight);
     env.value->DeleteLocalRef(screenSurface);
     if(env.clear() || !source) {
-        return disconnect() ? eglCreateWindowSurface(display,config,window,attributes) : EGL_NO_SURFACE;
+        return disconnect() ? createDirectSurface(display,config,window,attributes) : EGL_NO_SURFACE;
     }
     ANativeWindow* producer=ANativeWindow_fromSurface(env.value,source);
     env.value->DeleteLocalRef(source);
     if(!producer || env.clear()) {
-        return disconnect() ? eglCreateWindowSurface(display,config,window,attributes) : EGL_NO_SURFACE;
+        return disconnect() ? createDirectSurface(display,config,window,attributes) : EGL_NO_SURFACE;
     }
     EGLint format=0;
     if(!eglGetConfigAttrib(display,config,EGL_NATIVE_VISUAL_ID,&format) ||
        ANativeWindow_setBuffersGeometry(producer,producerWidth,producerHeight,format)!=0) {
         ANativeWindow_release(producer);
-        return disconnect() ? eglCreateWindowSurface(display,config,window,attributes) : EGL_NO_SURFACE;
+        return disconnect() ? createDirectSurface(display,config,window,attributes) : EGL_NO_SURFACE;
     }
     EGLSurface result=eglCreateWindowSurface(display,config,producer,attributes);
     if(result==EGL_NO_SURFACE){ANativeWindow_release(producer);
-        return disconnect() ? eglCreateWindowSurface(display,config,window,attributes) : EGL_NO_SURFACE;}
+        return disconnect() ? createDirectSurface(display,config,window,attributes) : EGL_NO_SURFACE;}
     ANativeWindow_acquire(screen);
     surfaces.emplace(result,SurfaceState{result,config,screen,producer,false,producerWidth,producerHeight});
     screenWidth=width;screenHeight=height;directOutput=false;
@@ -140,7 +151,11 @@ EGLBoolean makeCurrent(EGLDisplay display,EGLSurface draw,EGLSurface read,EGLCon
 }
 EGLBoolean destroySurface(EGLDisplay display,EGLSurface surface) {
     auto found=surfaces.find(surface);
-    if(found==surfaces.end())return eglDestroySurface(display,surface);
+    if(found==surfaces.end()) {
+        EGLBoolean destroyed=eglDestroySurface(display,surface);
+        if(destroyed && allowed && surfaces.empty())status(5);
+        return destroyed;
+    }
     SurfaceState& state=found->second;
     if(!eglDestroySurface(display,state.actual))return EGL_FALSE;
     const bool disconnected=disconnect();
@@ -159,7 +174,8 @@ bool restoreDirect(EGLDisplay display,SurfaceState& state) {
     if(!eglMakeCurrent(display,restored,restored,context)){eglDestroySurface(display,restored);return false;}
     eglDestroySurface(display,state.actual);
     state.actual=restored;state.direct=true;directOutput=true;gesture=false;
-    status(3);
+    // The proxy failure remains latched, but direct output is healthy and has no filtered data.
+    directRestored();
     __android_log_print(ANDROID_LOG_WARN,"ArtemisOfficial","Consumer unavailable; restored official direct output without restarting VM");
     return true;
 }
@@ -335,6 +351,7 @@ bool installArtemisOfficialGraphics(void* handle,ANativeActivity* activity,const
         return result;
     };
     statusMethod = method("nativeStatus", "(I)V");
+    directRestoredMethod = method("directRestored", "()V");
     auto failed = [&]() {
         if (env->ExceptionCheck()) env->ExceptionClear();
         if (statusMethod) {
@@ -344,7 +361,7 @@ bool installArtemisOfficialGraphics(void* handle,ANativeActivity* activity,const
         env->DeleteLocalRef(cls);
         return false;
     };
-    if (!statusMethod) return failed();
+    if (!statusMethod || !directRestoredMethod) return failed();
     stageDisplay = reinterpret_cast<StageDisplay>(dlsym(handle, kDisplay));
     Dl_info info{};
     if (!stageDisplay || !dladdr(reinterpret_cast<void*>(stageDisplay), &info)) return failed();

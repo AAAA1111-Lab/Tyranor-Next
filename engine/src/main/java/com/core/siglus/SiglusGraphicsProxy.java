@@ -22,6 +22,8 @@ import com.core.gl.ArtemisPerformanceOverlay;
 import com.core.gl.GraphicsFilterChain;
 import com.core.gl.GraphicsFilterPipeline;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.Consumer;
 
 /**
@@ -40,6 +42,27 @@ final class SiglusGraphicsProxy implements ArtemisPerformanceOverlay.Source {
     private static final String TAG = "SiglusGraphics";
     private static final long DISCONNECT_TIMEOUT_MS = 4000L;
     private static final long RELEASE_RETRY_MS = 1000L;
+    private static final int MAX_RELEASE_ATTEMPTS = 5;
+    // Permanent driver failures retain only resources until process exit, never
+    // the proxy's Listener (which can own an Activity) or its worker thread.
+    private static final List<HandleOwner> RETAINED_HANDLES = new ArrayList<>();
+    private static final class HandleOwner {
+        final EGLDisplay display;
+        final EGLContext context;
+        final EGLSurface parking, output;
+        final GraphicsFilterPipeline pipeline;
+        final Surface producer;
+        final SurfaceTexture texture;
+        final int[] glNames;
+        final boolean initialized;
+        HandleOwner(SiglusGraphicsProxy proxy) {
+            display = proxy.display; context = proxy.eglContext; initialized = proxy.initialized;
+            parking = proxy.parking; output = proxy.output; pipeline = proxy.pipeline;
+            producer = proxy.producer; texture = proxy.texture;
+            glNames = new int[]{proxy.oesProgram, proxy.copyProgram, proxy.inputFbo,
+                    proxy.inputTexture, proxy.oes, proxy.vao};
+        }
+    }
     private static final String VERTEX = "#version 300 es\n"
             + "out vec2 uv; void main(){ vec2 p=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));"
             + "uv=p; gl_Position=vec4(p*2.0-1.0,0.0,1.0); }";
@@ -56,7 +79,7 @@ final class SiglusGraphicsProxy implements ArtemisPerformanceOverlay.Source {
     private final GraphicsFilterChain chain;
     private final int stageWidth, stageHeight;
     private final boolean analyzerRequested;
-    private final Listener listener;
+    private volatile Listener listener;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final HandlerThread thread = new HandlerThread("Siglus-GLES");
     private final Handler worker;
@@ -82,15 +105,16 @@ final class SiglusGraphicsProxy implements ArtemisPerformanceOverlay.Source {
     private int transformLocation;
     private boolean hasImage, frameQueued;
     private volatile long attachedGeneration;
-    private boolean firstPresented, initialized, releaseDeferredLogged;
+    private boolean firstPresented, initialized;
+    private int releaseAttempts;
     // Activity-thread state; a timed-out request stays in flight on the worker.
     private boolean detachPending;
     private Consumer<Boolean> detachCompletion;
     private final Runnable detachTimeout = () -> {
         Consumer<Boolean> completion = detachCompletion;
-        detachCompletion = null;
         if (!closed && completion != null) {
-            fail(new IllegalStateException("Display disconnection timed out"));
+            // Keep this observer for a late success after Activity retry exhaustion.
+            // Only the owner worker can prove the window has disconnected.
             completion.accept(false);
         }
     };
@@ -111,7 +135,7 @@ final class SiglusGraphicsProxy implements ArtemisPerformanceOverlay.Source {
                 initialize();
                 // Rust still owns the display producer. The Activity switches
                 // it to our producer before asking us to connect the display.
-                main.post(() -> { if (!closed && !terminalFailure) listener.onPrepared(this, producer); });
+                main.post(() -> { if (!closed && !terminalFailure && listener != null) listener.onPrepared(this, producer); });
             } catch (RuntimeException failure) { fail(failure); }
         });
     }
@@ -134,7 +158,7 @@ final class SiglusGraphicsProxy implements ArtemisPerformanceOverlay.Source {
             try {
                 if (!attach(screen, width, height, generation)) return;
                 main.post(() -> { if (!closed && !terminalFailure && outputWanted
-                        && outputGeneration == generation) listener.onOutputReady(this); });
+                        && outputGeneration == generation && listener != null) listener.onOutputReady(this); });
                 if (hasImage) draw();
             } catch (RuntimeException failure) { fail(failure); }
         });
@@ -148,7 +172,10 @@ final class SiglusGraphicsProxy implements ArtemisPerformanceOverlay.Source {
     /** Stops new swaps immediately; queued GL work parks without blocking Activity callbacks. */
     void detachOutput() { detachOutput(null); }
 
-    /** Completion runs on the Activity thread after the display producer has disconnected. */
+    /**
+     * Completion runs on the Activity thread. A timeout reports false; the same
+     * observer may later receive the worker result without another detach request.
+     */
     void detachOutput(Consumer<Boolean> completion) {
         nextOutput(false);
         if (closed) { if (completion != null) completion.accept(false);return; }
@@ -296,6 +323,8 @@ final class SiglusGraphicsProxy implements ArtemisPerformanceOverlay.Source {
 
     private boolean detach() {
         if (display == EGL14.EGL_NO_DISPLAY) return true;
+        // detach may follow a partial dispose: it only touches display/output,
+        // never released producer textures or pipeline objects.
         // Destroying a current EGLSurface defers disconnection. Confirm that
         // it is no longer current before allowing Rust to connect this queue.
         if (!makeCurrent(parking) && !EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE,
@@ -348,7 +377,7 @@ final class SiglusGraphicsProxy implements ArtemisPerformanceOverlay.Source {
         if (!EGL14.eglSwapBuffers(display, output)) throw new IllegalStateException("Display swap failed");
         if (!firstPresented) {
             firstPresented = true;
-            main.post(() -> { if (!closed) listener.onFirstFrame(this); });
+            main.post(() -> { if (!closed && listener != null) listener.onFirstFrame(this); });
         }
         if (analyzerRequested) {
             stats.frame(stageWidth, stageHeight, outWidth, outHeight, v.width, v.height);
@@ -408,64 +437,88 @@ final class SiglusGraphicsProxy implements ArtemisPerformanceOverlay.Source {
         if (closed || terminalFailure) return;
         terminalFailure = true; status = GraphicsStatus.NATIVE_FAILED;
         Log.e(TAG, "Proxy failed; engine owner will restore direct presentation", failure);
-        main.post(() -> { if (!closed) listener.onFailure(this, failure); });
+        main.post(() -> { if (!closed && listener != null) listener.onFailure(this, failure); });
     }
 
     /** Call only after Rust has stopped using the producer Surface. */
     void release() {
         if (closed) return;
         closed = true; rawVerified = false; nextOutput(false);
+        listener = null;
         main.removeCallbacks(detachTimeout);
         detachCompletion = null;
         worker.post(this::finishRelease);
     }
 
     private void finishRelease() {
-        if (dispose()) { thread.quitSafely();return; }
-        if (!releaseDeferredLogged) {
-            releaseDeferredLogged = true;
-            Log.w(TAG, "EGL cleanup deferred until owned surfaces can disconnect");
+        boolean lastAttempt = ++releaseAttempts >= MAX_RELEASE_ATTEMPTS;
+        boolean disposed = false;
+        try { disposed = dispose(); }
+        catch (RuntimeException failure) {
+            if (releaseAttempts == 1) Log.w(TAG, "EGL cleanup failed", failure);
         }
-        worker.postDelayed(this::finishRelease, RELEASE_RETRY_MS);
+        if (disposed) { thread.quitSafely();return; }
+        if (lastAttempt) {
+            // The worker may exit, but a failed EGL unbind must not transfer
+            // native-window ownership to another thread or force-release it.
+            synchronized (RETAINED_HANDLES) { RETAINED_HANDLES.add(new HandleOwner(this)); }
+            worker.removeCallbacksAndMessages(null);
+            Log.w(TAG, "EGL cleanup exhausted; retaining driver handles until process exit");
+            thread.quitSafely();
+        } else {
+            if (releaseAttempts == 1) Log.w(TAG, "EGL cleanup deferred; retrying with bounded backoff");
+            worker.postDelayed(this::finishRelease, RELEASE_RETRY_MS << (releaseAttempts - 1));
+        }
+    }
+
+    private void deleteGlResources() {
+        if (pipeline != null) { pipeline.release();pipeline = null; }
+        if (oesProgram != 0) GLES30.glDeleteProgram(oesProgram);
+        if (copyProgram != 0) GLES30.glDeleteProgram(copyProgram);
+        scratch[0] = inputFbo; GLES30.glDeleteFramebuffers(1, scratch, 0);
+        scratch[0] = inputTexture; GLES30.glDeleteTextures(1, scratch, 0);
+        scratch[0] = oes; GLES30.glDeleteTextures(1, scratch, 0);
+        scratch[0] = vao; GLES30.glDeleteVertexArrays(1, scratch, 0);
+        oesProgram = copyProgram = inputFbo = inputTexture = oes = vao = 0;
+    }
+
+    private void contextDestroyed() {
+        // If makeCurrent fails these names/pipeline stay pending for a retry.
+        // Confirmed context destruction is the fallback that reclaims all of them.
+        if (pipeline != null) { pipeline.abandonContext();pipeline = null; }
+        oesProgram = copyProgram = inputFbo = inputTexture = oes = vao = 0;
     }
 
     private boolean dispose() {
-        boolean current = display != EGL14.EGL_NO_DISPLAY && makeCurrent(parking);
         if (texture != null) texture.setOnFrameAvailableListener(null);
-        if (producer != null) producer.release();
-        if (texture != null) texture.release();
-        producer = null; texture = null;
-        if (pipeline != null) { if (current) pipeline.release(); else pipeline.abandonContext();pipeline = null; }
-        if (current) {
-            if (oesProgram != 0) GLES30.glDeleteProgram(oesProgram);
-            if (copyProgram != 0) GLES30.glDeleteProgram(copyProgram);
-            scratch[0] = inputFbo; GLES30.glDeleteFramebuffers(1, scratch, 0);
-            scratch[0] = inputTexture; GLES30.glDeleteTextures(1, scratch, 0);
-            scratch[0] = oes; GLES30.glDeleteTextures(1, scratch, 0);
-            scratch[0] = vao; GLES30.glDeleteVertexArrays(1, scratch, 0);
-        }
-        oesProgram = copyProgram = inputFbo = inputTexture = oes = vao = 0;
+        if (producer != null) { producer.release();producer = null; }
+        if (texture != null) { texture.release();texture = null; }
+        boolean current = display != EGL14.EGL_NO_DISPLAY && makeCurrent(parking);
+        if (current) deleteGlResources();
         if (display != EGL14.EGL_NO_DISPLAY) {
             boolean unbound = EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE,
                     EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);
             boolean released = EGL14.eglReleaseThread();
             if (!unbound && !released) return false;
-            if (output != EGL14.EGL_NO_SURFACE) {
-                if (!EGL14.eglDestroySurface(display, output)) return false;
+            // The holder's display Surface is borrowed, so only EGL's window
+            // reference is destroyed here; Java must not release the holder.
+            if (output != EGL14.EGL_NO_SURFACE && EGL14.eglDestroySurface(display, output))
                 output = EGL14.EGL_NO_SURFACE;
-            }
-            if (parking != EGL14.EGL_NO_SURFACE) {
-                if (!EGL14.eglDestroySurface(display, parking)) return false;
+            if (parking != EGL14.EGL_NO_SURFACE && EGL14.eglDestroySurface(display, parking))
                 parking = EGL14.EGL_NO_SURFACE;
-            }
-            if (eglContext != EGL14.EGL_NO_CONTEXT) {
-                if (!EGL14.eglDestroyContext(display, eglContext)) return false;
+            if (eglContext != EGL14.EGL_NO_CONTEXT && EGL14.eglDestroyContext(display, eglContext)) {
                 eglContext = EGL14.EGL_NO_CONTEXT;
+                contextDestroyed();
             }
+            boolean handlesGone = output == EGL14.EGL_NO_SURFACE && parking == EGL14.EGL_NO_SURFACE
+                    && eglContext == EGL14.EGL_NO_CONTEXT;
+            if (!handlesGone) return false;
+            // The default EGLDisplay can have other initialize references. A
+            // successful terminate does not prove our failed destroys completed.
             if (initialized && !EGL14.eglTerminate(display)) return false;
             initialized = false;
             display = EGL14.EGL_NO_DISPLAY;
-        }
+        } else contextDestroyed();
         stats.reset();
         return true;
     }

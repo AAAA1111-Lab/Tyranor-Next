@@ -12,7 +12,9 @@ import android.opengl.GLES30;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.view.Surface;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -23,6 +25,27 @@ import java.util.concurrent.atomic.AtomicReference;
 final class ArtemisOfficialSurfaceProxy {
     private static final long WORKER_WAIT_SECONDS = 4L;
     private static final long RELEASE_RETRY_MS = 1000L;
+    private static final int MAX_RELEASE_ATTEMPTS = 5;
+    // Only unrecoverable driver failures reach this collection. Retain resource
+    // ownership until process exit without retaining a proxy, Activity or thread.
+    private static final List<HandleOwner> RETAINED_HANDLES = new ArrayList<>();
+    private static final class HandleOwner {
+        final EGLDisplay display;
+        final EGLContext context;
+        final EGLSurface parking, output;
+        final GraphicsFilterPipeline pipeline;
+        final Surface producer, screen;
+        final SurfaceTexture texture;
+        final int[] glNames;
+        final boolean initialized;
+        HandleOwner(ArtemisOfficialSurfaceProxy proxy) {
+            display = proxy.display; context = proxy.eglContext; initialized = proxy.initialized;
+            parking = proxy.parking; output = proxy.output; pipeline = proxy.pipeline;
+            producer = proxy.producer; screen = proxy.screen; texture = proxy.texture;
+            glNames = new int[]{proxy.oesProgram, proxy.copyProgram, proxy.fbo,
+                    proxy.input, proxy.oes, proxy.vao};
+        }
+    }
     private static final String VERTEX = "#version 300 es\n"
             + "out vec2 uv; void main(){vec2 p=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));"
             + "uv=p;gl_Position=vec4(p*2.0-1.0,0.0,1.0);}";
@@ -48,9 +71,9 @@ final class ArtemisOfficialSurfaceProxy {
     private final Map<Long, Frame> frames = new LinkedHashMap<>();
     private final int[] scratch = new int[1];
     private final float[] transform = new float[16];
-    private volatile boolean closed, failed, outputWanted, workerTimedOut;
+    private volatile boolean closed, failed, outputWanted, workerTimedOut, directOutput;
     private Disconnect pendingDisconnect; // Accessed under this instance's monitor.
-    private boolean releaseDeferredLogged; // GLES-thread state only.
+    private int releaseAttempts; // GLES-thread state only.
     private volatile int state = GraphicsStatus.WAITING;
     private EGLDisplay display = EGL14.EGL_NO_DISPLAY;
     private EGLContext eglContext = EGL14.EGL_NO_CONTEXT;
@@ -64,7 +87,7 @@ final class ArtemisOfficialSurfaceProxy {
     private boolean queued, initialized;
 
     ArtemisOfficialSurfaceProxy(Context context, GraphicsFilterChain chain, boolean analyzer) {
-        this.context=context;this.chain=chain;this.analyzer=analyzer;
+        this.context=context.getApplicationContext();this.chain=chain;this.analyzer=analyzer;
         thread.start();worker=new Handler(thread.getLooper());
     }
     Surface connect(Surface nextScreen, int width, int height, int producerWidth, int producerHeight) {
@@ -92,7 +115,7 @@ final class ArtemisOfficialSurfaceProxy {
                 output=EGL14.eglCreateWindowSurface(display,config,screen,new int[]{EGL14.EGL_NONE},0);
                 if (output==EGL14.EGL_NO_SURFACE || !current(output)) throw new IllegalStateException("Display unavailable");
                 if (cancelled.get() || closed || failed) throw new IllegalStateException("Consumer unavailable");
-                EGL14.eglSwapInterval(display,0);stats.surface(width,height);outputWanted=true;
+                EGL14.eglSwapInterval(display,0);stats.surface(width,height);directOutput=false;outputWanted=true;
                 result.set(producer);
             } catch (RuntimeException failure) {
                 error.set(failure);fail(failure);
@@ -151,7 +174,18 @@ final class ArtemisOfficialSurfaceProxy {
     }
     boolean failed() { return failed || closed; }
     ArtemisGraphicsStats stats() { return stats; }
-    int status() { return !outputWanted ? (failed ? GraphicsStatus.NATIVE_FAILED : GraphicsStatus.WAITING) : state; }
+    int status() {
+        if (directOutput) return GraphicsStatus.WAITING;
+        return !outputWanted ? (failed ? GraphicsStatus.NATIVE_FAILED : GraphicsStatus.WAITING) : state;
+    }
+    /** Called only after native confirms that direct presentation replaced this consumer. */
+    void directRestored() {
+        outputWanted = false;
+        directOutput = true;
+        state = GraphicsStatus.WAITING;
+        stats.reset();
+        // Keep failed latched: a recovered direct output must not reuse a failed consumer.
+    }
     synchronized boolean disconnect() {
         outputWanted=false;
         if (pendingDisconnect != null && pendingDisconnect.done.getCount() == 0
@@ -167,6 +201,7 @@ final class ArtemisOfficialSurfaceProxy {
         }
         // A timed-out job still owns EGL and its Surface. Poll one queued
         // disconnection instead of waiting another four seconds on every swap.
+        // workerTimedOut is deliberately latched for this consumer's lifetime.
         if (!workerTimedOut && !await(pendingDisconnect.done)) {
             workerTimedOut=true;failed=true;state=GraphicsStatus.NATIVE_FAILED;
         }
@@ -269,9 +304,13 @@ final class ArtemisOfficialSurfaceProxy {
     private boolean detach(){
         if(display==EGL14.EGL_NO_DISPLAY)return true;
         if(!current(parking)&&!EGL14.eglMakeCurrent(display,EGL14.EGL_NO_SURFACE,EGL14.EGL_NO_SURFACE,EGL14.EGL_NO_CONTEXT))return false;
+        // detach may run after a partial dispose: it accesses only display,
+        // output and screen, never released producer textures or pipeline objects.
+        // EGL holds its own native-window reference once creation has succeeded.
+        if(screen!=null){screen.release();screen=null;}
         if(output!=EGL14.EGL_NO_SURFACE&&!EGL14.eglDestroySurface(display,output))return false;
         output=EGL14.EGL_NO_SURFACE;
-        if(screen!=null)screen.release();screen=null;return true;
+        return true;
     }
     private static void parameters(int target){
         GLES30.glTexParameteri(target,GLES30.GL_TEXTURE_MIN_FILTER,GLES30.GL_LINEAR);GLES30.glTexParameteri(target,GLES30.GL_TEXTURE_MAG_FILTER,GLES30.GL_LINEAR);
@@ -297,44 +336,72 @@ final class ArtemisOfficialSurfaceProxy {
         worker.post(this::finishRelease);
     }
     private void finishRelease() {
-        if (dispose()) { thread.quitSafely();return; }
-        if (!releaseDeferredLogged) {
-            releaseDeferredLogged=true;
-            android.util.Log.w("ArtemisOfficial", "EGL cleanup deferred until owned surfaces can disconnect");
+        boolean lastAttempt = ++releaseAttempts >= MAX_RELEASE_ATTEMPTS;
+        boolean disposed = false;
+        try { disposed = dispose(); }
+        catch (RuntimeException failure) {
+            if (releaseAttempts == 1) android.util.Log.w("ArtemisOfficial", "EGL cleanup failed", failure);
         }
-        // Only this owner thread retries cleanup; no other thread releases a
-        // window that may still be current after a driver failure.
-        worker.postDelayed(this::finishRelease, RELEASE_RETRY_MS);
+        if (disposed) { thread.quitSafely();return; }
+        if (lastAttempt) {
+            // No foreign thread may destroy resources whose unbinding failed.
+            // Stop automatic work, retaining the handles without retaining this owner.
+            synchronized (RETAINED_HANDLES) { RETAINED_HANDLES.add(new HandleOwner(this)); }
+            worker.removeCallbacksAndMessages(null);
+            synchronized (this) {
+                if (pendingDisconnect != null) pendingDisconnect.done.countDown();
+            }
+            android.util.Log.w("ArtemisOfficial", "EGL cleanup exhausted; retaining driver handles until process exit");
+            thread.quitSafely();
+        } else {
+            if (releaseAttempts == 1) android.util.Log.w("ArtemisOfficial", "EGL cleanup deferred; retrying with bounded backoff");
+            worker.postDelayed(this::finishRelease, RELEASE_RETRY_MS << (releaseAttempts - 1));
+        }
+    }
+    private void deleteGlResources() {
+        if(pipeline!=null){pipeline.release();pipeline=null;}
+        if(oesProgram!=0)GLES30.glDeleteProgram(oesProgram);
+        if(copyProgram!=0)GLES30.glDeleteProgram(copyProgram);
+        scratch[0]=fbo;GLES30.glDeleteFramebuffers(1,scratch,0);
+        scratch[0]=input;GLES30.glDeleteTextures(1,scratch,0);
+        scratch[0]=oes;GLES30.glDeleteTextures(1,scratch,0);
+        scratch[0]=vao;GLES30.glDeleteVertexArrays(1,scratch,0);
+        oesProgram=copyProgram=fbo=input=oes=vao=0;
+    }
+    private void contextDestroyed() {
+        // A failed makeCurrent keeps names/pipeline pending for the next attempt.
+        // Once the context is destroyed EGL has reclaimed their GL resources.
+        if(pipeline!=null){pipeline.abandonContext();pipeline=null;}
+        oesProgram=copyProgram=fbo=input=oes=vao=0;
     }
     private boolean dispose(){
-        boolean live=display!=EGL14.EGL_NO_DISPLAY&&current(parking);
         if(texture!=null)texture.setOnFrameAvailableListener(null);
         if(producer!=null){producer.release();producer=null;}
         if(texture!=null){texture.release();texture=null;}
-        if(pipeline!=null){if(live)pipeline.release();else pipeline.abandonContext();pipeline=null;}
-        if(live){GLES30.glDeleteProgram(oesProgram);GLES30.glDeleteProgram(copyProgram);
-            scratch[0]=fbo;GLES30.glDeleteFramebuffers(1,scratch,0);scratch[0]=input;GLES30.glDeleteTextures(1,scratch,0);
-            scratch[0]=oes;GLES30.glDeleteTextures(1,scratch,0);scratch[0]=vao;GLES30.glDeleteVertexArrays(1,scratch,0);}
-        oesProgram=copyProgram=fbo=input=oes=vao=0;
+        boolean live=display!=EGL14.EGL_NO_DISPLAY&&current(parking);
+        if(live)deleteGlResources();
         if(display!=EGL14.EGL_NO_DISPLAY){
             boolean unbound=EGL14.eglMakeCurrent(display,EGL14.EGL_NO_SURFACE,EGL14.EGL_NO_SURFACE,EGL14.EGL_NO_CONTEXT);
             boolean released=EGL14.eglReleaseThread();
             if(!unbound&&!released)return false;
-            if(output!=EGL14.EGL_NO_SURFACE){
-                if(!EGL14.eglDestroySurface(display,output))return false;
-                output=EGL14.EGL_NO_SURFACE;
-            }
+            // Release our Java reference as soon as EGL is no longer using the
+            // window as current, even if subsequent eglDestroySurface fails.
             if(screen!=null){screen.release();screen=null;}
-            if(parking!=EGL14.EGL_NO_SURFACE){
-                if(!EGL14.eglDestroySurface(display,parking))return false;
-                parking=EGL14.EGL_NO_SURFACE;
+            if(output!=EGL14.EGL_NO_SURFACE&&EGL14.eglDestroySurface(display,output))output=EGL14.EGL_NO_SURFACE;
+            if(parking!=EGL14.EGL_NO_SURFACE&&EGL14.eglDestroySurface(display,parking))parking=EGL14.EGL_NO_SURFACE;
+            if(eglContext!=EGL14.EGL_NO_CONTEXT&&EGL14.eglDestroyContext(display,eglContext)){
+                eglContext=EGL14.EGL_NO_CONTEXT;contextDestroyed();
             }
-            if(eglContext!=EGL14.EGL_NO_CONTEXT){
-                if(!EGL14.eglDestroyContext(display,eglContext))return false;
-                eglContext=EGL14.EGL_NO_CONTEXT;
-            }
+            boolean handlesGone=output==EGL14.EGL_NO_SURFACE&&parking==EGL14.EGL_NO_SURFACE&&eglContext==EGL14.EGL_NO_CONTEXT;
+            if(!handlesGone)return false;
+            // Android reference-counts the shared default display. Terminate only
+            // balances our initialize; success does not prove failed destroys completed.
             if(initialized&&!EGL14.eglTerminate(display))return false;
-            initialized=false;display=EGL14.EGL_NO_DISPLAY;
+            initialized=false;
+            display=EGL14.EGL_NO_DISPLAY;
+        } else {
+            if(screen!=null){screen.release();screen=null;}
+            contextDestroyed();
         }
         synchronized(frames){frames.clear();}stats.reset();
         return true;
