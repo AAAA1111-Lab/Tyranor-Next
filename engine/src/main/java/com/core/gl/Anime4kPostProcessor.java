@@ -305,7 +305,7 @@ public final class Anime4kPostProcessor {
             runScale(mScaleOnly ? textureId : mRestore.texture[0],
                     mScaleOnly ? width : mRestore.width, mScaleOnly ? height : mRestore.height);
             // Report this node's drawing errors before the next node opens its own boundary.
-            requireGlSuccess("filter node drawing");
+            requireGlSuccess("filter node drawing", false);
             mBypassReason = BYPASS_NONE;
             return mOutput.texture[0];
         } catch (TargetUnavailableException unavailable) {
@@ -562,9 +562,16 @@ public final class Anime4kPostProcessor {
     }
 
     private static void requireGlSuccess(String operation) {
+        requireGlSuccess(operation, true);
+    }
+
+    private static void requireGlSuccess(String operation, boolean targetFailure) {
         int error = GLES30.glGetError();
-        if (error != GLES30.GL_NO_ERROR)
-            throw new TargetUnavailableException(operation + ": GL error 0x" + Integer.toHexString(error));
+        if (error == GLES30.GL_NO_ERROR) return;
+        String detail = operation + ": GL error 0x" + Integer.toHexString(error);
+        if (targetFailure) throw new TargetUnavailableException(detail);
+        // Drawing failures are pipeline errors, not a reusable target-size rejection.
+        throw new IllegalStateException(detail);
     }
 
     private TexFbo createTexFbo(int width, int height, boolean halfFloat) {
@@ -871,7 +878,7 @@ public final class Anime4kPostProcessor {
             GLES30.glActiveTexture(GLES30.GL_TEXTURE0); GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texture);
             GLES30.glBindSampler(0, mSampler[0]); GLES30.glUniform1i(mPresentSamplerLoc, 0);
             GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4);
-            requireGlSuccess("filter presentation");
+            requireGlSuccess("filter presentation", false);
         } finally { mState.restore(); }
     }
     private void prepareDrawState() {
