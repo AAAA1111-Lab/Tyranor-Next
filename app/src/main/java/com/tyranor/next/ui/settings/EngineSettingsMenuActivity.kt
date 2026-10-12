@@ -50,7 +50,7 @@ class EngineSettingsMenuActivity : AppScreenActivity() {
     }
 }
 
-/** 引擎设置入口页：顶部栏遵循 AGENT.md 页面顶部栏统一规范，正文聚合各引擎细分设置入口。 */
+/** 引擎设置入口页：顶部栏遵循 AGENTS.md 页面顶部栏统一规范，正文聚合各引擎细分设置入口。 */
 @Composable
 internal fun EngineSettingsMenuScreen() {
     val ctx = LocalContext.current

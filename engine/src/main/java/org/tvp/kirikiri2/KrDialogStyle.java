@@ -24,7 +24,7 @@ import com.core.engine.LaunchContract;
  * <p>从启动 Activity 的 Intent extras 读取主题色（由 LauncherUiBridge.appendEngineThemeExtras
  * 注入），使引擎弹窗在视觉上与 Launcher 主题一致。无 extras 时回退到 Material 深色默认值。</p>
  *
- * <p>样式规格遵循 agent.md：20dp 卡片圆角、20dp 按钮圆角、16sp bold 标题、
+ * <p>样式规格遵循 AGENTS.md：20dp 卡片圆角、20dp 按钮圆角、16sp bold 标题、
  * 12sp muted 正文、13sp bold 按钮、38dp 按钮高度。</p>
  */
 public final class KrDialogStyle {
@@ -39,7 +39,7 @@ public final class KrDialogStyle {
     private static final int FALLBACK_INPUT_TEXT    = 0xFFFFFFFF;
     private static final int FALLBACK_INPUT_HINT    = 0xFF808080;
 
-    // --- 尺寸常量（agent.md） ---
+    // --- 尺寸常量（AGENTS.md） ---
     private static final float CARD_RADIUS_DP   = 20f;
     private static final float BUTTON_RADIUS_DP = 20f;
     private static final float INPUT_RADIUS_DP  = 8f;

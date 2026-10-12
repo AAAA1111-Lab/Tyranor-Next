@@ -24,7 +24,7 @@ import androidx.compose.ui.unit.dp
 import com.tyranor.next.theme.AppComponentShape
 
 /**
- * 页内无按压反馈按钮（配合 AGENT.md「弹窗点击反馈统一规范」的同一意图）。
+ * 页内无按压反馈按钮（配合 AGENTS.md「弹窗点击反馈统一规范」的同一意图）。
  *
  * `AppScreenScaffold` 的 `WithoutPressIndication` 只影响走 `LocalIndication` 的组件；
  * Material3 的 `Button` / `TextButton` 内部显式使用 `ripple()`，不经过 `LocalIndication`，

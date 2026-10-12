@@ -18,7 +18,7 @@ import com.tyranor.next.theme.AppComponentShape
 import com.tyranor.next.theme.TextColor
 
 /**
- * 弹窗点击反馈规范（AGENT.md「弹窗点击反馈统一规范」）：
+ * 弹窗点击反馈规范（AGENTS.md「弹窗点击反馈统一规范」）：
  * 弹窗内的所有按钮与组件不得使用任何点击/按压反馈效果（涟漪、缩放、高亮等）。
  */
 

@@ -858,7 +858,7 @@ internal fun GameActionsSheet(
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         // 关闭抽屉拖拽手势：M3 默认「位移 > 56dp 或速度 > 125dp/s」即关闭，用户快速滑动内容时
         // 极易误关（列表到顶后的剩余手势/惯性会转交抽屉）。关闭后仅能通过遮罩/返回键关闭，
-        // 内容滚动与点击不受影响。参见 AGENT.md「游戏操作抽屉」约定。
+        // 内容滚动与点击不受影响。参见 AGENTS.md「游戏操作抽屉」约定。
         sheetGesturesEnabled = false,
         // 高级玻璃面板底色透明，取色渐变画在内容层（不能挂 Surface 外层 modifier：
         // 抽屉位置由内部 anchors 布局偏移决定，外层绘制会落在未偏移位置，与玻璃描边踩过同一个坑）；
@@ -1853,7 +1853,7 @@ internal fun GameCard(
                     modifier = Modifier.fillMaxSize().graphicsLayer { alpha = coverAlpha },
                 )
                 // 左上角引擎类型角标：开关开启且实际渲染封面的卡片才显示（无封面占位卡不显示）；
-                // 尺寸为标注规格（labelSmall 11sp + 边距减半，AGENT.md 明文豁免）
+                // 尺寸为标注规格（labelSmall 11sp + 边距减半，AGENTS.md 明文豁免）
                 if (showEngineBadge) Text(
                     game.engine.abbr,
                     style = MaterialTheme.typography.labelSmall,
