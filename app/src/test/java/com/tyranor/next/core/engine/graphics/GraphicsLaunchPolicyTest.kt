@@ -10,7 +10,7 @@ class GraphicsLaunchPolicyTest {
     private val saved = GraphicsSettings(true, listOf(GraphicsNode("m"), GraphicsNode("deblur", false), GraphicsNode("lanczos")), true)
 
     @Test fun supportedActualExtrasPreserveOrderAndPauseAndEnableAnalyzer() {
-        val extras = GraphicsLaunchPolicy.extras(saved, GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, "official", "6"))
+        val extras = GraphicsLaunchPolicy.extras(saved, GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, EngineSettingsStore.ART_KERNEL_OFFICIAL, EngineSettingsStore.ART_ENGINE_V6))
         assertEquals("v1:m,!deblur,lanczos", extras[LaunchContract.GRAPHICS_FILTER_CHAIN])
         assertEquals(true, extras[LaunchContract.GRAPHICS_FILTER_ENABLED])
         assertEquals(true, extras[LaunchContract.GRAPHICS_FILTER_ANALYZER])
@@ -19,8 +19,8 @@ class GraphicsLaunchPolicyTest {
 
     @Test fun unsupportedKernelsCarryDisabledContractWithoutSwitchingOrBorrowingSettings() {
         for (capability in listOf(
-            GraphicsCapabilities.forRuntime(GraphicsFamily.KR, "krkrsdl3"),
-            GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, "official", "2"),
+            GraphicsCapabilities.forRuntime(GraphicsFamily.KR, EngineSettingsStore.KERNEL_KRKRSDL3),
+            GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, EngineSettingsStore.ART_KERNEL_OFFICIAL, EngineSettingsStore.ART_ENGINE_V2),
         )) {
             val extras = GraphicsLaunchPolicy.extras(saved, capability)
             assertEquals(false, extras[LaunchContract.GRAPHICS_FILTER_ENABLED])
@@ -49,7 +49,7 @@ class GraphicsLaunchPolicyTest {
     }
 
     @Test fun masterOffEmptyPausedAndInvalidChainsNeverRequestAnalyzer() {
-        val capability = GraphicsCapabilities.forRuntime(GraphicsFamily.KR, "kirikiri2")
+        val capability = GraphicsCapabilities.forRuntime(GraphicsFamily.KR, EngineSettingsStore.KERNEL_KIRIKIRI2)
         for (settings in listOf(saved.copy(enabled = false), saved.copy(chain = emptyList()),
             saved.copy(chain = listOf(GraphicsNode("s", false))), saved.copy(chain = listOf(GraphicsNode("invalid"))))) {
             val extras = GraphicsLaunchPolicy.extras(settings, capability)
@@ -61,7 +61,7 @@ class GraphicsLaunchPolicyTest {
     }
 
     @Test fun inheritedGameRequestsUseTheResolvedMasterAndChain() {
-        val capability = GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, "official", "6")
+        val capability = GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, EngineSettingsStore.ART_KERNEL_OFFICIAL, EngineSettingsStore.ART_ENGINE_V6)
         val gameOff = GraphicsSettingsCodec.resolve(saved, GraphicsOverride(enabled = false, analyzer = true))
         assertEquals(false, GraphicsLaunchPolicy.extras(gameOff, capability)[LaunchContract.GRAPHICS_FILTER_ANALYZER])
         val gameOn = GraphicsSettingsCodec.resolve(saved.copy(enabled = false), GraphicsOverride(enabled = true))
@@ -72,28 +72,47 @@ class GraphicsLaunchPolicyTest {
         val supported = GraphicsCapabilities.forRuntime(GraphicsFamily.SIGLUS)
         val extras = GraphicsLaunchPolicy.extras(settings, supported)
         assertEquals(true, extras[LaunchContract.GRAPHICS_FILTER_ANALYZER])
-        for (capability in listOf(supported, GraphicsCapabilities.forRuntime(GraphicsFamily.KR, "krkrsdl3"))) {
+        for (capability in listOf(supported, GraphicsCapabilities.forRuntime(GraphicsFamily.KR, EngineSettingsStore.KERNEL_KRKRSDL3))) {
             assertEquals(false, GraphicsLaunchPolicy.extras(settings.copy(enabled = false), capability)[LaunchContract.GRAPHICS_FILTER_ANALYZER])
         }
-        assertEquals(false, GraphicsLaunchPolicy.extras(settings, GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, "official", "2"))[LaunchContract.GRAPHICS_FILTER_ANALYZER])
+        assertEquals(false, GraphicsLaunchPolicy.extras(settings, GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, EngineSettingsStore.ART_KERNEL_OFFICIAL, EngineSettingsStore.ART_ENGINE_V2))[LaunchContract.GRAPHICS_FILTER_ANALYZER])
     }
 
 
     @Test fun autoKernelPreservesMigratedModeAndUnsupportedVersionsStayDisabled() {
         val migrated = GraphicsSettingsCodec.legacyGlobal(GraphicsFamily.KR, krMode = "m")
-        for (kernel in listOf("auto", "kirikiri2")) {
-            for (version in listOf("auto", "1.3.9", "1.3.4")) {
+        for (kernel in listOf(EngineSettingsStore.KR_AUTO, EngineSettingsStore.KERNEL_KIRIKIRI2)) {
+            for (version in listOf(EngineSettingsStore.KR_AUTO, EngineSettingsStore.KR_139, EngineSettingsStore.KR_134)) {
                 val capability = GraphicsCapabilities.forRuntime(GraphicsFamily.KR, kernel, version)
                 assertTrue(capability.supported)
                 val extras = GraphicsLaunchPolicy.extras(migrated, capability)
                 assertEquals(true, extras[LaunchContract.GRAPHICS_FILTER_ENABLED])
                 assertEquals(GraphicsSettingsCodec.encodeChain(migrated.chain), extras[LaunchContract.GRAPHICS_FILTER_CHAIN])
             }
-            for (version in listOf("1.2.6", "unknown")) {
+            for (version in listOf(EngineSettingsStore.KR_126, "unknown")) {
                 val capability = GraphicsCapabilities.forRuntime(GraphicsFamily.KR, kernel, version)
                 assertFalse(capability.supported)
                 assertEquals(false, GraphicsLaunchPolicy.extras(migrated, capability)[LaunchContract.GRAPHICS_FILTER_ENABLED])
             }
         }
     }
+    @Test fun artemisActualCandidatesGateWithoutErasingTheOriginalRequest() {
+        val supported = listOf(EngineSettingsStore.ART_ENGINE_AUTO, EngineSettingsStore.ART_ENGINE_V1,
+            EngineSettingsStore.ART_ENGINE_V3, EngineSettingsStore.ART_ENGINE_V4,
+            EngineSettingsStore.ART_ENGINE_V5, EngineSettingsStore.ART_ENGINE_V6)
+        for (version in supported + EngineSettingsStore.ART_ENGINE_V2) {
+            val capability = GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS,
+                EngineSettingsStore.ART_KERNEL_OFFICIAL, version)
+            val extras = GraphicsLaunchPolicy.artemisExtras(saved, capability)
+            assertEquals(version in supported, extras[LaunchContract.GRAPHICS_FILTER_ENABLED])
+            assertEquals(version in supported, extras[LaunchContract.GRAPHICS_FILTER_ANALYZER])
+            assertEquals(true, extras[LaunchContract.ARTEMIS_GRAPHICS_REQUESTED_ENABLED])
+            assertEquals(true, extras[LaunchContract.ARTEMIS_GRAPHICS_REQUESTED_ANALYZER])
+            assertEquals("v1:m,!deblur,lanczos", extras[LaunchContract.GRAPHICS_FILTER_CHAIN])
+        }
+        val off = GraphicsLaunchPolicy.artemisExtras(saved.copy(enabled = false), GraphicsCapabilities(true))
+        assertEquals(false, off[LaunchContract.ARTEMIS_GRAPHICS_REQUESTED_ENABLED])
+        assertEquals(false, off[LaunchContract.ARTEMIS_GRAPHICS_REQUESTED_ANALYZER])
+    }
+
 }

@@ -78,13 +78,16 @@ object LaunchContract {
 
     // ---------- Artemis ----------
 
-    /** Artemis clean 画质开关；官方内核保留请求值但不支持执行。 */
+    /** 官方 Artemis 自动候选与回退协议，不通过画质设置改写候选顺序。 */
     const val ARTEMIS_AUTO_FALLBACK = "artemisAutoFallback"
     const val ARTEMIS_FALLBACK_STAGE = "artemisFallbackStage"
     const val ARTEMIS_CURRENT_VERSION = "artemisCurrentVersion"
     const val ARTEMIS_FALLBACK_VERSIONS = "artemisFallbackVersions"
     const val ARTEMIS_FALLBACK_INDEX = "artemisFallbackIndex"
     const val ARTEMIS_AUTO_PLAN_REASON = "artemisAutoPlanReason"
+    // 原始画质请求跨候选保留；实际 enabled/analyzer 每次按加载库重算。
+    const val ARTEMIS_GRAPHICS_REQUESTED_ENABLED = "artemisGraphicsRequestedEnabled"
+    const val ARTEMIS_GRAPHICS_REQUESTED_ANALYZER = "artemisGraphicsRequestedAnalyzer"
     const val ENGINE_LIB_NAME = "engineLibName"
 
     // ---------- RPG Maker Web ----------

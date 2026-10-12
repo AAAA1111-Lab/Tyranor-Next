@@ -14,6 +14,14 @@ internal object GraphicsLaunchPolicy {
         GraphicsCapabilities(false),
     )
 
+    fun artemisExtras(settings: GraphicsSettings, capability: GraphicsCapabilities): Map<String, Any> {
+        val requested = extras(settings, GraphicsCapabilities(true))
+        return extras(settings, capability) + mapOf(
+            LaunchContract.ARTEMIS_GRAPHICS_REQUESTED_ENABLED to requested.getValue(LaunchContract.GRAPHICS_FILTER_ENABLED),
+            LaunchContract.ARTEMIS_GRAPHICS_REQUESTED_ANALYZER to requested.getValue(LaunchContract.GRAPHICS_FILTER_ANALYZER),
+        )
+    }
+
     fun extras(settings: GraphicsSettings, capability: GraphicsCapabilities): Map<String, Any> {
         val encoded = if (GraphicsSettingsCodec.validChain(settings.chain)) GraphicsSettingsCodec.encodeChain(settings.chain) else "v1:"
         val parsed = GraphicsFilterChain.parse(encoded)

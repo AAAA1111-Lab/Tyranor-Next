@@ -1306,8 +1306,8 @@ object EngineLauncher {
             putExtra(LaunchContract.LAUNCH_MODE, LaunchContract.LAUNCH_MODE_ARTEMIS)
             putExtra(LaunchContract.ORIENTATION, if (rotate) 8 else 6)
             putExtra(LaunchContract.SCOPED_SAVE_DIR, false)
-            // 自动候选可能先选缺少输出入口的版本；保留请求，由各实际库决定是否执行。
-            putArtemisGraphicsSettings(settings, if (auto) EngineSettingsStore.ART_ENGINE_AUTO else version)
+            // 按实际首选库设置门禁，保留原始请求供后续候选重新判定。
+            putArtemisGraphicsSettings(settings, version)
             // artemis_loader 按 "lib<engineLibName>.so" 拼路径，需传库名（不带 lib 前缀）
             putExtra(LaunchContract.ENGINE_LIB_NAME, libName)
             putExtra(LaunchContract.ARTEMIS_AUTO_FALLBACK, auto)
@@ -1345,7 +1345,8 @@ object EngineLauncher {
 
     /** 官方内核携带滤镜请求，不通过增强选项隐式改写版本或回退链。 */
     private fun Intent.putArtemisGraphicsSettings(settings: ResolvedEngineSettings, version: String = "") {
-        putGraphicsSettings(settings.artGraphics, GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, settings.artKernel, version))
+        putGraphicsExtras(GraphicsLaunchPolicy.artemisExtras(settings.artGraphics,
+            GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, settings.artKernel, version)))
     }
 
     private fun Intent.putGraphicsSettings(settings: GraphicsSettings, capability: GraphicsCapabilities) {

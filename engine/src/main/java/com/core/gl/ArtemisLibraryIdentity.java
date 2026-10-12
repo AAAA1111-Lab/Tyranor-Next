@@ -21,6 +21,11 @@ public final class ArtemisLibraryIdentity {
 
     public static boolean supports(String filename) { return BUILD_IDS.containsKey(filename); }
 
+    /** Host fallback names omit the ELF prefix/suffix; null and unsupported candidates remain disabled. */
+    public static boolean supportsEngine(String library, boolean requested) {
+        return requested && library != null && supports("lib" + library + ".so");
+    }
+
     static boolean matches(String path, String buildId) {
         if (path == null || buildId == null) return false;
         String expected = BUILD_IDS.get(new File(path).getName());

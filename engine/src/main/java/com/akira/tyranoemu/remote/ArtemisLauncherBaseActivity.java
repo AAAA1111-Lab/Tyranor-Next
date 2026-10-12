@@ -152,6 +152,7 @@ public abstract class ArtemisLauncherBaseActivity extends com.ies_net.artemis.Ar
                         : stage == 2 ? "4"
                         : stage == 3 ? "5"
                         : "6");
+        updateGraphicsRequest(retry);
         retry.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         Log.w("YukiArtemis", "Artemis exited during startup; retrying with " + nextPackage + " path=" + path);
         try {
@@ -188,6 +189,7 @@ public abstract class ArtemisLauncherBaseActivity extends com.ies_net.artemis.Ar
         retry.putExtra(LaunchContract.ARTEMIS_CURRENT_VERSION, nextVersion);
         retry.putExtra(LaunchContract.ENGINE_LIB_NAME, engineLibName);
         retry.putExtra(LaunchContract.ARTEMIS_FALLBACK_STAGE, fallbackStageForVersion(nextVersion));
+        updateGraphicsRequest(retry);
         retry.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         Log.w("YukiArtemis", "Artemis exited during startup; retrying dynamic version=" + nextVersion
                 + " lib=" + engineLibName + " index=" + nextIndex + "/" + versions.size()
@@ -199,6 +201,18 @@ public abstract class ArtemisLauncherBaseActivity extends com.ies_net.artemis.Ar
             return false;
         }
         return true;
+    }
+
+    /** Every candidate recomputes its gate; a rejected first candidate must not erase the user's request. */
+    private static void updateGraphicsRequest(Intent retry) {
+        String library = retry.getStringExtra(LaunchContract.ENGINE_LIB_NAME);
+        boolean requested = retry.getBooleanExtra(LaunchContract.ARTEMIS_GRAPHICS_REQUESTED_ENABLED,
+                retry.getBooleanExtra(LaunchContract.GRAPHICS_FILTER_ENABLED, false));
+        boolean analyzer = retry.getBooleanExtra(LaunchContract.ARTEMIS_GRAPHICS_REQUESTED_ANALYZER,
+                retry.getBooleanExtra(LaunchContract.GRAPHICS_FILTER_ANALYZER, false));
+        boolean enabled = com.core.gl.ArtemisLibraryIdentity.supportsEngine(library, requested);
+        retry.putExtra(LaunchContract.GRAPHICS_FILTER_ENABLED, enabled);
+        retry.putExtra(LaunchContract.GRAPHICS_FILTER_ANALYZER, enabled && analyzer);
     }
 
     private void recordSuccessfulArtemisVersionIfNeeded() {

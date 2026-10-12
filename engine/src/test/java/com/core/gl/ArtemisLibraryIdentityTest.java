@@ -37,4 +37,14 @@ public final class ArtemisLibraryIdentityTest {
         assertFalse(ArtemisLibraryIdentity.matches("libartemis.so", ORIGINAL.substring(1)));
         assertFalse(ArtemisLibraryIdentity.matches("libartemis.so", "0" + ORIGINAL.substring(1)));
     }
+    @Test public void fallbackRecomputesEachCandidateWithoutPromotingAMasterOffRequest() {
+        for (String name : new String[]{"artemis", "artemis-compatible-v2", "artemis-v4", "artemis-v5", "artemis-v6"}) {
+            assertTrue(ArtemisLibraryIdentity.supportsEngine(name, true));
+            assertFalse(ArtemisLibraryIdentity.supportsEngine(name, false));
+        }
+        for (String name : new String[]{null, "", "artemis-compatible", "artemis-clean", "unknown"}) {
+            assertFalse(ArtemisLibraryIdentity.supportsEngine(name, true));
+        }
+    }
+
 }
