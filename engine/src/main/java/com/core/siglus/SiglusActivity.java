@@ -73,6 +73,7 @@ public final class SiglusActivity extends AppCompatActivity implements
 
     private static final long BACK_EXIT_WINDOW_MS = 2000L;
     private static final int MAX_FRAME_DT_MS = 250;
+    private static final long FALLBACK_RETRY_MS = 1000L;
 
     private FrameLayout rootLayout;
     private SurfaceView surfaceView;
@@ -98,6 +99,10 @@ public final class SiglusActivity extends AppCompatActivity implements
     private SiglusGraphicsProxy graphicsProxy;
     private ArtemisPerformanceOverlay graphicsOverlay;
     private final int[] stageGeometry = new int[10];
+    private final Runnable fallbackRetry = () -> {
+        if (resumed && !destroying && graphicsProxy != null && proxyFailed)
+            restoreDirect(graphicsProxy);
+    };
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -191,7 +196,9 @@ public final class SiglusActivity extends AppCompatActivity implements
         super.onResume();
         resumed = true;
         applyImmersive();
-        if (graphicsProxy != null && proxyAttached && !proxyFailed && surfaceView.getHolder().getSurface().isValid()) {
+        if (graphicsProxy != null && proxyFailed) {
+            restoreDirect(graphicsProxy);
+        } else if (graphicsProxy != null && proxyAttached && surfaceView.getHolder().getSurface().isValid()) {
             cancelPointer();
             surfaceReady = false;
             graphicsProxy.attachOutput(surfaceView.getHolder().getSurface(),
@@ -203,6 +210,7 @@ public final class SiglusActivity extends AppCompatActivity implements
     @Override
     protected void onPause() {
         resumed = false;
+        surfaceView.removeCallbacks(fallbackRetry);
         stopFrameLoop();
         cancelPointer();
         if (graphicsOverlay != null) graphicsOverlay.hide();
@@ -214,6 +222,7 @@ public final class SiglusActivity extends AppCompatActivity implements
     protected void onDestroy() {
         destroying = true;
         resumed = false;
+        surfaceView.removeCallbacks(fallbackRetry);
         stopFrameLoop();
         if (graphicsOverlay != null) graphicsOverlay.hide();
         hideIme();
@@ -310,6 +319,7 @@ public final class SiglusActivity extends AppCompatActivity implements
     public void surfaceDestroyed(@NonNull SurfaceHolder holder) {
         // ANativeWindow 即将失效，但引擎必须存活：切后台不重启游戏，onDestroy 才销毁。
         surfaceReady = false;
+        surfaceView.removeCallbacks(fallbackRetry);
         stopFrameLoop();
         cancelPointer();
         if (graphicsOverlay != null) graphicsOverlay.hide();
@@ -427,17 +437,21 @@ public final class SiglusActivity extends AppCompatActivity implements
         proxy.detachOutput(detached -> {
             if (graphicsProxy != proxy || destroying) return;
             fallbackPending = false;
-            if (!detached || handle == 0L) {
-                Log.e(TAG, "Cannot disconnect display for fallback; keeping game state paused");
+            if (handle == 0L) return;
+            if (!detached) {
+                Log.e(TAG, "Display fallback is still pending; retaining Surface ownership and game state");
+                scheduleFallbackRetry();
                 return;
             }
             SurfaceHolder holder = surfaceView.getHolder();
-            if (!holder.getSurface().isValid() || !NativeSiglus.setSurface(handle, holder.getSurface(),
+            if (!resumed || !holder.getSurface().isValid() || !NativeSiglus.setSurface(handle, holder.getSurface(),
                     surfaceWidth(holder), surfaceHeight(holder))) {
                 // Retry on a later Surface callback, preserving the producer and game VM.
                 Log.e(TAG, "Direct presentation unavailable; retaining producer and game state");
+                scheduleFallbackRetry();
                 return;
             }
+            surfaceView.removeCallbacks(fallbackRetry);
             graphicsProxy = null;
             proxyAttached = proxyFailed = false;
             surfaceReady = true;
@@ -445,6 +459,12 @@ public final class SiglusActivity extends AppCompatActivity implements
             Toast.makeText(this, uiString(R.string.graphics_siglus_fallback), Toast.LENGTH_LONG).show();
             maybeStartFrameLoop();
         });
+    }
+
+    private void scheduleFallbackRetry() {
+        surfaceView.removeCallbacks(fallbackRetry);
+        if (resumed && !destroying && surfaceView.getHolder().getSurface().isValid())
+            surfaceView.postDelayed(fallbackRetry, FALLBACK_RETRY_MS);
     }
 
     private void cancelPointer() {

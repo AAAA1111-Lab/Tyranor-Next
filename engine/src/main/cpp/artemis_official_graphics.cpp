@@ -143,9 +143,12 @@ EGLBoolean destroySurface(EGLDisplay display,EGLSurface surface) {
     if(found==surfaces.end())return eglDestroySurface(display,surface);
     SurfaceState& state=found->second;
     if(!eglDestroySurface(display,state.actual))return EGL_FALSE;
-    disconnect();
+    const bool disconnected=disconnect();
     ANativeWindow_release(state.producer);ANativeWindow_release(state.screen);
     surfaces.erase(found);logicalWidth=logicalHeight=0;directOutput=true;gesture=false;
+    // A destroyed producer has no current raw frame. Keep registration ready for
+    // the next official surface without displaying the previous READY state.
+    status(disconnected ? 5 : 3);
     return EGL_TRUE;
 }
 bool restoreDirect(EGLDisplay display,SurfaceState& state) {

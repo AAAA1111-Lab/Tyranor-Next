@@ -455,7 +455,7 @@ Java_com_core_siglus_NativeSiglus_destroy(JNIEnv*, jclass, jlong handle) {
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_core_siglus_SiglusStageBridge_geometry(JNIEnv* env, jclass, jlong handle, jintArray out_geometry) {
+Java_com_core_siglus_SiglusStageBridge_geometryNative(JNIEnv* env, jclass, jlong handle, jintArray out_geometry) {
     load_api_once();
     if (g_api.stage_geometry == nullptr || !live_handle(reinterpret_cast<void*>(handle))
             || out_geometry == nullptr || env->GetArrayLength(out_geometry) < 10) return JNI_FALSE;

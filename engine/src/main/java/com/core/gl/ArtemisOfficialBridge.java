@@ -75,5 +75,10 @@ public final class ArtemisOfficialBridge implements ArtemisPerformanceOverlay.So
     }
     @Override public ArtemisGraphicsStats stats() { ArtemisOfficialSurfaceProxy current = proxy; return current == null ? empty : current.stats(); }
     @Override public boolean isAnalyzing() { return requested && analyzer; }
-    @Override public int status() { ArtemisOfficialSurfaceProxy current = proxy; return current == null ? state : current.status(); }
+    @Override public int status() {
+        ArtemisOfficialSurfaceProxy current = proxy;
+        // Native direct-output/registration failures take precedence over a
+        // consumer's last successfully filtered frame.
+        return state != GraphicsStatus.WAITING || current == null ? state : current.status();
+    }
 }
