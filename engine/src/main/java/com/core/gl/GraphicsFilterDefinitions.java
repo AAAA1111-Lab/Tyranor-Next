@@ -13,7 +13,7 @@ public final class GraphicsFilterDefinitions {
     static {
         Map<String, GraphicsFilterDefinition> ids = new LinkedHashMap<>();
         List<GraphicsFilterDefinition> visible = new ArrayList<>();
-        for (GraphicsFilterDefinition definition : GraphicsFilterCatalog.create()) {
+        for (GraphicsFilterDefinition definition : GeneratedGraphicsFilterCatalog.create()) {
             ids.put(definition.id, definition);
             if (definition.visible) visible.add(definition);
         }

@@ -44,9 +44,10 @@ abstract class GenerateGraphicsFilters extends DefaultTask {
             '            new GraphicsFilterDefinition(' + args.join(', ') + ')'
         }
         def source = 'package com.core.gl;\n\n// Generated from engine/src/main/graphicsfilters; do not edit.\n' +
-            'final class GraphicsFilterCatalog {\n    static GraphicsFilterDefinition[] create() {\n' +
+            'final class GeneratedGraphicsFilterCatalog {\n    static GraphicsFilterDefinition[] create() {\n' +
             '        return new GraphicsFilterDefinition[]{\n' + lines.join(',\n') + '\n        };\n    }\n}\n'
-        def target = new File(outputDirectory.get().asFile, 'com/core/gl/GraphicsFilterCatalog.java')
+        new File(outputDirectory.get().asFile, 'com/core/gl/GraphicsFilterCatalog.java').delete()
+        def target = new File(outputDirectory.get().asFile, 'com/core/gl/GeneratedGraphicsFilterCatalog.java')
         target.parentFile.mkdirs()
         target.setText(source, 'UTF-8')
     }

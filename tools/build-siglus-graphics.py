@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import tarfile
+import tempfile
 from pathlib import Path
 
 
@@ -196,8 +197,8 @@ def main():
         raise ValueError("Previous ABI reference hash differs from the manifest")
     previous = {line.split()[-1] for line in reference.read_text(encoding="utf-8").splitlines()}
     exports = symbols(ndk_bin / "llvm-nm.exe", built)
-    # ABI exports used by both Siglus and the three software engines are shared.
-    required = {symbol for symbol in previous if symbol.startswith(("siglus_", "game_"))}
+    # Preserve every previously exported ABI, including Android/JNI entry points.
+    required = set(previous)
     if args.baseline_only:
         required.discard(manifest["geometryAbi"])
     else:
@@ -219,7 +220,26 @@ def main():
     (stage / f"{name}-exports.txt").write_text("\n".join(sorted(exports)) + "\n", encoding="utf-8")
     (stage / f"{name}-elf.txt").write_text(elf + "\n", encoding="utf-8")
     if args.install:
-        shutil.copy2(destination, installed)
+        expected_hash = manifest.get("librarySha256")
+        if not isinstance(expected_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
+            raise ValueError("Manifest must pin librarySha256 before installation")
+        if report["librarySha256"] != expected_hash:
+            raise ValueError("Built library differs from pinned librarySha256; installed library unchanged")
+        # Verify the copied staging file and the final destination, not only the compiler output.
+        if sha256(destination) != expected_hash:
+            raise ValueError("Staged library changed before installation; installed library unchanged")
+        with tempfile.NamedTemporaryFile(dir=installed.parent, prefix="libsiglus-", suffix=".so.tmp",
+                                         delete=False) as output:
+            pending = Path(output.name)
+        try:
+            shutil.copy2(destination, pending)
+            if sha256(pending) != expected_hash:
+                raise ValueError("Installation copy SHA-256 differs; installed library unchanged")
+            pending.replace(installed)
+            if sha256(installed) != expected_hash:
+                raise ValueError("Installed library SHA-256 differs from the verified staged library")
+        finally:
+            pending.unlink(missing_ok=True)
     print(f"Verified {len(required)} shared ABI exports; staged: {destination}")
     print(f"SHA256: {report['librarySha256']}")
 

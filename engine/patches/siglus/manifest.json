@@ -19,5 +19,7 @@
   "geometryWords": 10,
   "previousLibrarySha256": "1df70b3bb03fce9816baa854e9c553de8a516fa648480391dadbf18211291b3b",
   "previousExportsFile": "engine/patches/siglus/previous-exports.txt",
-  "previousExportsSha256": "3f062c8276c898f85d742fdc1b15ce79f426e2f80f467a1799f7445d0be474d5"
+  "previousExportsSha256": "3f062c8276c898f85d742fdc1b15ce79f426e2f80f467a1799f7445d0be474d5",
+  "librarySha256": "9e7fa0c0b8f1830a276b3994d5258860c0c0cdc5359adf71b397ea087bdb26a6",
+  "libraryFile": "engine/src/main/jniLibs/arm64-v8a/libsiglus.so"
 }

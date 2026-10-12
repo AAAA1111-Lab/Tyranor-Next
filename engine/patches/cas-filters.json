@@ -51,6 +51,10 @@
     {
       "file": "cas/CAS.glsl",
       "sha256": "a229db0cf4456f84a6b98663a2f78d1b92107d2da74e97f4d87f7fd52d603af7"
+    },
+    {
+      "file": "cas/LICENSE-MIT",
+      "sha256": "e008031a95f6f655def9eaf914118531c9e1055b8ea201eb98b9f95f1af9bec4"
     }
   ]
 }

@@ -70,7 +70,8 @@ def main():
     root = Path(__file__).resolve().parents[1]
     files, inputs = cas(args.sources)
     generated = [("cas/" + name + ".glsl", text.encode("utf-8")) for name, text in files]
-    _, license_info = checked(args.sources, "LICENSE.txt")
+    license_data, license_info = checked(args.sources, "LICENSE.txt")
+    generated.append(("cas/LICENSE-MIT", license_data))
     manifest = {"sources": [{"repository": "https://github.com/GPUOpen-Effects/FidelityFX-CAS", "revision": REVISION,
         "license": {"spdx": "MIT", **license_info}, "files": inputs}], "generated": []}
     for relative, data in generated:
