@@ -431,9 +431,6 @@ object EngineSettingsStore {
         val v = prefs(c).getString(KEY_KR_ANIME4K_MODE, null)
         return if (v != null && v in ANIME4K_MODES) v else ANIME4K_OFF
     }
-    fun setKrAnime4kMode(c: Context, v: String) =
-        prefs(c).edit().putString(KEY_KR_ANIME4K_MODE, if (v in ANIME4K_MODES) v else ANIME4K_OFF).apply()
-
     /** Automatically confirm one-button KRKR information dialogs during the first 30 seconds. */
     fun isKrSkipStartupDialogs(c: Context): Boolean =
         prefs(c).getBoolean(KEY_KR_SKIP_STARTUP_DIALOGS, false)

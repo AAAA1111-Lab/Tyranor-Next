@@ -107,7 +107,7 @@ class GraphicsSettingsCodecTest {
     }
 
     @Test fun inactiveChainsGateAnalyzerWithoutErasingPreferences() {
-        val capability = GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, "official", "6")
+        val capability = GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, EngineSettingsStore.ART_KERNEL_OFFICIAL, EngineSettingsStore.ART_ENGINE_V6)
         val saved = GraphicsSettings(false, listOf(GraphicsNode("deblur")), true)
         assertFalse(codec.effectiveAnalyzer(saved, capability))
         assertTrue(codec.effectiveAnalyzer(saved.copy(enabled = true), capability))
@@ -117,7 +117,7 @@ class GraphicsSettingsCodecTest {
     }
 
     @Test fun gameMasterAndAnalyzerOverridesGateAfterInheritance() {
-        val capability = GraphicsCapabilities.forRuntime(GraphicsFamily.KR, "kirikiri2")
+        val capability = GraphicsCapabilities.forRuntime(GraphicsFamily.KR, EngineSettingsStore.KERNEL_KIRIKIRI2)
         val global = GraphicsSettings(true, listOf(GraphicsNode("s")), true)
         assertFalse(codec.effectiveAnalyzer(codec.resolve(global, GraphicsOverride(enabled = false)), capability))
         assertFalse(codec.effectiveAnalyzer(codec.resolve(global.copy(enabled = false), GraphicsOverride(analyzer = true)), capability))
@@ -125,13 +125,13 @@ class GraphicsSettingsCodecTest {
         assertFalse(codec.effectiveAnalyzer(codec.resolve(global, GraphicsOverride(chain = emptyList())), capability))
     }
 
-    @Test fun capabilitiesDistinguishScreenFramesAndUnsupportedFamilies() {
-        val kr = GraphicsCapabilities.forRuntime(GraphicsFamily.KR, "kirikiri2")
+    @Test fun capabilitiesDistinguishOriginalFramesAndUnsupportedFamilies() {
+        val kr = GraphicsCapabilities.forRuntime(GraphicsFamily.KR, EngineSettingsStore.KERNEL_KIRIKIRI2)
         assertTrue(kr.supported)
-        assertFalse(GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, "clean").supported)
-        assertFalse(GraphicsCapabilities.forRuntime(GraphicsFamily.KR, "krkrsdl3").supported)
-        assertTrue(GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, "official", "6").supported)
-        assertFalse(GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, "official", "2").supported)
+        assertFalse(GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, EngineSettingsStore.ART_KERNEL_CLEAN).supported)
+        assertFalse(GraphicsCapabilities.forRuntime(GraphicsFamily.KR, EngineSettingsStore.KERNEL_KRKRSDL3).supported)
+        assertTrue(GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, EngineSettingsStore.ART_KERNEL_OFFICIAL, EngineSettingsStore.ART_ENGINE_V6).supported)
+        assertFalse(GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, EngineSettingsStore.ART_KERNEL_OFFICIAL, EngineSettingsStore.ART_ENGINE_V2).supported)
         assertTrue(GraphicsCapabilities.forRuntime(GraphicsFamily.SIGLUS).supported)
     }
     @Test fun analyzerAndOverridesRoundTripWithoutBorrowingDebugFlags() {
