@@ -6,6 +6,7 @@ import android.content.res.Configuration;
 import android.graphics.PixelFormat;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.WindowManager;
 import com.core.engine.LaunchContract;
@@ -14,6 +15,9 @@ import java.util.Locale;
 
 /** Activity-attached analyzer. GPU counters are sampled at the configured interval. */
 public final class ArtemisPerformanceOverlay {
+    private static final String TAG = "GraphicsAnalyzer";
+    private static final int MAX_ATTACH_ATTEMPTS = 60;
+    private static final long ATTACH_RETRY_DELAY_MS = 16;
     public interface Source {
         ArtemisGraphicsStats stats();
         boolean isAnalyzing();
@@ -25,12 +29,14 @@ public final class ArtemisPerformanceOverlay {
     private final int refreshIntervalMs;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private boolean wanted;
+    private int attachAttempts;
     private final Runnable attach = this::attachPanel;
     private GraphicsAnalyzerPanel analyzer;
     private WindowManager manager;
     private final Runnable update = new Runnable() {
         @Override public void run() {
             if (analyzer == null) return;
+            if (!wanted || !isAnalyzing() || activity.isFinishing() || activity.isDestroyed()) { hide(); return; }
             ArtemisGraphicsStats.Snapshot snapshot = stats().snapshot(System.nanoTime());
             analyzer.update(snapshot, status() == GraphicsStatus.READY ? null : textContext.getString(statusResource()));
             handler.postDelayed(this, refreshIntervalMs);
@@ -55,11 +61,19 @@ public final class ArtemisPerformanceOverlay {
     private boolean isAnalyzing() { return source.isAnalyzing(); }
     private int status() { return source.status(); }
 
-    public void show() { wanted = true; attachPanel(); }
+    public void show() {
+        if (!wanted) attachAttempts = 0;
+        wanted = true;
+        attachPanel();
+    }
     private void attachPanel() {
-        if (!wanted || !isAnalyzing() || analyzer != null || activity.isFinishing()) return;
+        if (!wanted || !isAnalyzing() || analyzer != null || activity.isFinishing() || activity.isDestroyed()) return;
         WindowManager.LayoutParams layout = params();
-        if (layout.token == null) { handler.removeCallbacks(attach); handler.postDelayed(attach, 16); return; }
+        if (layout.token == null) {
+            handler.removeCallbacks(attach);
+            if (++attachAttempts < MAX_ATTACH_ATTEMPTS) handler.postDelayed(attach, ATTACH_RETRY_DELAY_MS);
+            return;
+        }
         manager = activity.getWindowManager();
         try {
             int width;
@@ -77,8 +91,15 @@ public final class ArtemisPerformanceOverlay {
             int stripWidth = Math.max(1, width - Math.round(12 * activity.getResources().getDisplayMetrics().density));
             GraphicsAnalyzerPanel panel = new GraphicsAnalyzerPanel(textContext, stripWidth);
             manager.addView(panel, layout); analyzer = panel;
-            stats().resetInterval(System.nanoTime()); handler.post(update);
-        } catch (WindowManager.BadTokenException ignored) { hide(); }
+            handler.removeCallbacks(attach);
+            attachAttempts = 0;
+            // Sample a full interval; an immediate update can magnify a single startup frame into a huge FPS value.
+            stats().resetInterval(System.nanoTime()); handler.postDelayed(update, refreshIntervalMs);
+        } catch (WindowManager.BadTokenException | WindowManager.InvalidDisplayException
+                | IllegalArgumentException | IllegalStateException | SecurityException failure) {
+            Log.w(TAG, "Unable to attach analyzer to the host window", failure);
+            hide();
+        }
     }
     private WindowManager.LayoutParams params() {
         WindowManager.LayoutParams result = new WindowManager.LayoutParams(

@@ -2,7 +2,7 @@ package com.core.gl;
 
 import java.util.Arrays;
 
-/** Primitive render-thread counters; immutable snapshots are allocated only by the UI. */
+/** Shared graphics counters. Historical Artemis name is retained for the bridge API. */
 public final class ArtemisGraphicsStats {
     private static final double MAX_GPU_SAMPLE_MS = 1000;
     private int sourceWidth, sourceHeight, outputWidth, outputHeight;
@@ -15,6 +15,7 @@ public final class ArtemisGraphicsStats {
     private String[] nodeIds = new String[0];
     private double[] nodeGpu = new double[0], nodeScale = new double[0], nodeScaleMin = new double[0], nodeScaleMax = new double[0];
     private int[] nodeGpuSamples = new int[0];
+    private boolean[] nodeExecuted = new boolean[0];
 
     public synchronized void configureNodes(GraphicsFilterChain chain, String renderer) {
         nodeIds = new String[chain.steps().size()];
@@ -22,17 +23,20 @@ public final class ArtemisGraphicsStats {
         nodeGpu = new double[nodeIds.length]; nodeScale = new double[nodeIds.length];
         nodeScaleMin = new double[nodeIds.length]; nodeScaleMax = new double[nodeIds.length];
         nodeGpuSamples = new int[nodeIds.length];
+        nodeExecuted = new boolean[nodeIds.length];
         this.renderer = renderer == null ? "" : renderer;
     }
     public synchronized void nodeFrame(int[] widths, int[] heights, int[] outputs, int[] outputHeights, boolean[] execute) {
         if (widths.length != nodeIds.length) return;
         for (int i = 0; i < widths.length; i++) {
             if (nodeIds[i] == null) continue;
+            nodeExecuted[i] = execute[i];
             double a = widths[i] > 0 ? (double) outputs[i] / widths[i] : Double.NaN;
             double b = heights[i] > 0 ? (double) outputHeights[i] / heights[i] : Double.NaN;
             nodeScaleMin[i] = Math.min(a, b); nodeScaleMax[i] = Math.max(a, b);
             nodeScale[i] = Math.sqrt(a * b);
-            if (!execute[i]) { nodeGpu[i] += 0; nodeGpuSamples[i]++; }
+            // Identity/bypassed nodes have no GPU measurement; do not invent a zero-ms sample.
+            if (!execute[i]) { nodeGpu[i] = 0; nodeGpuSamples[i] = 0; }
         }
     }
     public synchronized void nodeGpu(int index, double ms) {
@@ -46,6 +50,7 @@ public final class ArtemisGraphicsStats {
         Arrays.fill(nodeGpu, 0); Arrays.fill(nodeScale, Double.NaN);
         Arrays.fill(nodeScaleMin, Double.NaN); Arrays.fill(nodeScaleMax, Double.NaN);
         Arrays.fill(nodeGpuSamples, 0);
+        Arrays.fill(nodeExecuted, false);
     }
 
     public synchronized void reset() {
@@ -58,6 +63,7 @@ public final class ArtemisGraphicsStats {
         renderer = ""; nodeIds = new String[0];
         nodeGpu = nodeScale = nodeScaleMin = nodeScaleMax = new double[0];
         nodeGpuSamples = new int[0];
+        nodeExecuted = new boolean[0];
     }
 
     public synchronized void frame(int sw, int sh, int ow, int oh, int vw, int vh) {
@@ -92,12 +98,12 @@ public final class ArtemisGraphicsStats {
         double seconds = (nowNanos - sampleTimeNanos) / 1_000_000_000.0;
         double fps = sampleTimeNanos > 0 && seconds > 0 ? (presented - sampledPresented) / seconds : 0;
         Node[] nodes = new Node[nodeIds.length];
-        for (int i = 0; i < nodes.length; i++) nodes[i] = new Node(nodeIds[i], nodeScale[i], nodeScaleMin[i], nodeScaleMax[i],
+        for (int i = 0; i < nodes.length; i++) nodes[i] = new Node(nodeIds[i], nodeExecuted[i], nodeScale[i], nodeScaleMin[i], nodeScaleMax[i],
                 nodeGpuSamples[i] > 0 ? nodeGpu[i] / nodeGpuSamples[i] : Double.NaN);
         double measuredGpu = gpuAvailable && gpuSamples > 0 ? gpuTotalMs / gpuSamples : Double.NaN;
         if (!Double.isFinite(measuredGpu) && nodes.length > 0) {
             double sum = 0; boolean complete = false;
-            for (Node node : nodes) if (node.id != null) {
+            for (Node node : nodes) if (node.id != null && node.executed) {
                 if (!Double.isFinite(node.gpuMs)) { sum = Double.NaN; break; }
                 complete = true; sum += node.gpuMs;
             }
@@ -113,9 +119,10 @@ public final class ArtemisGraphicsStats {
 
     public static final class Node {
         public final String id;
+        public final boolean executed;
         public final double scale, scaleMin, scaleMax, gpuMs;
-        Node(String id, double scale, double scaleMin, double scaleMax, double gpuMs) {
-            this.id = id; this.scale = scale; this.scaleMin = scaleMin; this.scaleMax = scaleMax;
+        Node(String id, boolean executed, double scale, double scaleMin, double scaleMax, double gpuMs) {
+            this.id = id; this.executed = executed; this.scale = scale; this.scaleMin = scaleMin; this.scaleMax = scaleMax;
             this.gpuMs = gpuMs;
         }
     }

@@ -2,9 +2,12 @@ package com.core.gl;
 
 import androidx.annotation.Keep;
 
+import java.util.Arrays;
+
 /** Optional non-blocking timer queries, owned by a single pipeline and GL context. */
 @Keep
 final class GraphicsGpuTimer {
+    private static final double NO_NEW_SAMPLE = -2;
     private static final boolean AVAILABLE;
     static {
         boolean loaded;
@@ -20,9 +23,10 @@ final class GraphicsGpuTimer {
     }
     void poll(ArtemisGraphicsStats stats) {
         if (handle != 0) {
+            Arrays.fill(results, NO_NEW_SAMPLE);
             nativePoll(handle, results);
             for (int i = 0; i < results.length; i++) {
-                if (results[i] == -2) continue; // Ring still pending; no new sample.
+                if (results[i] == NO_NEW_SAMPLE) continue; // Ring still pending; no new sample.
                 stats.nodeGpu(i, results[i]);
             }
         }

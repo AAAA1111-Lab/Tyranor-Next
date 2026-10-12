@@ -61,9 +61,14 @@ Java_com_core_gl_GraphicsGpuTimer_nativeCreate(JNIEnv*, jclass, jint count) {
 }
 extern "C" JNIEXPORT void JNICALL
 Java_com_core_gl_GraphicsGpuTimer_nativePoll(JNIEnv* env, jclass, jlong handle, jdoubleArray values) {
-    Timer* t = timer(handle);
-    if (!t || !t->current() || env->GetArrayLength(values) != t->count) return;
+    if (!values) return;
+    jsize count = env->GetArrayLength(values);
+    if (count < 1 || count > kNodes) return;
     std::array<jdouble, kNodes> ms; ms.fill(-2);
+    // Even a lost context/invalid handle reports no new samples, never old values.
+    env->SetDoubleArrayRegion(values, 0, count, ms.data());
+    Timer* t = timer(handle);
+    if (!t || !t->current() || count != t->count) return;
     std::array<uint64_t, kNodes> latest{};
     GLint disjoint = 0; glGetIntegerv(GL_GPU_DISJOINT_EXT, &disjoint);
     if (disjoint || t->invalidated) { t->invalidate(); ms.fill(-1); t->invalidated = false; }
