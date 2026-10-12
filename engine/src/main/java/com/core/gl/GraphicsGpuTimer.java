@@ -25,10 +25,13 @@ final class GraphicsGpuTimer {
         if (handle != 0) {
             Arrays.fill(results, NO_NEW_SAMPLE);
             nativePoll(handle, results);
-            for (int i = 0; i < results.length; i++) {
-                if (results[i] == NO_NEW_SAMPLE) continue; // Ring still pending; no new sample.
-                stats.nodeGpu(i, results[i]);
-            }
+            recordSamples(stats, results);
+        }
+    }
+    static void recordSamples(ArtemisGraphicsStats stats, double[] values) {
+        for (int i = 0; i < values.length; i++) {
+            if (values[i] == NO_NEW_SAMPLE) continue; // Ring still pending; no new sample.
+            stats.nodeGpu(i, values[i]);
         }
     }
     void begin(int index) { if (handle != 0) nativeBegin(handle, index); }

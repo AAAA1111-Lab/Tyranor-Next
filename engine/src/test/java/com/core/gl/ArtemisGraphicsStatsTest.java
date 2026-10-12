@@ -39,22 +39,28 @@ public class ArtemisGraphicsStatsTest {
         assertEquals("test GPU", sample.renderer);
         assertEquals(2, sample.nodes[0].scale, 0);
         assertEquals(8, sample.nodes[0].gpuMs, 0);
+        assertTrue(sample.nodes[0].executed);
+        assertTrue(sample.nodes[2].executed);
         assertNull(sample.nodes[1].id);
+        assertFalse(sample.nodes[1].executed);
         assertEquals(10, sample.gpuMs, 0);
         stats.nodeGpu(0, 7); stats.invalidateNodes();
         sample = stats.snapshot(2_000_000_000L);
         assertTrue(Double.isNaN(sample.nodes[0].gpuMs));
         assertTrue(Double.isNaN(sample.nodes[0].scale));
+        assertFalse(sample.nodes[0].executed);
+        assertFalse(sample.nodes[2].executed);
         assertTrue(Double.isNaN(sample.gpuMs));
     }
 
-    @Test public void anisotropicScaleKeepsRangeAndIdentityNodesHaveZeroGpuTime() {
+    @Test public void anisotropicScaleKeepsRangeWithoutInventingBypassTiming() {
         ArtemisGraphicsStats stats = new ArtemisGraphicsStats();
         stats.configureNodes(GraphicsFilterChain.parse("v1:lanczos"), "GPU");
         stats.nodeFrame(new int[]{100}, new int[]{100}, new int[]{50}, new int[]{200}, new boolean[]{false});
         ArtemisGraphicsStats.Node node = stats.snapshot(1).nodes[0];
         assertEquals(.5, node.scaleMin, 0); assertEquals(2, node.scaleMax, 0);
-        assertEquals(0, node.gpuMs, 0);
+        assertFalse(node.executed);
+        assertTrue(Double.isNaN(node.gpuMs));
     }
 
 
@@ -72,6 +78,7 @@ public class ArtemisGraphicsStatsTest {
     @Test public void nodeTimingOutliersDoNotPolluteOrClearValidSamples() {
         ArtemisGraphicsStats stats = new ArtemisGraphicsStats();
         stats.configureNodes(GraphicsFilterChain.parse("v1:lanczos"), "GPU");
+        stats.nodeFrame(new int[]{100}, new int[]{100}, new int[]{200}, new int[]{200}, new boolean[]{true});
         stats.nodeGpu(0, 3); stats.nodeGpu(0, 5);
         stats.nodeGpu(0, 1000.001); stats.nodeGpu(0, Double.POSITIVE_INFINITY);
         ArtemisGraphicsStats.Snapshot sample = stats.snapshot(1);
@@ -89,6 +96,7 @@ public class ArtemisGraphicsStatsTest {
     @Test public void invalidQueryStillClearsNodeSamples() {
         ArtemisGraphicsStats stats = new ArtemisGraphicsStats();
         stats.configureNodes(GraphicsFilterChain.parse("v1:lanczos"), "GPU");
+        stats.nodeFrame(new int[]{100}, new int[]{100}, new int[]{200}, new int[]{200}, new boolean[]{true});
         stats.nodeGpu(0, 3); stats.nodeGpu(0, -1);
         assertTrue(Double.isNaN(stats.snapshot(1).nodes[0].gpuMs));
         stats.nodeGpu(0, 5); stats.nodeGpu(0, Double.NaN);
@@ -98,6 +106,8 @@ public class ArtemisGraphicsStatsTest {
     @Test public void fallbackTotalUsesTheSameTimingLimit() {
         ArtemisGraphicsStats stats = new ArtemisGraphicsStats();
         stats.configureNodes(GraphicsFilterChain.parse("v1:lanczos,lanczos"), "GPU");
+        stats.nodeFrame(new int[]{100,200}, new int[]{100,200},
+                new int[]{200,400}, new int[]{200,400}, new boolean[]{true,true});
         stats.nodeGpu(0, 600); stats.nodeGpu(1, 600);
         ArtemisGraphicsStats.Snapshot sample = stats.snapshot(1);
         assertEquals(600, sample.nodes[0].gpuMs, 0);
@@ -105,6 +115,32 @@ public class ArtemisGraphicsStatsTest {
         assertTrue(Double.isNaN(sample.gpuMs));
         stats.nodeGpu(0, 500); stats.nodeGpu(1, 500);
         assertEquals(1000, stats.snapshot(2).gpuMs, 0);
+    }
+
+    @Test public void executedNodeWithoutTimingKeepsTotalUnavailable() {
+        ArtemisGraphicsStats stats = new ArtemisGraphicsStats();
+        stats.configureNodes(GraphicsFilterChain.parse("v1:lanczos,lanczos"), "GPU");
+        stats.nodeFrame(new int[]{100,200}, new int[]{100,200},
+                new int[]{200,400}, new int[]{200,400}, new boolean[]{true,true});
+        stats.nodeGpu(0, 8);
+        ArtemisGraphicsStats.Snapshot sample = stats.snapshot(1);
+        assertTrue(sample.nodes[0].executed); assertTrue(sample.nodes[1].executed);
+        assertEquals(8, sample.nodes[0].gpuMs, 0);
+        assertTrue(Double.isNaN(sample.nodes[1].gpuMs));
+        assertTrue(Double.isNaN(sample.gpuMs));
+    }
+
+    @Test public void bypassedNodeDoesNotHideExecutedTiming() {
+        ArtemisGraphicsStats stats = new ArtemisGraphicsStats();
+        stats.configureNodes(GraphicsFilterChain.parse("v1:lanczos,lanczos"), "GPU");
+        stats.nodeFrame(new int[]{100,200}, new int[]{100,200},
+                new int[]{200,200}, new int[]{200,200}, new boolean[]{true,false});
+        stats.nodeGpu(0, 8);
+        ArtemisGraphicsStats.Snapshot sample = stats.snapshot(1);
+        assertTrue(sample.nodes[0].executed); assertFalse(sample.nodes[1].executed);
+        assertEquals(8, sample.gpuMs, 0);
+        assertTrue(Double.isNaN(sample.nodes[1].gpuMs));
+        assertEquals(1, sample.nodes[1].scale, 0);
     }
 
 }

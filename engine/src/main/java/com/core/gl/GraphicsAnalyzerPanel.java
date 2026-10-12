@@ -71,7 +71,7 @@ final class GraphicsAnalyzerPanel extends HorizontalScrollView {
             labelsWidth = 0;
             StringBuilder accessible = new StringBuilder();
             for (ArtemisGraphicsStats.Node row : rows) {
-                double ms = row.gpuMs;
+                double ms = row.executed ? row.gpuMs : Double.NaN;
                 if (row.executed) {
                     hasExecution = true;
                     complete &= Double.isFinite(ms);
@@ -109,7 +109,7 @@ final class GraphicsAnalyzerPanel extends HorizontalScrollView {
             // Prefer the complete resolution flow and filter labels over the device name.
             String deviceMetrics = getResources().getString(R.string.graphics_analyzer_device_metrics, device, metrics);
             summary = !device.isEmpty() && paint.measureText(deviceMetrics) + dp(12)
-                    + labelsWidth * 1.2f + presentationWidth + outputWidth <= availableWidth ? deviceMetrics : metrics;
+                    + preferredLabelsWidth() + presentationWidth + outputWidth <= availableWidth ? deviceMetrics : metrics;
             summaryWidth = paint.measureText(summary) + dp(12);
             String flow = getResources().getString(R.string.graphics_analyzer_resolution_flow, inputSize, processedSize, displaySize);
             setContentDescription(getResources().getString(R.string.graphics_analyzer_accessibility,
@@ -118,7 +118,7 @@ final class GraphicsAnalyzerPanel extends HorizontalScrollView {
         }
         int contentWidth() {
             float minimum = summaryWidth + labelsWidth + presentationWidth + outputWidth;
-            float preferred = minimum + labelsWidth * .2f;
+            float preferred = summaryWidth + preferredLabelsWidth() + presentationWidth + outputWidth;
             return Math.max(1, (int)Math.ceil(Math.max(minimum, Math.min(availableWidth, preferred))));
         }
         @Override protected void onMeasure(int widthSpec, int heightSpec) {
@@ -137,8 +137,7 @@ final class GraphicsAnalyzerPanel extends HorizontalScrollView {
             float x = start;
             // Label cells reserve readable text space. The bottom stripe retains exact time proportions.
             for (int i = 0; i < rows.size(); i++) {
-                double ms = rows.get(i).executed ? rows.get(i).gpuMs : 0;
-                double weight = complete && total > 0 ? ms / total : 1.0 / rows.size();
+                double weight = timingWeight(rows.get(i));
                 float width = labelWidths.get(i) + extra * (float)weight;
                 int color = nodeColor(rows.get(i).id);
                 paint.setColor(Color.argb(185, Color.red(color), Color.green(color), Color.blue(color)));
@@ -150,8 +149,9 @@ final class GraphicsAnalyzerPanel extends HorizontalScrollView {
             if (complete && total > 0) {
                 x = start;
                 for (int i = 0; i < rows.size(); i++) {
-                    double ms = rows.get(i).executed ? rows.get(i).gpuMs : 0;
-                    float next = i == rows.size() - 1 ? barEnd : x + barWidth * (float)(ms / total);
+                    double weight = timingWeight(rows.get(i));
+                    if (weight == 0) continue;
+                    float next = Math.min(barEnd, x + barWidth * (float)weight);
                     paint.setColor(nodeColor(rows.get(i).id));
                     canvas.drawRect(x, getHeight() - dp(3), next, getHeight(), paint); x = next;
                 }
@@ -165,6 +165,14 @@ final class GraphicsAnalyzerPanel extends HorizontalScrollView {
                 canvas.drawText(presentation, x + dp(6), baseline, paint); x += presentationWidth;
             }
             canvas.drawText(output, x + dp(6), baseline, paint);
+        }
+        private float preferredLabelsWidth() {
+            return labelsWidth * (complete && total > 0 ? 1.2f : 1);
+        }
+        private double timingWeight(ArtemisGraphicsStats.Node node) {
+            // Missing measurements reserve only readable text space, never a fabricated time share.
+            return complete && total > 0 && node.executed && Double.isFinite(node.gpuMs)
+                    ? node.gpuMs / total : 0;
         }
         private String unavailable() { return getResources().getString(R.string.graphics_analyzer_unavailable); }
         private String dimensions(int width, int height) {
