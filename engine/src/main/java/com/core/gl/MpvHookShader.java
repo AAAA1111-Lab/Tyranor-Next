@@ -7,7 +7,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
 
-/** Parser for fixed MAIN hooks. Intermediates keep source size; final geometry is set by the host. */
+/** Parser for MAIN hooks. WIDTH/HEIGHT expressions size intermediate targets; the host sets final display geometry. */
 public final class MpvHookShader {
     private static final Pattern NAME = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
     private static final Pattern HOOKED_SYMBOL =

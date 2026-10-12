@@ -4,7 +4,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/** Strict, versioned, ordered filter protocol shared by launchers and engine hosts. */
+/** Strict filter wire protocol. The Anime4K host class names are historical, not a restriction on contributed filters. */
 public final class GraphicsFilterChain {
     public static final int MAX_STEPS = 8;
 
@@ -98,12 +98,4 @@ public final class GraphicsFilterChain {
     }
 
     public static boolean known(String id) { return GraphicsFilterDefinitions.find(id) != null; }
-    public static boolean enlarges(String id) {
-        GraphicsFilterDefinition definition = GraphicsFilterDefinitions.find(id);
-        return definition != null && (definition.nativeScale > 1 || !"none".equals(definition.defaultScaleMode));
-    }
-    public static String shaderAsset(String id) {
-        GraphicsFilterDefinition definition = GraphicsFilterDefinitions.find(id);
-        return definition == null ? null : definition.shaderAsset;
-    }
 }

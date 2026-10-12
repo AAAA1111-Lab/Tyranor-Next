@@ -201,6 +201,7 @@ public final class Anime4kPostProcessor {
     private int mWidth;
     private int mHeight;
     private boolean mGlReady;
+    private boolean mHalfFloatChecked, mHalfFloatRenderable;
     private boolean mFailed;
 
     private Anime4kPostProcessor() {}
@@ -271,6 +272,7 @@ public final class Anime4kPostProcessor {
         mTargetBytes = 0;
         mMaxBindings = mScaleOnly ? 1 : MAX_BINDINGS;
         mGlReady = false;
+        mHalfFloatChecked = mHalfFloatRenderable = false;
         mFailed = false;
     }
 
@@ -279,14 +281,6 @@ public final class Anime4kPostProcessor {
     public long targetBytes() { return mGlReady ? mTargetBytes : 0; }
     public int outputWidth() { return mGlReady ? mOutput.width : 0; }
     public int outputHeight() { return mGlReady ? mOutput.height : 0; }
-
-    /**
-     * Process an external GL_TEXTURE_2D in the current context. Returns zero on any
-     * unsupported/failed pipeline so the caller can present the untouched original.
-     */
-    public int renderTexture(int textureId, int width, int height) {
-        return renderTexture(textureId, width, height, width, height);
-    }
 
     /**
      * Execute the node at its planned size, then resample only when requested by
@@ -323,6 +317,7 @@ public final class Anime4kPostProcessor {
 
     /** Delete owned resources only while the owning context is current. */
     public void release() {
+        mHalfFloatChecked = mHalfFloatRenderable = false;
         if (mPrograms.isEmpty() && mOwnedTargets.isEmpty() && mQuadBuffer[0] == 0
                 && mQuadVao[0] == 0 && mSampler[0] == 0 && mVertexShader == 0 && mScaleProgram == 0 && mPresentProgram == 0 && mBorrowedReadFbo[0] == 0) {
             mFailed = false;
@@ -523,7 +518,38 @@ public final class Anime4kPostProcessor {
         GLES30.glSamplerParameteri(mSampler[0], GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE);
     }
 
+    /** ES 3.2 makes RGBA16F color-renderable; earlier contexts require an extension. */
+    private boolean halfFloatRenderable() {
+        if (mHalfFloatChecked) return mHalfFloatRenderable;
+        GLES30.glGetIntegerv(GLES30.GL_MAJOR_VERSION, mDimensionQuery, 0);
+        GLES30.glGetIntegerv(GLES30.GL_MINOR_VERSION, mDimensionQuery, 1);
+        int major = mDimensionQuery[0], minor = mDimensionQuery[1];
+        mHalfFloatRenderable = major > 3 || major == 3 && minor >= 2;
+        if (!mHalfFloatRenderable) {
+            GLES30.glGetIntegerv(GLES30.GL_NUM_EXTENSIONS, mQuery, 0);
+            int count = mQuery[0];
+            for (int i = 0; i < count; i++) {
+                String extension = GLES30.glGetStringi(GLES30.GL_EXTENSIONS, i);
+                if ("GL_EXT_color_buffer_float".equals(extension)
+                        || "GL_EXT_color_buffer_half_float".equals(extension)) {
+                    mHalfFloatRenderable = true;
+                    break;
+                }
+            }
+        }
+        mHalfFloatChecked = true;
+        return mHalfFloatRenderable;
+    }
+
+    private static void requireGlSuccess(String operation) {
+        int error = GLES30.glGetError();
+        if (error != GLES30.GL_NO_ERROR)
+            throw new TargetUnavailableException(operation + ": GL error 0x" + Integer.toHexString(error));
+    }
+
     private TexFbo createTexFbo(int width, int height, boolean halfFloat) {
+        if (halfFloat && !halfFloatRenderable())
+            throw new IllegalStateException("RGBA16F color rendering unavailable");
         TexFbo target = new TexFbo(width, height);
         try {
             GLES30.glGenTextures(1, target.texture, 0);
@@ -546,6 +572,7 @@ public final class Anime4kPostProcessor {
                 throw new TargetUnavailableException("FBO incomplete: 0x" + Integer.toHexString(status)
                         + (halfFloat ? " (RGBA16F)" : " (RGBA8)"));
             }
+            requireGlSuccess("render target allocation");
             mOwnedTargets.add(target);
             return target;
         } catch (RuntimeException failure) {
@@ -737,7 +764,9 @@ public final class Anime4kPostProcessor {
                 GLES30.glReadBuffer(GLES30.GL_BACK);
                 GLES30.glActiveTexture(GLES30.GL_TEXTURE0);
                 GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, mScreenCopy.texture[0]);
+                requireGlSuccess("screen copy setup");
                 GLES30.glCopyTexSubImage2D(GLES30.GL_TEXTURE_2D, 0, 0, 0, 0, 0, width, height);
+                requireGlSuccess("screen copy");
             } finally { GLES30.glReadBuffer(readBuffer); }
             return mScreenCopy.texture[0];
         } catch (TargetUnavailableException unavailable) {
@@ -772,9 +801,16 @@ public final class Anime4kPostProcessor {
             GLES30.glReadBuffer(GLES30.GL_COLOR_ATTACHMENT0);
             GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, mScreenCopy.fbo[0]);
             GLES30.glDisable(GLES30.GL_SCISSOR_TEST);
+            requireGlSuccess("borrowed texture copy setup");
+            // Both rectangles increase in Y. Native renormalizes each original UV
+            // with (v-v0)/(v1-v0), preserving that vertex's original orientation.
             GLES30.glBlitFramebuffer(left, bottom, left+width, bottom+height,
                     0, 0, width, height, GLES30.GL_COLOR_BUFFER_BIT, GLES30.GL_NEAREST);
+            requireGlSuccess("borrowed texture copy");
             return mScreenCopy.texture[0];
+        } catch (TargetUnavailableException unavailable) {
+            targetUnavailable(width, height, width, height, true, unavailable.getMessage());
+            return 0;
         } finally {
             if (mBorrowedReadFbo[0] != 0) {
                 GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, mBorrowedReadFbo[0]);
@@ -852,18 +888,22 @@ public final class Anime4kPostProcessor {
                         throw new TargetUnavailableException("tile input framebuffer incomplete");
                     GLES30.glReadBuffer(GLES30.GL_COLOR_ATTACHMENT0);
                     GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, mTileInput.fbo[0]);
+                    requireGlSuccess("tile input copy setup");
                     GLES30.glBlitFramebuffer(x, y, x + scratchWidth, y + scratchHeight,
                             0, 0, scratchWidth, scratchHeight, GLES30.GL_COLOR_BUFFER_BIT, GLES30.GL_NEAREST);
+                    requireGlSuccess("tile input copy");
                     runPasses(mTileInput.texture[0], scratchWidth, scratchHeight);
                     GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, mTileRestore.fbo[0]);
                     GLES30.glReadBuffer(GLES30.GL_COLOR_ATTACHMENT0);
                     GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, mRestore.fbo[0]);
+                    requireGlSuccess("tile output copy setup");
                     // Native reconstruction keeps its phase: crop offsets scale with the trained output factor.
                     GLES30.glBlitFramebuffer((left - x) * mNativeScale, (top - y) * mNativeScale,
                             (left - x + coreWidth) * mNativeScale, (top - y + coreHeight) * mNativeScale,
                             left * mNativeScale, top * mNativeScale,
                             (left + coreWidth) * mNativeScale, (top + coreHeight) * mNativeScale,
                             GLES30.GL_COLOR_BUFFER_BIT, GLES30.GL_NEAREST);
+                    requireGlSuccess("tile output copy");
                 }
             }
         } finally {

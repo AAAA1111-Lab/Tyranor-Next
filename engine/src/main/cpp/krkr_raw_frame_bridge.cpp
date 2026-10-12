@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <new>
 #include <string>
 #include <vector>
 
@@ -48,16 +49,18 @@ jclass callbackClass=nullptr; jmethodID callbackMethod=nullptr;
 bool installed=false;
 thread_local unsigned int updateDepth=0;
 thread_local void* windowSprite=nullptr;
-thread_local std::array<void*,8> liveSprites{};
-thread_local bool identityOverflow=false;
-size_t liveCount() { return std::count_if(liveSprites.begin(),liveSprites.end(),[](void* p){return p!=nullptr;}); }
+// Keep every observed stage Sprite until its guarded destructor runs. A fixed
+// eight-entry limit made an ordinary scene transition permanently ambiguous.
+thread_local std::vector<void*> liveSprites;
+thread_local bool identityTrackingFailed=false;
+size_t liveCount() { return liveSprites.size(); }
 void* completeObject(const void* self) {
     auto* table=*reinterpret_cast<intptr_t* const*>(self);
     return const_cast<char*>(static_cast<const char*>(self))+table[-2];
 }
 void forget(void* self) {
     void* top=completeObject(self);
-    for(auto& p:liveSprites)if(p==top)p=nullptr;
+    liveSprites.erase(std::remove(liveSprites.begin(),liveSprites.end(),top),liveSprites.end());
     if(windowSprite==top)windowSprite=nullptr;
 }
 void d0Hook(void* self) { forget(self); originalD0(self); }
@@ -83,17 +86,20 @@ void remember(const void* self) {
     // Unknown subclasses remain entirely on their original drawing path.
     if (*static_cast<void***>(top)!=spriteTable+2) return;
     if(std::find(liveSprites.begin(),liveSprites.end(),top)==liveSprites.end()) {
-        auto empty=std::find(liveSprites.begin(),liveSprites.end(),nullptr);
-        if(empty==liveSprites.end())identityOverflow=true;else *empty=top;
+        try { liveSprites.push_back(top); }
+        catch(const std::bad_alloc&) {
+            // An untracked live object cannot safely be assumed destroyed on reset.
+            identityTrackingFailed=true;
+        }
     }
-    if(identityOverflow || liveCount()!=1 || (frameSprite && frameSprite!=top)) ambiguous=true;
+    if(identityTrackingFailed || liveCount()!=1 || (frameSprite && frameSprite!=top)) ambiguous=true;
     frameSprite=top; windowSprite=top;
 }
 void* getterHook(const void* self) { remember(self); return originalGetter(self); }
 void* getterThunkHook(const void* self) { remember(self); return originalGetterThunk(self); }
 void drawHook(void* self,void* renderer,const void* matrix,unsigned int flags) {
     void* previous=drawingSprite;
-    drawingSprite=(self==windowSprite && !ambiguous && !identityOverflow && liveCount()==1)?self:nullptr;
+    drawingSprite=(self==windowSprite && !ambiguous && !identityTrackingFailed && liveCount()==1)?self:nullptr;
     originalDraw(self,renderer,matrix,flags);
     drawingSprite=previous;
 }
@@ -351,8 +357,8 @@ extern "C" JNIEXPORT jint JNICALL Java_com_core_gl_KirikiroidRawFrameBridge_nati
     return report(path.empty()?InstallStage::Argument:install(env,cls,path));
 }
 extern "C" JNIEXPORT void JNICALL Java_com_core_gl_KirikiroidRawFrameBridge_nativeBeginFrame(JNIEnv* env,jclass,jint w,jint h) {
-    frameEnv=env;surfaceWidth=w;surfaceHeight=h;used=false;ambiguous=identityOverflow||liveCount()>1;frameSprite=nullptr;
-    if(liveCount()==1)windowSprite=*std::find_if(liveSprites.begin(),liveSprites.end(),[](void* p){return p!=nullptr;});
+    frameEnv=env;surfaceWidth=w;surfaceHeight=h;used=false;ambiguous=identityTrackingFailed||liveCount()>1;frameSprite=nullptr;
+    windowSprite=liveCount()==1 ? liveSprites.front() : nullptr;
 }
 extern "C" JNIEXPORT void JNICALL Java_com_core_gl_KirikiroidRawFrameBridge_nativeEndFrame(JNIEnv*,jclass) { frameEnv=nullptr;drawingSprite=nullptr; }
 extern "C" JNIEXPORT void JNICALL Java_com_core_gl_KirikiroidRawFrameBridge_nativeResetContext(JNIEnv*,jclass) {
