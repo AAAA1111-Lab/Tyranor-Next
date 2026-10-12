@@ -17,30 +17,35 @@ abstract class VerifyGraphicsResources extends DefaultTask {
     @TaskAction void verify() {
         File engine = engineDirectory.get().asFile.canonicalFile
         Set<File> inputs = artifacts.files.collect { it.canonicalFile } as Set
+        Set<File> verified = new HashSet<>()
         manifestsDirectory.get().asFile.eachFileRecurse { manifest ->
             if (!manifest.isFile() || !manifest.name.endsWith('.json')) return
             def data = new JsonSlurper().parse(manifest)
             (data.generated ?: []).each { item ->
-                verifyFile(engine, inputs, new File(engine, 'src/main/assets/' + item.file), item.sha256)
+                VerifyGraphicsResources.verifyFile(engine, inputs, verified, new File(engine, 'src/main/assets/' + item.file), item.sha256)
             }
             if (data.files != null) {
                 if (!(data.assetDirectory instanceof String)) throw new GradleException('Missing assetDirectory: ' + manifest)
                 data.files.each { item ->
-                    verifyFile(engine, inputs, new File(engine, 'src/main/assets/' + data.assetDirectory + '/' + item.file), item.sha256)
+                    VerifyGraphicsResources.verifyFile(engine, inputs, verified, new File(engine, 'src/main/assets/' + data.assetDirectory + '/' + item.file), item.sha256)
                 }
             }
             (data.patches ?: []).each { item ->
-                verifyFile(engine, inputs, new File(manifest.parentFile, item.file), item.sha256)
+                VerifyGraphicsResources.verifyFile(engine, inputs, verified, new File(manifest.parentFile, item.file), item.sha256)
             }
             if (data.previousExportsSha256 != null) {
-                verifyFile(engine, inputs, new File(engine.parentFile, data.previousExportsFile), data.previousExportsSha256)
+                VerifyGraphicsResources.verifyFile(engine, inputs, verified, new File(engine.parentFile, data.previousExportsFile), data.previousExportsSha256)
             }
             if (data.librarySha256 != null) {
-                verifyFile(engine, inputs, new File(engine.parentFile, data.libraryFile), data.librarySha256)
+                VerifyGraphicsResources.verifyFile(engine, inputs, verified, new File(engine.parentFile, data.libraryFile), data.librarySha256)
             }
         }
+        Set<File> unlisted = inputs.findAll { it.name.endsWith('.glsl') && !verified.contains(it) } as Set
+        if (!unlisted.isEmpty()) {
+            throw new GradleException('Unregistered graphics shaders: ' + unlisted.sort())
+        }
     }
-    private static void verifyFile(File engine, Set<File> inputs, File file, Object expected) {
+    static void verifyFile(File engine, Set<File> inputs, Set<File> verified, File file, Object expected) {
         File target = file.canonicalFile
         if (!target.toPath().startsWith(engine.toPath()) || !inputs.contains(target) || !target.isFile()
                 || !(expected instanceof String) || !(expected ==~ /[0-9a-f]{64}/)) {
@@ -55,5 +60,6 @@ abstract class VerifyGraphicsResources extends DefaultTask {
         if (sha.digest().encodeHex().toString() != expected) {
             throw new GradleException('Graphics artifact SHA-256 mismatch: ' + target)
         }
+        verified.add(target)
     }
 }

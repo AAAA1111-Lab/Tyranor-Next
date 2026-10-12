@@ -16,21 +16,21 @@ abstract class GenerateGraphicsFilters extends DefaultTask {
             .sort { it.name }.collectMany { new JsonSlurper().parse(it).filters }
         def ids = [] as Set
         definitions.each { d ->
-            if (!(d.id ==~ /[a-z0-9_]+/) || !ids.add(d.id)) fail('invalid or duplicate id')
-            if (!(d.category instanceof String) || !d.category || !(d.shortName instanceof String)) fail('missing label')
+            if (!(d.id ==~ /[a-z0-9_]+/) || !ids.add(d.id)) GenerateGraphicsFilters.fail('invalid or duplicate id')
+            if (!(d.category instanceof String) || !d.category || !(d.shortName instanceof String)) GenerateGraphicsFilters.fail('missing label')
             ['title', 'categoryTitle'].each { field ->
-                if (!['zh','en','ja'].every { d[field][it] instanceof String && d[field][it] }) fail('missing localized label')
+                if (!['zh','en','ja'].every { d[field][it] instanceof String && d[field][it] }) GenerateGraphicsFilters.fail('missing localized label')
             }
-            if (!(d.color ==~ /#[0-9A-Fa-f]{8}/) || !(d.nativeScale in [1,2]) || !(d.haloPerPass in [0,1]) || !(d.maxOutputScale in [1,2])) fail('invalid geometry or color')
-            if (d.asset != null && !(d.asset ==~ /[A-Za-z0-9_-]+(\/[A-Za-z0-9_-]+)?/)) fail('invalid asset path')
-            if (!d.scaleModes || !d.scaleModes.every { it in ['none','fit','factor'] } || !(d.defaultScaleMode in d.scaleModes)) fail('invalid scale modes')
-            if (!(d.defaultSharpness instanceof Number) || d.defaultSharpness < 0 || d.defaultSharpness > 1) fail('invalid sharpness')
-            if (!(d.categoryOrder instanceof Integer) || !(d.order instanceof Integer)) fail('invalid order')
-            ['sharpnessAdjustable','outputSized','forceParameters','visible','retired'].each { if (!(d[it] instanceof Boolean)) fail('invalid flag') }
-            if (d.visible && (d.retired || d.migrationTarget != null)) fail('migration nodes must be hidden')
+            if (!(d.color ==~ /#[0-9A-Fa-f]{8}/) || !(d.nativeScale in [1,2]) || !(d.haloPerPass in [0,1]) || !(d.maxOutputScale in [1,2])) GenerateGraphicsFilters.fail('invalid geometry or color')
+            if (d.asset != null && !(d.asset ==~ /[A-Za-z0-9_-]+(\/[A-Za-z0-9_-]+)?/)) GenerateGraphicsFilters.fail('invalid asset path')
+            if (!d.scaleModes || !d.scaleModes.every { it in ['none','fit','factor'] } || !(d.defaultScaleMode in d.scaleModes)) GenerateGraphicsFilters.fail('invalid scale modes')
+            if (!(d.defaultSharpness instanceof Number) || d.defaultSharpness < 0 || d.defaultSharpness > 1) GenerateGraphicsFilters.fail('invalid sharpness')
+            if (!(d.categoryOrder instanceof Integer) || !(d.order instanceof Integer)) GenerateGraphicsFilters.fail('invalid order')
+            ['sharpnessAdjustable','outputSized','forceParameters','visible','retired'].each { if (!(d[it] instanceof Boolean)) GenerateGraphicsFilters.fail('invalid flag') }
+            if (d.visible && (d.retired || d.migrationTarget != null)) GenerateGraphicsFilters.fail('migration nodes must be hidden')
         }
         definitions.each { d ->
-            if (d.migrationTarget != null && !definitions.any { it.id == d.migrationTarget && it.visible }) fail('missing migration target')
+            if (d.migrationTarget != null && !definitions.any { it.id == d.migrationTarget && it.visible }) GenerateGraphicsFilters.fail('missing migration target')
         }
         definitions.sort { a,b -> a.categoryOrder <=> b.categoryOrder ?: a.category <=> b.category ?: a.order <=> b.order ?: a.id <=> b.id }
         def quoted = { value -> value == null ? 'null' : JsonOutput.toJson(value) }
@@ -51,5 +51,5 @@ abstract class GenerateGraphicsFilters extends DefaultTask {
         target.parentFile.mkdirs()
         target.setText(source, 'UTF-8')
     }
-    private static void fail(String detail) { throw new GradleException('Graphics filter descriptor: ' + detail) }
+    static void fail(String detail) { throw new GradleException('Graphics filter descriptor: ' + detail) }
 }

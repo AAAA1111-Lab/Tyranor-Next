@@ -44,6 +44,8 @@ def main():
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--install", action="store_true", help="Copy verified staged library into jniLibs")
     args = parser.parse_args()
+    if args.prepare_only and args.install:
+        parser.error("--prepare-only cannot be combined with --install")
     if args.jobs < 1 or (args.baseline_only and args.install):
         parser.error("jobs must be positive; baseline builds cannot be installed")
     root = Path(__file__).resolve().parents[1]
