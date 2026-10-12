@@ -100,6 +100,6 @@ private fun ScaleParameter(title: String, value: String, onChange: (String) -> U
     }
 }
 
-private fun formatScale(value: Double): String = value.toString().removeSuffix(".0")
+private fun formatScale(value: Double): String = formatUiDecimal(value, 6, trimTrailingZeros = true)
 private fun validScale(value: String): Double? = value.trim().replace(',', '.').toDoubleOrNull()
     ?.takeIf { it.isFinite() && it in 0.25..4.0 }

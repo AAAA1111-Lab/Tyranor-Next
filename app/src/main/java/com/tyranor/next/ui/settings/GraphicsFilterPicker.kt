@@ -95,7 +95,8 @@ private fun FilterCategories(enabled: Boolean, modifier: Modifier, onSelect: (Gr
         items(GraphicsFilterCategory.entries.toList(), key = { it.name }) { category ->
             AppNavItem(
                 title = graphicsFilterCategoryTitle(category),
-                showLeadingIcon = false,
+                leadingIcon = R.drawable.ic_graphics_parameters,
+                showLeadingIcon = category.presetIds.size > 1,
                 showArrow = category.presetIds.size > 1,
                 titleMaxLines = 2,
                 indication = null,

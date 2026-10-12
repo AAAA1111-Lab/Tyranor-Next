@@ -25,7 +25,7 @@ import com.tyranor.next.R
 import com.tyranor.next.core.settings.GraphicsFilterCatalog
 import com.tyranor.next.core.settings.GraphicsNode
 import com.tyranor.next.core.settings.GraphicsSettingsCodec
-import com.tyranor.next.theme.DialogItemSurface
+import com.tyranor.next.theme.NavWhite
 import com.tyranor.next.theme.AppComponentShape
 import com.tyranor.next.theme.TextColor
 import com.tyranor.next.theme.glassBorder
@@ -64,7 +64,7 @@ internal fun GraphicsChainEditor(chain: List<GraphicsNode>, enabled: Boolean, on
                         .bringIntoViewRequester(reveal)
                         .zIndex(if (moving) 1f else 0f)
                         .graphicsLayer { translationY = if (moving) offset else 0f }
-                        .then(if (moving) Modifier.clip(AppComponentShape).background(DialogItemSurface).glassBorder() else Modifier)
+                        .then(if (moving) Modifier.clip(AppComponentShape).background(NavWhite).glassBorder() else Modifier)
                         .pointerInput(entry.key, enabled) {
                             if (!enabled) return@pointerInput
                             detectDragGesturesAfterLongPress(

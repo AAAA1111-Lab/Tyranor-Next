@@ -98,7 +98,12 @@ fun MiuixSettingsTheme(
             onSurfaceContainerHighest = TextColor,
         )
     } else {
-        colors
+        colors.copy(
+            surfaceContainerHigh = if (glass) colors.surfaceContainerHigh else NavWhite,
+            surfaceContainerHighest = if (glass) colors.surfaceContainerHighest else NavWhite,
+            onSurfaceContainerHigh = TextColor,
+            onSurfaceContainerHighest = TextColor,
+        )
     }
     MiuixTheme(
         colors = dialogColors,
