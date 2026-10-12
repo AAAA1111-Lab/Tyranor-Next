@@ -10,11 +10,14 @@
 #include <android/log.h>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <mutex>
 #include <new>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -49,18 +52,38 @@ jclass callbackClass=nullptr; jmethodID callbackMethod=nullptr;
 bool installed=false;
 thread_local unsigned int updateDepth=0;
 thread_local void* windowSprite=nullptr;
-// Keep every observed stage Sprite until its guarded destructor runs. A fixed
-// eight-entry limit made an ordinary scene transition permanently ambiguous.
-thread_local std::vector<void*> liveSprites;
-thread_local bool identityTrackingFailed=false;
-size_t liveCount() { return liveSprites.size(); }
+// Only identity metadata is shared. The engine still owns object lifetimes;
+// stage discovery and rendering must stay on one owner thread. Destructors on
+// any thread remove tracked identities, but an off-owner tracked destruction
+// makes reconstruction unsafe. Never call engine/GL/JNI code under this mutex.
+constexpr size_t kMaxLiveSprites=1024;
+std::mutex identityMutex;
+std::vector<void*> liveSprites;
+std::thread::id identityOwner;
+bool identityOwnerKnown=false;
+std::atomic<bool> identityTrackingFailed{false};
+// Called with identityMutex held. Unknown identities after overflow/OOM or an
+// owner-thread mismatch cannot be recovered by a GL reset; bypass until restart.
+bool identityThreadMatches() {
+    const auto current=std::this_thread::get_id();
+    if(!identityOwnerKnown) { identityOwner=current;identityOwnerKnown=true; }
+    else if(identityOwner!=current) identityTrackingFailed.store(true);
+    return !identityTrackingFailed.load();
+}
 void* completeObject(const void* self) {
     auto* table=*reinterpret_cast<intptr_t* const*>(self);
     return const_cast<char*>(static_cast<const char*>(self))+table[-2];
 }
 void forget(void* self) {
     void* top=completeObject(self);
-    liveSprites.erase(std::remove(liveSprites.begin(),liveSprites.end(),top),liveSprites.end());
+    {
+        std::lock_guard<std::mutex> lock(identityMutex);
+        auto found=std::find(liveSprites.begin(),liveSprites.end(),top);
+        if(found!=liveSprites.end()) {
+            if(identityOwner!=std::this_thread::get_id()) identityTrackingFailed.store(true);
+            liveSprites.erase(found);
+        }
+    }
     if(windowSprite==top)windowSprite=nullptr;
 }
 void d0Hook(void* self) { forget(self); originalD0(self); }
@@ -85,21 +108,30 @@ void remember(const void* self) {
     // Only exact Sprite instances have the destructor slots guarded below.
     // Unknown subclasses remain entirely on their original drawing path.
     if (*static_cast<void***>(top)!=spriteTable+2) return;
+    std::lock_guard<std::mutex> lock(identityMutex);
+    if(!identityThreadMatches()) { ambiguous=true;return; }
     if(std::find(liveSprites.begin(),liveSprites.end(),top)==liveSprites.end()) {
-        try { liveSprites.push_back(top); }
+        if(liveSprites.size()>=kMaxLiveSprites) identityTrackingFailed.store(true);
+        else try { liveSprites.push_back(top); }
         catch(const std::bad_alloc&) {
             // An untracked live object cannot safely be assumed destroyed on reset.
-            identityTrackingFailed=true;
+            identityTrackingFailed.store(true);
         }
     }
-    if(identityTrackingFailed || liveCount()!=1 || (frameSprite && frameSprite!=top)) ambiguous=true;
+    if(identityTrackingFailed.load() || liveSprites.size()!=1 || (frameSprite && frameSprite!=top)) ambiguous=true;
     frameSprite=top; windowSprite=top;
 }
 void* getterHook(const void* self) { remember(self); return originalGetter(self); }
 void* getterThunkHook(const void* self) { remember(self); return originalGetterThunk(self); }
 void drawHook(void* self,void* renderer,const void* matrix,unsigned int flags) {
     void* previous=drawingSprite;
-    drawingSprite=(self==windowSprite && !ambiguous && !identityTrackingFailed && liveCount()==1)?self:nullptr;
+    bool eligible=false;
+    if(self==windowSprite && !ambiguous) {
+        std::lock_guard<std::mutex> lock(identityMutex);
+        eligible=!identityTrackingFailed.load() && identityOwner==std::this_thread::get_id()
+            && liveSprites.size()==1 && liveSprites.front()==self;
+    }
+    drawingSprite=eligible?self:nullptr;
     originalDraw(self,renderer,matrix,flags);
     drawingSprite=previous;
 }
@@ -110,7 +142,7 @@ void initHook(void* command,float z,unsigned int texture,void* program,Blend ble
     // replacement per frame leases these fixed arrays through nativeEndFrame.
     unsigned int output=0;
     float u0=1,v0=1,u1=0,v1=0;
-    if (frameEnv && drawingSprite && !used && !ambiguous && texture &&
+    if (frameEnv && drawingSprite && !used && !ambiguous && !identityTrackingFailed.load() && texture &&
         blend.src==GL_ONE && blend.dst==GL_ZERO && triangles.vertexCount==4 &&
         triangles.indexCount==6 && triangles.vertices && triangles.indices) {
         void* source=originalGetter(drawingSprite);
@@ -357,13 +389,19 @@ extern "C" JNIEXPORT jint JNICALL Java_com_core_gl_KirikiroidRawFrameBridge_nati
     return report(path.empty()?InstallStage::Argument:install(env,cls,path));
 }
 extern "C" JNIEXPORT void JNICALL Java_com_core_gl_KirikiroidRawFrameBridge_nativeBeginFrame(JNIEnv* env,jclass,jint w,jint h) {
-    frameEnv=env;surfaceWidth=w;surfaceHeight=h;used=false;ambiguous=identityTrackingFailed||liveCount()>1;frameSprite=nullptr;
-    windowSprite=liveCount()==1 ? liveSprites.front() : nullptr;
+    frameEnv=env;surfaceWidth=w;surfaceHeight=h;used=false;frameSprite=nullptr;
+    std::lock_guard<std::mutex> lock(identityMutex);
+    bool ownerMatches=identityThreadMatches();
+    ambiguous=!ownerMatches||liveSprites.size()>1;
+    windowSprite=ownerMatches && liveSprites.size()==1 ? liveSprites.front() : nullptr;
 }
 extern "C" JNIEXPORT void JNICALL Java_com_core_gl_KirikiroidRawFrameBridge_nativeEndFrame(JNIEnv*,jclass) { frameEnv=nullptr;drawingSprite=nullptr; }
 extern "C" JNIEXPORT void JNICALL Java_com_core_gl_KirikiroidRawFrameBridge_nativeResetContext(JNIEnv*,jclass) {
     frameEnv=nullptr;windowSprite=drawingSprite=frameSprite=nullptr;used=ambiguous=false;updateDepth=0;
     // GL resource resets do not destroy engine Sprite objects. Retain their identity
-    // set until the guarded destructors remove them, including across pause/resume.
-    if(installed)syncTextureCache();
+    // set and any tracking failure across pause/resume; only destructors remove entries.
+    if(installed) {
+        { std::lock_guard<std::mutex> lock(identityMutex);identityThreadMatches(); }
+        syncTextureCache();
+    }
 }

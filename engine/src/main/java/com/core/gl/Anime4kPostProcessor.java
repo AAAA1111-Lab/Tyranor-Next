@@ -31,6 +31,7 @@ public final class Anime4kPostProcessor {
     public static final long TARGET_MEMORY_BUDGET_BYTES = 256L * 1024L * 1024L;
     // Contributed CNN models can use eight simultaneous inputs. ES3 guarantees 16.
     private static final int MAX_BINDINGS = 8;
+    private static final int MAX_INHERITED_GL_ERRORS = 16;
 
     private static final String VERTEX_SHADER =
             "#version 300 es\n" +
@@ -294,6 +295,7 @@ public final class Anime4kPostProcessor {
             mBypassReason = BYPASS_INVALID_SIZE;
             return 0;
         }
+        if (!beginOwnedGlOperations()) return 0;
         mState.capture(mMaxBindings);
         try {
             if (!ensureTargets(width, height, outWidth, outHeight, false)) return 0;
@@ -302,6 +304,8 @@ public final class Anime4kPostProcessor {
             else if (!mScaleOnly) runPasses(textureId, width, height);
             runScale(mScaleOnly ? textureId : mRestore.texture[0],
                     mScaleOnly ? width : mRestore.width, mScaleOnly ? height : mRestore.height);
+            // Report this node's drawing errors before the next node opens its own boundary.
+            requireGlSuccess("filter node drawing");
             mBypassReason = BYPASS_NONE;
             return mOutput.texture[0];
         } catch (TargetUnavailableException unavailable) {
@@ -541,6 +545,22 @@ public final class Anime4kPostProcessor {
         return mHalfFloatRenderable;
     }
 
+    /** Establish the error boundary once, before capturing/changing the host state.
+     * Owned-operation checks below must retain errors generated after this point. */
+    private boolean beginOwnedGlOperations() {
+        if (mFailed) { mBypassReason = BYPASS_PIPELINE_FAILED; return false; }
+        for (int i = 0; i < MAX_INHERITED_GL_ERRORS; i++) {
+            if (GLES30.glGetError() == GLES30.GL_NO_ERROR) return true;
+        }
+        // A broken/lost context must not loop forever or masquerade as a size failure.
+        // Retain resources for release/context abandonment; submit no more GL work here.
+        mFailed = true;
+        mGlReady = false;
+        mBypassReason = BYPASS_PIPELINE_FAILED;
+        Log.e(TAG, "GL error state did not clear before filter processing");
+        return false;
+    }
+
     private static void requireGlSuccess(String operation) {
         int error = GLES30.glGetError();
         if (error != GLES30.GL_NO_ERROR)
@@ -750,6 +770,7 @@ public final class Anime4kPostProcessor {
     /** KR2 input is explicitly its Surface-sized default framebuffer, not a raw game frame. */
     int captureScreen(int width, int height) {
         if (mFailed || width <= 0 || height <= 0) return 0;
+        if (!beginOwnedGlOperations()) return 0;
         mState.capture(mMaxBindings);
         try {
             if (mScreenCopy == null || mScreenCopy.width != width || mScreenCopy.height != height) {
@@ -780,6 +801,7 @@ public final class Anime4kPostProcessor {
     int normalizeBorrowedTexture(int texture, int width, int height,
                                  float u0, float v0, float u1, float v1) {
         if (texture == 0 || width <= 0 || height <= 0 || u1 <= u0 || v1 <= v0) return 0;
+        if (!beginOwnedGlOperations()) return 0;
         mState.capture(1);
         try {
             if (mScreenCopy == null || mScreenCopy.width != width || mScreenCopy.height != height) {
@@ -802,8 +824,8 @@ public final class Anime4kPostProcessor {
             GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, mScreenCopy.fbo[0]);
             GLES30.glDisable(GLES30.GL_SCISSOR_TEST);
             requireGlSuccess("borrowed texture copy setup");
-            // Both rectangles increase in Y. Native renormalizes each original UV
-            // with (v-v0)/(v1-v0), preserving that vertex's original orientation.
+            // The crop and native UV remap share [v0,v1]. Both blit rectangles
+            // increase in framebuffer Y; (v-v0)/(v1-v0) retains vertex ordering.
             GLES30.glBlitFramebuffer(left, bottom, left+width, bottom+height,
                     0, 0, width, height, GLES30.GL_COLOR_BUFFER_BIT, GLES30.GL_NEAREST);
             requireGlSuccess("borrowed texture copy");
@@ -849,6 +871,7 @@ public final class Anime4kPostProcessor {
             GLES30.glActiveTexture(GLES30.GL_TEXTURE0); GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texture);
             GLES30.glBindSampler(0, mSampler[0]); GLES30.glUniform1i(mPresentSamplerLoc, 0);
             GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4);
+            requireGlSuccess("filter presentation");
         } finally { mState.restore(); }
     }
     private void prepareDrawState() {

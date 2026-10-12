@@ -67,9 +67,13 @@ public final class GraphicsFilterPipeline {
         if (!hasExecution) { recordIdentity(); return; }
         int input = surfaceAdapter.captureScreen(width, height);
         if (input == 0) {
-            temporaryFailed = true;
-            bypassReason = Anime4kPostProcessor.BYPASS_TARGET_UNAVAILABLE;
-            discardTargets();
+            failed = surfaceAdapter.isFailed();
+            temporaryFailed = !failed;
+            bypassReason = surfaceAdapter.bypassReason();
+            if (bypassReason == Anime4kPostProcessor.BYPASS_NONE)
+                bypassReason = Anime4kPostProcessor.BYPASS_TARGET_UNAVAILABLE;
+            // A lost error state retains GL names for owner-thread cleanup/context abandonment.
+            if (failed) invalidateMeasurements(); else discardTargets();
             return;
         }
         int output = run(input, width, height);
@@ -80,7 +84,7 @@ public final class GraphicsFilterPipeline {
             failed = true;
             bypassReason = Anime4kPostProcessor.BYPASS_PIPELINE_FAILED;
             actualWidth = width; actualHeight = height;
-            discardTargets();
+            invalidateMeasurements();
         }
     }
 
@@ -103,7 +107,7 @@ public final class GraphicsFilterPipeline {
             }
             if (unexpected) {
                 failed = true; bypassReason = Anime4kPostProcessor.BYPASS_PIPELINE_FAILED;
-                actualWidth = sw; actualHeight = sh; discardTargets(); return original;
+                actualWidth = sw; actualHeight = sh; invalidateMeasurements(); return original;
             }
             if (output == 0 || node.isFailed()) {
                 failed = node.isFailed();
@@ -114,7 +118,7 @@ public final class GraphicsFilterPipeline {
                     failed = true;
                 }
                 actualWidth = sw; actualHeight = sh;
-                discardTargets();
+                if (failed) invalidateMeasurements(); else discardTargets();
                 return original;
             }
             current = output;
@@ -137,15 +141,19 @@ public final class GraphicsFilterPipeline {
         try {
             if (crop) input = surfaceAdapter.normalizeBorrowedTexture(texture, sw, sh, u0, v0, u1, v1);
             if (input == 0) {
-                temporaryFailed = true;
-                bypassReason = Anime4kPostProcessor.BYPASS_TARGET_UNAVAILABLE;
-                discardTargets(); return 0;
+                failed = surfaceAdapter.isFailed();
+                temporaryFailed = !failed;
+                bypassReason = surfaceAdapter.bypassReason();
+                if (bypassReason == Anime4kPostProcessor.BYPASS_NONE)
+                    bypassReason = Anime4kPostProcessor.BYPASS_TARGET_UNAVAILABLE;
+                if (failed) invalidateMeasurements(); else discardTargets();
+                return 0;
             }
             int result = run(input, sw, sh);
             return bypassReason == Anime4kPostProcessor.BYPASS_NONE ? result : 0;
         } catch (RuntimeException failure) {
             failed = true; bypassReason = Anime4kPostProcessor.BYPASS_PIPELINE_FAILED;
-            discardTargets(); return 0;
+            invalidateMeasurements(); return 0;
         }
     }
 
