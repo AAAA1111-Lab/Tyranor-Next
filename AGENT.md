@@ -73,6 +73,9 @@
 ### 4. 资源归属
 
 - `engine/src/main/assets`：底层引擎运行资源与共享引擎脚本源头。
+- `engine/src/main/graphicsfilters`：可独立移除的滤镜贡献定义，含菜单、参数、展示颜色与资源路径。
+- `engine/patches`：固定上游来源、下游补丁与本地资源哈希记录。
+- `buildSrc`：生成滤镜注册数据及验证已提交资源；生成结果位于 build，不手工维护。
 
 - `app/src/main/assets/engine`：App 专属注入脚本；共享脚本由 Gradle 从 `engine/src/main/assets` 生成到 app assets。
 

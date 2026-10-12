@@ -32,7 +32,7 @@ python tools/build-siglus-graphics.py `
 
 本机 `stable-x86_64-pc-windows-gnu` 恰为 manifest 固定版本；脚本仍核对 rustc 版本和完整提交，不接受后续浮动 stable。也可安装精确版本后省略 `--toolchain`。脚本需要的 Cargo 工具代理位于所传 cargo home 的 bin 目录。
 
-构建目标为完整 `game_launcher --lib`，包含原有 Siglus 与 RealLive/AVG32/UK2 导出，不能用仅含 `siglus_scene_vm` 的库替换。使用 `--baseline-only` 生成无补丁对照库，不能安装；`--prepare-only` 只准备/验证源码。新库检查全部旧 ABI、16 KiB ELF LOAD 对齐后才允许 `--install`。
+构建目标为完整 `game_launcher --lib`，包含原有 Siglus 与 RealLive/AVG32/UK2 导出，不能用仅含 `siglus_scene_vm` 的库替换。使用 `--baseline-only` 生成无补丁对照库，不能安装；`--prepare-only` 只准备/验证源码。新库检查清单中的全部 55 个旧 ABI（含 GameActivity/JNI 入口）、16 KiB ELF LOAD 对齐；`--install` 还必须匹配 manifest 的 `librarySha256`，临时副本确认后原子替换，并再次核对目标库。任何前置失败均不替换原库。
 
 C ABI 最低 API 为 26，目标 arm64-v8a。补丁库 SHA-256：`9e7fa0c0b8f1830a276b3994d5258860c0c0cdc5359adf71b397ea087bdb26a6`。旧库全部导出符号保留，仅增加舞台查询符号；导出一致不等于全部共享引擎已真机回归。
 

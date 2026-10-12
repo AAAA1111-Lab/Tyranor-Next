@@ -208,6 +208,7 @@ docs/   设计文档、逆向分析、功能计划与优化方案
 - Miuix 等第三方依赖按各自许可证引入
 - Siglus / RealLive / AVG32 / UK2 引擎运行库来自 [siglus_rs](https://github.com/xmoezzz/siglus_rs)（MPL-2.0，上述引擎的非官方 Rust 重写/移植），以其自身许可证引入；相应源码可于上游或其 fork 仓库获取
 - FVP 引擎运行库来自 [rfvp](https://github.com/xmoezzz/rfvp)（MPL-2.0，FVP 引擎的非官方 Rust 重写/移植），以其自身许可证引入；相应源码可于上游或其 fork 仓库获取
+- CAS 可选滤镜来自 [GPUOpen-Effects/FidelityFX-CAS](https://github.com/GPUOpen-Effects/FidelityFX-CAS)，以 MIT 许可引入；独立资源随附 `engine/src/main/assets/cas/LICENSE-MIT`，固定来源及生成结果见 `engine/patches/cas-filters.json`。
 - Anime4K GLSL 着色器（`engine/src/main/assets/anime4k/`）来自 [bloc97/Anime4K](https://github.com/bloc97/Anime4K)，按其 MIT 许可证引入（版权声明保留于各着色器文件头部）
 
 ## 致谢
