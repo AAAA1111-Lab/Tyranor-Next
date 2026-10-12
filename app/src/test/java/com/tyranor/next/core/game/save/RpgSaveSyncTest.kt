@@ -272,12 +272,14 @@ class RpgSaveSyncTest {
     fun uppercaseSaveIsWrittenWhenItIsTheOnlyExistingDir() {
         // 只有 Save/ 存在时，无槽位的新导出应写入该目录（首选=已存在目录）
         val parent = temporaryFolder.newFolder("www")
-        val lower = parent.resolve("save")
         val upper = parent.resolve("Save").apply { mkdirs() }
         val tyranor = temporaryFolder.newFolder("savedata")
         tyranor.writeAt("RPG File1.bin", "PHONE", 1_000)
 
-        val result = RpgSaveSync.sync(listOf(lower, upper), tyranor, EngineType.RPG_MV, store(), "g")
+        // 与启动入口同源；sync 的首个候选就是写入目录，不能手工把不存在的 save 排在 Save 前。
+        val standardDirs = RpgSaveFormat.standardSaveDirectories(parent)
+        assertEquals(upper.canonicalFile, standardDirs.first().canonicalFile)
+        val result = RpgSaveSync.sync(standardDirs, tyranor, EngineType.RPG_MV, store(), "g")
 
         assertEquals(1, result.exported)
         assertEquals("PHONE", upper.resolve("file1.rpgsave").readText())
