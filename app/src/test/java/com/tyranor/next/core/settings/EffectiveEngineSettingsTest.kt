@@ -277,4 +277,24 @@ class EffectiveEngineSettingsTest {
         assertTrue(merged.hwVideo)
         assertFalse(merged.lessMemory)
     }
+    @Test
+    fun artemisUiAndLaunchShareValidatedVersionFallback() {
+        assertEquals(EngineSettingsStore.ART_ENGINE_V6,
+            EffectiveEngineSettings.resolveArtVersion("broken", EngineSettingsStore.ART_ENGINE_V6))
+        assertEquals(EngineSettingsStore.ART_ENGINE_AUTO,
+            EffectiveEngineSettings.resolveArtVersion("broken", "broken"))
+        assertEquals(EngineSettingsStore.ART_ENGINE_V2,
+            EffectiveEngineSettings.resolveArtVersion(" 2 ", EngineSettingsStore.ART_ENGINE_V6))
+        val version = EffectiveEngineSettings.resolveArtVersion("broken", EngineSettingsStore.ART_ENGINE_V6)
+        assertTrue(GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS,
+            EngineSettingsStore.ART_KERNEL_OFFICIAL, version).supported)
+        assertEquals(EngineSettingsStore.ART_VERSIONS - EngineSettingsStore.ART_ENGINE_AUTO,
+            com.core.engine.ArtemisVersion.values().map { it.id }.toSet())
+        for (host in com.core.engine.ArtemisVersion.values()) {
+            assertEquals(com.core.gl.ArtemisLibraryIdentity.supports(host.libraryFilename),
+                GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS,
+                    EngineSettingsStore.ART_KERNEL_OFFICIAL, host.id).supported)
+        }
+    }
+
 }
