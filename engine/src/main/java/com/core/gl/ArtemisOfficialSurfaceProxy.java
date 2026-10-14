@@ -70,6 +70,7 @@ final class ArtemisOfficialSurfaceProxy {
     private volatile boolean closed, failed, outputWanted, workerTimedOut, directOutput;
     private ArtemisOfficialDisconnect pendingDisconnect; // Accessed under this instance's monitor.
     private int releaseAttempts; // GLES-thread state only.
+    private boolean firstConnection = true; // Bridge serializes connection calls.
     private volatile int state = GraphicsStatus.WAITING;
     private EGLDisplay display = EGL14.EGL_NO_DISPLAY;
     private EGLContext eglContext = EGL14.EGL_NO_CONTEXT;
@@ -88,7 +89,9 @@ final class ArtemisOfficialSurfaceProxy {
     }
     Surface connect(Surface nextScreen, int width, int height, int producerWidth, int producerHeight) {
         if (closed || failed) { nextScreen.release();return null; }
-        AtomicReference<Surface> pendingScreen = new AtomicReference<>(nextScreen);
+        ArtemisOfficialConnectRequest<Surface> request =
+                new ArtemisOfficialConnectRequest<>(nextScreen, firstConnection);
+        firstConnection = false;
         AtomicBoolean cancelled = new AtomicBoolean();
         AtomicReference<Surface> result = new AtomicReference<>();
         AtomicReference<RuntimeException> error = new AtomicReference<>();
@@ -96,7 +99,7 @@ final class ArtemisOfficialSurfaceProxy {
         if (!worker.post(() -> {
             // Claim before using the Surface. A timeout may release an unclaimed
             // Surface even if this job never runs; claimed ones stay GL-owned.
-            Surface target = pendingScreen.getAndSet(null);
+            Surface target = request.claim();
             if (target == null) { done.countDown();return; }
             boolean transferred = false;
             try {
@@ -126,11 +129,17 @@ final class ArtemisOfficialSurfaceProxy {
                     }
                 } finally { done.countDown(); }
             }
-        })) { pendingScreen.getAndSet(null).release();return null; }
+        })) {
+            Surface unclaimed = request.cancel();
+            if (unclaimed != null) unclaimed.release();
+            confirmCancelledConnection(request);
+            return null;
+        }
         if (!await(done)) {
             cancelled.set(true);outputWanted=false;failed=true;workerTimedOut=true;state=GraphicsStatus.NATIVE_FAILED;
-            Surface unclaimed = pendingScreen.getAndSet(null);
+            Surface unclaimed = request.cancel();
             if (unclaimed != null) unclaimed.release();
+            confirmCancelledConnection(request);
             // Covers completion racing the timeout after the job's final check.
             // Cleanup remains serialized with EGL use on the consumer thread.
             worker.post(() -> { if (screen == nextScreen) { outputWanted=false;detach(); } });
@@ -138,6 +147,16 @@ final class ArtemisOfficialSurfaceProxy {
         }
         if (error.get()!=null) throw error.get();
         return result.get();
+    }
+    private void confirmCancelledConnection(ArtemisOfficialConnectRequest<Surface> request) {
+        if (!request.canConfirmDetached()) return;
+        // Only the first unclaimed request proves no consumer ever touched
+        // this screen queue. A late worker sees null and cannot connect it.
+        synchronized (this) {
+            ArtemisOfficialDisconnect detached = new ArtemisOfficialDisconnect();
+            detached.complete(true);
+            pendingDisconnect = detached;
+        }
     }
     boolean resizeProducer(int width, int height) {
         if (closed || failed) return false;
