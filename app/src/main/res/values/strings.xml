@@ -1,4 +1,5 @@
 <resources>
+    <string name="common_clear_input_content_description">清除输入</string>
     <string name="app_name">Tyranor Next</string>
     <string name="common_confirm">确定</string>
     <string name="common_done">完成</string>
