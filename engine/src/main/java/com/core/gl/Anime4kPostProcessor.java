@@ -798,6 +798,19 @@ public final class Anime4kPostProcessor {
         mTargetFailed = false;
     }
 
+    private void ensureBorrowedReadFramebuffer(String operation) {
+        if (mBorrowedReadFbo[0] != 0) return;
+        GLES30.glGenFramebuffers(1, mBorrowedReadFbo, 0);
+        requireTargetName(mBorrowedReadFbo[0], operation, GL_ERRORS);
+    }
+
+    /** Read-FBO allocation uses the same geometry-retry contract as texture targets.
+     * Drain allocation errors before rejecting a zero name or restoring host state. */
+    static void requireTargetName(int name, String operation, IntSupplier errors) {
+        requireGlSuccess(operation, true, errors);
+        if (name == 0) throw new TargetUnavailableException("cannot allocate " + operation);
+    }
+
     /** Copy only the integer-aligned game texture rectangle, never the display framebuffer.
      * Borrowed attachment is detached before returning; its texture remains engine-owned. */
     int normalizeBorrowedTexture(int texture, int width, int height,
@@ -812,8 +825,7 @@ public final class Anime4kPostProcessor {
                 releaseTargets();
                 mBorrowedCopy = createTexFbo(width, height, false);
             }
-            if (mBorrowedReadFbo[0] == 0) GLES30.glGenFramebuffers(1, mBorrowedReadFbo, 0);
-            requireName(mBorrowedReadFbo[0], "borrowed read framebuffer");
+            ensureBorrowedReadFramebuffer("borrowed read framebuffer");
             GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, mBorrowedReadFbo[0]);
             GLES30.glFramebufferTexture2D(GLES30.GL_READ_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0,
                     GLES30.GL_TEXTURE_2D, texture, 0);
@@ -898,10 +910,7 @@ public final class Anime4kPostProcessor {
 
     /** Run unchanged CNN passes with a conservative one-pixel halo per pass, then copy only the core. */
     private void runTiledPasses(int mainTexture, int width, int height) {
-        if (mBorrowedReadFbo[0] == 0) {
-            GLES30.glGenFramebuffers(1, mBorrowedReadFbo, 0);
-            requireName(mBorrowedReadFbo[0], "tile read framebuffer");
-        }
+        ensureBorrowedReadFramebuffer("tile read framebuffer");
         int halo = mHaloPerPass * mParsedPasses.size();
         int scratchWidth = mTileInput.width, scratchHeight = mTileInput.height;
         try {

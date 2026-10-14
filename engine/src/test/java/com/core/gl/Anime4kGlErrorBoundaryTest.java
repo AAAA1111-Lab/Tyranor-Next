@@ -60,6 +60,40 @@ public class Anime4kGlErrorBoundaryTest {
         assertTrue(reads[0] > 0 && reads[0] <= 16);
     }
 
+    @Test public void zeroReadFramebufferConsumesPressureBeforeRestorationAndRetry() {
+        for (String operation : new String[]{"borrowed read framebuffer", "tile read framebuffer"}) {
+            ErrorQueue errors = new ErrorQueue(GLES30.GL_OUT_OF_MEMORY,
+                    GLES30.GL_INVALID_FRAMEBUFFER_OPERATION);
+            assertThrows(Anime4kPostProcessor.TargetUnavailableException.class,
+                    () -> Anime4kPostProcessor.requireTargetName(0, operation, errors));
+            assertTrue(errors.pending.isEmpty());
+            Anime4kPostProcessor.requireGlSuccess("filter state restoration", false, errors);
+            // A later allocation after geometry reduction is not blocked by old errors.
+            Anime4kPostProcessor.requireTargetName(7, operation, errors);
+        }
+    }
+
+    @Test public void zeroReadFramebufferWithoutAnErrorRemainsATargetRejection() {
+        ErrorQueue errors = new ErrorQueue();
+        assertThrows(Anime4kPostProcessor.TargetUnavailableException.class,
+                () -> Anime4kPostProcessor.requireTargetName(0, "read framebuffer", errors));
+        Anime4kPostProcessor.requireTargetName(1, "read framebuffer", errors);
+    }
+
+    @Test public void readFramebufferApiErrorsAreStillPermanentAndFullyConsumed() {
+        ErrorQueue errors = new ErrorQueue(GLES30.GL_OUT_OF_MEMORY, GLES30.GL_INVALID_OPERATION);
+        assertThrows(IllegalStateException.class,
+                () -> Anime4kPostProcessor.requireTargetName(0, "read framebuffer", errors));
+        assertTrue(errors.pending.isEmpty());
+    }
+
+    @Test public void issuedReadFramebufferNameDoesNotMaskAllocationErrors() {
+        ErrorQueue errors = new ErrorQueue(GLES30.GL_OUT_OF_MEMORY);
+        assertThrows(Anime4kPostProcessor.TargetUnavailableException.class,
+                () -> Anime4kPostProcessor.requireTargetName(7, "read framebuffer", errors));
+        assertTrue(errors.pending.isEmpty());
+    }
+
     private static final class ErrorQueue implements IntSupplier {
         final ArrayDeque<Integer> pending = new ArrayDeque<>();
         ErrorQueue(int... errors) { for (int error : errors) pending.add(error); }
