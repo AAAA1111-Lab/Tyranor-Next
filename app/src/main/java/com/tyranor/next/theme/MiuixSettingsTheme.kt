@@ -74,6 +74,8 @@ fun MiuixSettingsTheme(
             surfaceContainerHigh = if (advanced) AdvancedGlassSurfaceHigh else GlassSurfaceHigh,
             surfaceContainerHighest = if (advanced) AdvancedGlassSurfaceHigh else GlassSurfaceHigh,
             secondaryContainer = if (advanced) AdvancedGlassSurfaceHigh else GlassSurfaceHigh,
+            onSurfaceContainerHigh = TextColor,
+            onSurfaceContainerHighest = TextColor,
             onSecondaryContainer = TextColor,
             onSurfaceContainerVariant = secondaryText,
             onBackgroundVariant = secondaryText,
@@ -88,8 +90,8 @@ fun MiuixSettingsTheme(
     } else {
         baseColors
     }
-    // Miuix InputField 在内部读取 surfaceContainerHigh，必须在主题边界映射动态条目色。
-    // 弹窗内为反色条目，玻璃档由 DialogItemSurface 自动选择各自的亮玻璃面。
+    // 只在弹窗内映射反色条目；普通页面保留 Miuix 的输入框底色和图标色。
+    // 玻璃页面沿用上面的玻璃色板，弹窗由 DialogItemSurface 选择对应条目色。
     val dialogColors = if (LocalAppDialogContent.current) {
         colors.copy(
             surfaceContainerHigh = DialogItemSurface,
@@ -98,12 +100,7 @@ fun MiuixSettingsTheme(
             onSurfaceContainerHighest = TextColor,
         )
     } else {
-        colors.copy(
-            surfaceContainerHigh = if (glass) colors.surfaceContainerHigh else NavWhite,
-            surfaceContainerHighest = if (glass) colors.surfaceContainerHighest else NavWhite,
-            onSurfaceContainerHigh = TextColor,
-            onSurfaceContainerHighest = TextColor,
-        )
+        colors
     }
     MiuixTheme(
         colors = dialogColors,
