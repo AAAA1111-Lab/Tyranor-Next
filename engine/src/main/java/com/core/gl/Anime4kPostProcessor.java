@@ -45,7 +45,12 @@ public final class Anime4kPostProcessor {
             "}\n";
 
     static final class TargetUnavailableException extends RuntimeException {
-        TargetUnavailableException(String detail) { super(detail); }
+        final boolean retryAfterDelay;
+        TargetUnavailableException(String detail) { this(detail, true); }
+        TargetUnavailableException(String detail, boolean retryAfterDelay) {
+            super(detail);
+            this.retryAfterDelay = retryAfterDelay;
+        }
     }
 
     private static final class TexFbo {
@@ -198,6 +203,7 @@ public final class Anime4kPostProcessor {
     private int mScaleProgram, mScaleSamplerLoc, mScaleSizeLoc, mScaleAxisLoc, mScaleOutputSizeLoc;
     private int mLimitWidth, mLimitHeight, mBypassReason;
     private boolean mTargetFailed;
+    private final GraphicsTargetRetry mTargetRetry = new GraphicsTargetRetry();
     private int mFailedSourceWidth, mFailedSourceHeight, mFailedOutputWidth, mFailedOutputHeight;
     private long mTargetBytes;
     private int mMaxBindings = MAX_BINDINGS;
@@ -271,6 +277,7 @@ public final class Anime4kPostProcessor {
         mPresentProgram = mPresentSamplerLoc = 0;
         mBorrowedReadFbo[0] = 0;
         mTargetFailed = false;
+        mTargetRetry.reset();
         mTargetBytes = 0;
         mMaxBindings = mScaleOnly ? 1 : MAX_BINDINGS;
         mGlReady = false;
@@ -281,6 +288,9 @@ public final class Anime4kPostProcessor {
     public boolean isFailed() { return mFailed; }
     public int bypassReason() { return mBypassReason; }
     public long targetBytes() { return mGlReady ? mTargetBytes : 0; }
+    boolean retriesTargetsAfterDelay() {
+        return mTargetFailed && mTargetRetry.isRetryableFailure();
+    }
     public int outputWidth() { return mGlReady ? mOutput.width : 0; }
     public int outputHeight() { return mGlReady ? mOutput.height : 0; }
 
@@ -288,7 +298,8 @@ public final class Anime4kPostProcessor {
      * Execute the node at its planned size, then resample only when requested by
      * that node. Native reconstruction retains its trained scale; the host handles display fitting.
      * Invalid/GL-limit requests return zero without permanently failing the
-     * pipeline. Target failures retry after geometry or context changes.
+     * pipeline. Target allocation pressure retries with bounded backoff; deterministic
+     * budget/geometry rejections retry after geometry or context changes.
      */
     public int renderTexture(int textureId, int width, int height, int outWidth, int outHeight) {
         if (mFailed) { mBypassReason = BYPASS_PIPELINE_FAILED; return 0; }
@@ -296,6 +307,7 @@ public final class Anime4kPostProcessor {
             mBypassReason = BYPASS_INVALID_SIZE;
             return 0;
         }
+        if (targetsBlocked(width, height, outWidth, outHeight)) return 0;
         if (!beginOwnedGlOperations()) return 0;
         mState.capture(mMaxBindings);
         try {
@@ -308,9 +320,10 @@ public final class Anime4kPostProcessor {
             // Report this node's drawing errors before the next node opens its own boundary.
             requireGlSuccess("filter node drawing", false);
             mBypassReason = BYPASS_NONE;
+            mTargetRetry.reset();
             return mOutput.texture[0];
         } catch (TargetUnavailableException unavailable) {
-            targetUnavailable(width, height, outWidth, outHeight, unavailable.getMessage());
+            targetUnavailable(width, height, outWidth, outHeight, unavailable);
             return 0;
         } catch (RuntimeException failure) {
             fail(failure);
@@ -324,6 +337,7 @@ public final class Anime4kPostProcessor {
 
     /** Delete owned resources only while the owning context is current. */
     public void release() {
+        mTargetRetry.reset();
         mHalfFloatChecked = mHalfFloatRenderable = false;
         if (mPrograms.isEmpty() && mOwnedTargets.isEmpty() && mQuadBuffer[0] == 0
                 && mQuadVao[0] == 0 && mSampler[0] == 0 && mVertexShader == 0 && mScaleProgram == 0 && mPresentProgram == 0 && mBorrowedReadFbo[0] == 0) {
@@ -415,12 +429,6 @@ public final class Anime4kPostProcessor {
             mBypassReason = BYPASS_INVALID_SIZE;
             return false;
         }
-        if (mTargetFailed && width == mFailedSourceWidth && height == mFailedSourceHeight
-                && outWidth == mFailedOutputWidth && outHeight == mFailedOutputHeight) {
-            mBypassReason = BYPASS_TARGET_UNAVAILABLE;
-            return false; // Retry only after the requested geometry or context changes.
-        }
-        mTargetFailed = false; // Any different valid geometry permits a new allocation attempt.
         if (mLimitWidth == 0 || mLimitHeight == 0) {
             GLES30.glGetIntegerv(GLES30.GL_MAX_TEXTURE_SIZE, mQuery, 0);
             int textureLimit = mQuery[0];
@@ -449,7 +457,8 @@ public final class Anime4kPostProcessor {
         long bytes = estimateTargetBytes(width, height, outWidth, outHeight);
         if (bytes > TARGET_MEMORY_BUDGET_BYTES) {
             return targetUnavailable(width, height, outWidth, outHeight,
-                    "texture budget exceeded: " + bytes + " > " + TARGET_MEMORY_BUDGET_BYTES);
+                    new TargetUnavailableException("texture budget exceeded: " + bytes + " > "
+                            + TARGET_MEMORY_BUDGET_BYTES, false));
         }
         LanczosScale.Plan scale = LanczosScale.resample(geometry.width, geometry.height, outWidth, outHeight);
         if ((scale.horizontal || scale.vertical) && mScaleProgram == 0) buildScaleProgram();
@@ -476,7 +485,7 @@ public final class Anime4kPostProcessor {
                 }
             }
         } catch (TargetUnavailableException unavailable) {
-            return targetUnavailable(width, height, outWidth, outHeight, unavailable.getMessage());
+            return targetUnavailable(width, height, outWidth, outHeight, unavailable);
         }
         mTargetFailed = false;
         mTargetBytes = bytes;
@@ -487,15 +496,31 @@ public final class Anime4kPostProcessor {
         return true;
     }
 
-    private boolean targetUnavailable(int sw, int sh, int ow, int oh, String detail) {
+    private boolean targetsBlocked(int sw, int sh, int ow, int oh) {
+        if (!mTargetFailed) return false;
+        boolean sameGeometry = sw == mFailedSourceWidth && sh == mFailedSourceHeight
+                && ow == mFailedOutputWidth && oh == mFailedOutputHeight;
+        if (sameGeometry) {
+            if (!mTargetRetry.beginAttempt()) {
+                mBypassReason = BYPASS_TARGET_UNAVAILABLE;
+                return true;
+            }
+        } else mTargetRetry.reset();
+        mTargetFailed = false;
+        return false;
+    }
+
+    private boolean targetUnavailable(int sw, int sh, int ow, int oh,
+                                      TargetUnavailableException unavailable) {
         releaseTargets(); // Also release targets created before the failing allocation.
         requireGlSuccess("target bypass cleanup", false);
         mTargetFailed = true;
+        mTargetRetry.failed(unavailable.retryAfterDelay);
         mFailedSourceWidth = sw; mFailedSourceHeight = sh;
         mFailedOutputWidth = ow; mFailedOutputHeight = oh;
         mBypassReason = BYPASS_TARGET_UNAVAILABLE;
         Log.w(TAG, "Anime4K/Lanczos target bypassed: " + sw + "x" + sh + " -> "
-                + ow + "x" + oh + ": " + detail);
+                + ow + "x" + oh + ": " + unavailable.getMessage());
         return false;
     }
 
@@ -581,8 +606,8 @@ public final class Anime4kPostProcessor {
             }
             if (detail == null) detail = new StringBuilder(operation).append(": GL errors");
             detail.append(" 0x").append(Integer.toHexString(error));
-            // Resource pressure and unusable attachments can change with geometry;
-            // invalid API use or a lost context cannot be repaired by resizing.
+            // Resource pressure and unusable attachments can recover after backoff;
+            // invalid API use or a lost context cannot be repaired by retrying.
             retryable &= error == GLES30.GL_OUT_OF_MEMORY
                     || error == GLES30.GL_INVALID_FRAMEBUFFER_OPERATION;
         }
@@ -789,13 +814,14 @@ public final class Anime4kPostProcessor {
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4);
     }
 
-    /** Discard targets on a whole-chain geometry change; programs remain reusable. */
+    /** Discard targets before a whole-chain geometry change/retry; programs remain reusable. */
     void discardTargets() {
         if (!mOwnedTargets.isEmpty()) {
             mState.capture(mMaxBindings);
             try { releaseTargets(); } finally { mState.restore(); }
         }
         mTargetFailed = false;
+        mTargetRetry.reset();
     }
 
     private void ensureBorrowedReadFramebuffer(String operation) {
@@ -804,7 +830,7 @@ public final class Anime4kPostProcessor {
         requireTargetName(mBorrowedReadFbo[0], operation, GL_ERRORS);
     }
 
-    /** Read-FBO allocation uses the same geometry-retry contract as texture targets.
+    /** Read-FBO allocation uses the same bounded retry contract as texture targets.
      * Drain allocation errors before rejecting a zero name or restoring host state. */
     static void requireTargetName(int name, String operation, IntSupplier errors) {
         requireGlSuccess(operation, true, errors);
@@ -816,6 +842,7 @@ public final class Anime4kPostProcessor {
     int normalizeBorrowedTexture(int texture, int width, int height,
                                  float u0, float v0, float u1, float v1) {
         if (texture == 0 || width <= 0 || height <= 0 || u1 <= u0 || v1 <= v0) return 0;
+        if (targetsBlocked(width, height, width, height)) return 0;
         if (!beginOwnedGlOperations()) return 0;
         mState.capture(1);
         try {
@@ -845,9 +872,10 @@ public final class Anime4kPostProcessor {
             GLES30.glBlitFramebuffer(left, bottom, left+width, bottom+height,
                     0, 0, width, height, GLES30.GL_COLOR_BUFFER_BIT, GLES30.GL_NEAREST);
             requireGlSuccess("borrowed texture copy");
+            mTargetRetry.reset();
             return mBorrowedCopy.texture[0];
         } catch (TargetUnavailableException unavailable) {
-            targetUnavailable(width, height, width, height, unavailable.getMessage());
+            targetUnavailable(width, height, width, height, unavailable);
             return 0;
         } finally {
             if (mBorrowedReadFbo[0] != 0) {

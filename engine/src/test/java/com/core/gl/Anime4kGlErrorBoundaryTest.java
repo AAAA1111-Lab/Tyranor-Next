@@ -94,6 +94,23 @@ public class Anime4kGlErrorBoundaryTest {
         assertTrue(errors.pending.isEmpty());
     }
 
+    @Test public void pressureAndAttachmentRejectionsPermitDelayedRetry() {
+        Anime4kPostProcessor.TargetUnavailableException pressure = assertThrows(
+                Anime4kPostProcessor.TargetUnavailableException.class,
+                () -> Anime4kPostProcessor.requireGlSuccess("render target allocation", true,
+                        new ErrorQueue(GLES30.GL_OUT_OF_MEMORY)));
+        assertTrue(pressure.retryAfterDelay);
+        Anime4kPostProcessor.TargetUnavailableException zeroName = assertThrows(
+                Anime4kPostProcessor.TargetUnavailableException.class,
+                () -> Anime4kPostProcessor.requireTargetName(0, "read framebuffer", new ErrorQueue()));
+        assertTrue(zeroName.retryAfterDelay);
+        Anime4kPostProcessor.TargetUnavailableException attachment = assertThrows(
+                Anime4kPostProcessor.TargetUnavailableException.class,
+                () -> Anime4kPostProcessor.requireGlSuccess("borrowed texture attachment", true,
+                        new ErrorQueue(GLES30.GL_INVALID_FRAMEBUFFER_OPERATION)));
+        assertTrue(attachment.retryAfterDelay);
+    }
+
     private static final class ErrorQueue implements IntSupplier {
         final ArrayDeque<Integer> pending = new ArrayDeque<>();
         ErrorQueue(int... errors) { for (int error : errors) pending.add(error); }

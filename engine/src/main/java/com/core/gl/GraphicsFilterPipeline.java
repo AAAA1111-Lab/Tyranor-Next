@@ -9,6 +9,7 @@ public final class GraphicsFilterPipeline {
     private final long reservedBytes;
     private final Anime4kPostProcessor[] nodes;
     private final Anime4kPostProcessor surfaceAdapter;
+    private final GraphicsTargetRetry targetRetry = new GraphicsTargetRetry();
     private final int[] inputWidths, inputHeights, outputWidths, outputHeights;
     private final boolean[] execute;
     private boolean geometryKnown, planValid, temporaryFailed, failed, hasExecution;
@@ -89,7 +90,11 @@ public final class GraphicsFilterPipeline {
                     failed = true;
                 }
                 actualWidth = sw; actualHeight = sh;
-                if (failed) invalidateMeasurements(); else discardTargets();
+                if (failed) invalidateMeasurements();
+                else {
+                    targetRetry.failed(node.retriesTargetsAfterDelay());
+                    discardTargets();
+                }
                 return original;
             }
             current = output;
@@ -97,6 +102,7 @@ public final class GraphicsFilterPipeline {
         }
         actualWidth = width; actualHeight = height;
         bypassReason = Anime4kPostProcessor.BYPASS_NONE;
+        targetRetry.reset(); // Only a complete chain resets the resource-pressure backoff.
         if (stats != null) stats.nodeFrame(inputWidths, inputHeights, outputWidths, outputHeights, execute);
         return current;
     }
@@ -117,7 +123,11 @@ public final class GraphicsFilterPipeline {
                 bypassReason = surfaceAdapter.bypassReason();
                 if (bypassReason == Anime4kPostProcessor.BYPASS_NONE)
                     bypassReason = Anime4kPostProcessor.BYPASS_TARGET_UNAVAILABLE;
-                if (failed) invalidateMeasurements(); else discardTargets();
+                if (failed) invalidateMeasurements();
+                else {
+                    targetRetry.failed(surfaceAdapter.retriesTargetsAfterDelay());
+                    discardTargets();
+                }
                 return 0;
             }
             int result = run(input, sw, sh);
@@ -139,8 +149,14 @@ public final class GraphicsFilterPipeline {
     private boolean prepareGeometry(int sw, int sh, int bw, int bh, long extra) {
         startProfiling();
         if (failed) { bypassReason = Anime4kPostProcessor.BYPASS_PIPELINE_FAILED; return false; }
-        if (geometryKnown && sw == sourceWidth && sh == sourceHeight && bw == boundWidth
-                && bh == boundHeight && extra == extraOwnedBytes) return planValid && !temporaryFailed;
+        boolean sameGeometry = geometryKnown && sw == sourceWidth && sh == sourceHeight
+                && bw == boundWidth && bh == boundHeight && extra == extraOwnedBytes;
+        if (sameGeometry) {
+            if (!temporaryFailed) return planValid;
+            // Deterministic budget/geometry rejections stay cached. Resource pressure
+            // retries the complete plan at a bounded rate, without exposing partial output.
+            if (!planValid || !targetRetry.beginAttempt()) return false;
+        } else targetRetry.reset();
         discardTargets(); // Avoid retaining old-size nodes while allocating the new whole-chain budget.
         geometryKnown = true; sourceWidth = sw; sourceHeight = sh; boundWidth = bw; boundHeight = bh;
         extraOwnedBytes = extra; temporaryFailed = false; planValid = false; hasExecution = false;
@@ -165,6 +181,7 @@ public final class GraphicsFilterPipeline {
         }
         if (bytes > Anime4kPostProcessor.TARGET_MEMORY_BUDGET_BYTES) {
             temporaryFailed = true;
+            targetRetry.failed(false);
             bypassReason = Anime4kPostProcessor.BYPASS_TARGET_UNAVAILABLE;
             return false;
         }
@@ -212,6 +229,7 @@ public final class GraphicsFilterPipeline {
         for (int i = 0; i < nodes.length; i++) if (nodes[i] != null) nodes[i].abandonContext();
         surfaceAdapter.abandonContext();
         geometryKnown = planValid = temporaryFailed = failed = false;
+        targetRetry.reset();
         actualWidth = actualHeight = 0; targetBytes = 0;
     }
     public void release() {
@@ -221,6 +239,7 @@ public final class GraphicsFilterPipeline {
         for (int i = 0; i < nodes.length; i++) if (nodes[i] != null) nodes[i].release();
         surfaceAdapter.release();
         geometryKnown = planValid = temporaryFailed = failed = false;
+        targetRetry.reset();
         actualWidth = actualHeight = 0; targetBytes = 0;
     }
 }
