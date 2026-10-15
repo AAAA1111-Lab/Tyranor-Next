@@ -11,6 +11,7 @@ final class ArtemisOfficialDisconnect {
 
     final CountDownLatch done = new CountDownLatch(1);
     private volatile boolean detached;
+    private boolean failureReported;
 
     synchronized void complete(boolean detached) {
         if (done.getCount() == 0) return;
@@ -21,5 +22,16 @@ final class ArtemisOfficialDisconnect {
     int result() {
         if (done.getCount() != 0) return PENDING;
         return detached ? DETACHED : FAILED;
+    }
+
+    /** A completed failure must reach native before another request may replace it. */
+    synchronized int pollResult() {
+        int result = result();
+        if (result == FAILED) failureReported = true;
+        return result;
+    }
+
+    synchronized boolean canRetry() {
+        return failureReported;
     }
 }

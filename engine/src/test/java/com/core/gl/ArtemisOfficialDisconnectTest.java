@@ -2,6 +2,7 @@ package com.core.gl;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -44,6 +45,35 @@ public final class ArtemisOfficialDisconnectTest {
         assertEquals(ArtemisOfficialDisconnect.PENDING, request.result());
         request.complete(false);
         assertEquals(ArtemisOfficialDisconnect.FAILED, request.result());
+    }
+
+    @Test
+    public void timedOutFailureIsReportedBeforeAReplacementCanBeQueued() {
+        ArtemisOfficialDisconnect request = new ArtemisOfficialDisconnect();
+        assertEquals(ArtemisOfficialDisconnect.PENDING, request.pollResult());
+        assertFalse(request.canRetry());
+        request.complete(false);
+
+        // The next native poll must see FAILED, rather than a new request's PENDING.
+        assertFalse(request.canRetry());
+        assertEquals(ArtemisOfficialDisconnect.FAILED, request.pollResult());
+        assertTrue(request.canRetry());
+        ArtemisOfficialDisconnect replacement = new ArtemisOfficialDisconnect();
+        assertEquals(ArtemisOfficialDisconnect.PENDING, replacement.pollResult());
+        assertFalse(replacement.canRetry());
+    }
+
+    @Test
+    public void pendingOrSuccessfulRequestsCannotBeReplacedAsFailures() {
+        ArtemisOfficialDisconnect request = new ArtemisOfficialDisconnect();
+        assertEquals(ArtemisOfficialDisconnect.PENDING, request.pollResult());
+        assertFalse(request.canRetry());
+        request.complete(true);
+        assertEquals(ArtemisOfficialDisconnect.DETACHED, request.pollResult());
+        assertFalse(request.canRetry());
+        request.complete(false);
+        assertEquals(ArtemisOfficialDisconnect.DETACHED, request.pollResult());
+        assertFalse(request.canRetry());
     }
 
     @Test

@@ -216,7 +216,7 @@ final class ArtemisOfficialSurfaceProxy {
     }
     synchronized int disconnect() {
         outputWanted=false;
-        if (pendingDisconnect != null && pendingDisconnect.result() == ArtemisOfficialDisconnect.FAILED)
+        if (pendingDisconnect != null && pendingDisconnect.canRetry())
             pendingDisconnect = null;
         if (pendingDisconnect == null) {
             ArtemisOfficialDisconnect request = new ArtemisOfficialDisconnect();
@@ -236,7 +236,7 @@ final class ArtemisOfficialSurfaceProxy {
         }
         // Timeout describes an in-flight operation, not an EGL failure. Native
         // must retain the engine's producer alias until this exact job finishes.
-        return pendingDisconnect.result();
+        return pendingDisconnect.pollResult();
     }
     private static boolean await(CountDownLatch done) {
         try { return done.await(WORKER_WAIT_SECONDS,TimeUnit.SECONDS); }
