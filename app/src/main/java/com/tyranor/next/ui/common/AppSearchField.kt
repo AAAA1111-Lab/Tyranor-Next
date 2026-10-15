@@ -72,8 +72,10 @@ fun AppSearchField(
                         )
                     }
                     if (Build.VERSION.SDK_INT in Build.VERSION_CODES.O..Build.VERSION_CODES.O_MR1) {
-                        // Miuix 0.9.2 在 API 26/27 折叠时禁用 InputField，并等待展开回调。
-                        // 本项目始终内嵌显示，不能借展开来启用（会自动聚焦并拉起键盘）。
+                        // 局部兼容豁免：Miuix 0.9.2 在 API 26/27 禁用折叠态 InputField。
+                        // 仅公共组件内部用兼容输入保持可编辑，沿用 Miuix 配色、胶囊与玻璃材质；
+                        // 不以展开启用输入（会自动聚焦和拉起键盘），也不在失焦时清空内容。
+                        // API 28+ 仍走原 InputField，页面不自行拼装此兼容分支。
                         EmbeddedSearchInputField(
                             query = query,
                             onQueryChange = onQueryChange,

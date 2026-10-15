@@ -38,6 +38,8 @@ internal fun GraphicsFilterPicker(
     var category by remember { mutableStateOf<GraphicsFilterCategory?>(null) }
     val labels = options.toMap()
     LaunchedEffect(enabled) { if (!enabled) { open = false; category = null } }
+    // 此设置卡片入口局部隐藏左图标，与相邻设置项和滤镜节点保持 16dp 左对齐。
+    // 继续复用公共导航组件并保留右箭头；不改变其他导航入口的图标约定。
     AppNavItem(
         title = stringResource(R.string.graphics_chain_add),
         showLeadingIcon = false,
@@ -92,6 +94,8 @@ internal fun GraphicsFilterPicker(
 private fun FilterCategories(enabled: Boolean, modifier: Modifier, onSelect: (GraphicsFilterCategory) -> Unit) {
     LazyColumn(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         items(GraphicsFilterCategory.entries.toList(), key = { it.name }) { category ->
+            // 滤镜分类局部隐藏左图标，避免把算法类别误标为参数编辑。
+            // 多预设仅用右箭头表示下一级；参数图标仍只属于已添加节点。
             AppNavItem(
                 title = graphicsFilterCategoryTitle(category),
                 showLeadingIcon = false,
@@ -115,6 +119,7 @@ private fun FilterPresets(
 ) {
     LazyColumn(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         items(category.presetIds, key = { it }) { id ->
+            // 预设点击即添加，属于动作项，沿用无图标、无跳转箭头的排版。
             AppNavItem(
                 title = labels.getValue(id),
                 showLeadingIcon = false,

@@ -268,7 +268,9 @@ private fun TabLabel(
     }
 }
 
-/** 页内指示器复用卡片色；弹窗内复用反色条目，玻璃档按动态常量各自取色。 */
+/** 弹窗上下文的局部取色适配：指示器复用反色条目，避免与弹窗面板同色。
+ * 由公共弹窗提供上下文，调用方不传色值；页内标签栏保留既有取色分派，玻璃档各用自身动态常量。
+ */
 @Composable
 private fun tabIndicatorContainer(): Color = when {
     LocalAppDialogContent.current -> DialogItemSurface

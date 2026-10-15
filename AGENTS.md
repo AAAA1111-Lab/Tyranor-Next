@@ -73,9 +73,6 @@
 ### 4. 资源归属
 
 - `engine/src/main/assets`：底层引擎运行资源与共享引擎脚本源头。
-- `engine/src/main/graphicsfilters`：可独立移除的滤镜贡献定义，含菜单、参数、展示颜色与资源路径。
-- `engine/patches`：固定上游来源、下游补丁与本地资源哈希记录。
-- `buildSrc`：生成滤镜注册数据及验证已提交资源；生成结果位于 build，不手工维护。
 
 - `app/src/main/assets/engine`：App 专属注入脚本；共享脚本由 Gradle 从 `engine/src/main/assets` 生成到 app assets。
 
@@ -268,12 +265,8 @@ Column(fillMaxSize)                                // 页面根
 
 ### 1. 组件形态（Miuix 风格，非展开内嵌式）
 
-- 组件内部使用 `MiuixSettingsTheme + SearchBar + InputField` 模板，`expanded` 恒为
+- 组件内部固定为 `MiuixSettingsTheme + SearchBar + InputField` 模板，`expanded` 恒为
   `false`（内嵌式），不使用 Miuix 的展开式全屏搜索页形态。
-  **低版本兼容例外**：固定依赖 Miuix 0.9.2 在 API 26/27 会禁用折叠态输入，
-  仅允许 `AppSearchField` 内部使用 `EmbeddedSearchInputField`（`BasicTextField`）保持可编辑，
-  继续复用 Miuix 配色、胶囊形态和玻璃材质；不得自动展开、自动聚焦或失焦清空。
-  API 28+ 仍使用原 `InputField`；页面不得援引此例外自行拼装输入框。
 
 - 前导图标固定 **26dp**，内边距固定 `SearchBarDefaults.LeadingIconStartPadding /
   LeadingIconEndPadding`，`tint` 统一取 `MiuixTheme.colorScheme.primary`——以上均由组件
@@ -316,7 +309,6 @@ Column(fillMaxSize)                                // 页面根
 - 指示器底色与文字颜色由组件内部按外观风格分派，**调用方不得传色值**：
   默认风格指示器 `NavWhite`、选中文字 `TextColor`（不跟随主题色，加粗作选中标识）、未选中 `onSurfaceVariant`；
   复古玻璃 `GlassSurfaceHigh` + `GlassText`/`GlassTextSecondary`；高级玻璃 `AdvancedGlassSurfaceHigh` + `GlassText`/`AdvancedGlassTextSecondary`。
-- **弹窗内标签栏**由 `AppAlertDialog` 自动提供颜色上下文：指示器取 `DialogItemSurface`，默认风格未选中文字取 `UnselectedGrey`，玻璃系沿用各自次级文字色；与弹窗面板形成反差，调用方仍不得传色值。页内标签栏的取色规则不变。
 - 标签高度统一 42dp，文字统一 `MaterialTheme.typography.titleMedium`，选中加粗；无障碍统一 `selectable(selected, role = Tab)`。
 - 参数：`tabs`（标签文案）、`selectedIndex`（越界自动收敛）、`onTabSelected`、`modifier`（仅外边距）、`scrollable`（形态开关，默认 false）。
 
@@ -353,11 +345,6 @@ Column(fillMaxSize)                                // 页面根
 - `leadingIcon`：左侧图标 drawable；未提供时组件自动使用**默认占位图标** `DEFAULT_LEADING_ICON`，不允许调用方在不该出现空图标时留白。
 
 - `showLeadingIcon`：是否展示左侧图标，默认 `true`。**纯动作条目**（如存档导出/导入/删除等无图标的动作项）可传 `false` 隐藏图标位，此时标题顶格排列；不得为隐藏图标而乱传占位图。
-  **滤镜分类菜单例外**：算法类别及预设统一隐藏左图标位，只有多预设类别保留右侧跳转箭头；
-  参数调节图标仅用于已添加节点的参数按钮，避免将类别误标为参数编辑。
-  **设置卡片入口例外**：同一卡片内的“添加滤镜”入口仍使用 `AppNavItem`，但传
-  `showLeadingIcon = false`，与相邻 Miuix 设置项及滤镜节点保持 16dp 左对齐；
-  保留右侧跳转箭头，不为这一个入口插入添加/配置图标。此例外不适用于侧边栏面板。
 
 - `onClick`：点击回调；传 `null` 表示不可用（整条变灰且不可点击）。
 
