@@ -364,7 +364,7 @@ fun PerGameSettingsScreen(game: ScanGame) {
     val globalRenderer = configuredGlobalRenderer.ifEmpty {
         if (isSdl3) EngineSettingsStore.RENDERER_OPENGL else ""
     }
-    val effVersion = krVersion ?: globalKrVersion
+    val effVersion = EffectiveEngineSettings.resolveKrVersion(krVersion, globalKrVersion)
     val krIs134126 = effVersion == EngineSettingsStore.KR_134 || effVersion == EngineSettingsStore.KR_126
 
     // 渲染相关全局值（跟随全局时展示用）
@@ -1082,7 +1082,7 @@ fun PerGameSettingsScreen(game: ScanGame) {
                     PerGameGraphicsSettings(
                         global = globalGraphics,
                         override = graphicsOverride,
-                        capability = GraphicsCapabilities.forRuntime(
+                        capability = GraphicsCapabilities.forSettings(
                             graphicsFamily, if (graphicsFamily == GraphicsFamily.KR) effectiveKrKernel else effectiveArtKernel,
                             if (graphicsFamily == GraphicsFamily.KR) effVersion
                             else EffectiveEngineSettings.resolveArtVersion(artVersion, globalArtVersion),

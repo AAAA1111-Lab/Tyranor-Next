@@ -797,6 +797,7 @@
     <string name="graphics_chain_limit">最大 %1$d ノード</string>
     <string name="graphics_filter_back_categories">戻る</string>
     <string name="graphics_settings_unsupported">このエンジンのバージョンはフィルター非対応です</string>
+    <string name="graphics_settings_runtime_dependent">自動選択：フィルター対応は実際のエンジンに依存します</string>
     <string name="graphics_filter_parameters">パラメーター</string>
     <string name="graphics_filter_sharpness">シャープネス</string>
     <string name="graphics_filter_scale_type">種類</string>

@@ -78,8 +78,19 @@ data class GraphicsOverride(
 )
 
 /** UI and launch requests share the bridge's library-name gate; native installation still verifies Build IDs. */
-data class GraphicsCapabilities(val supported: Boolean) {
+data class GraphicsCapabilities(val supported: Boolean, val runtimeDependent: Boolean = false) {
     companion object {
+        /** Auto has no resolved game candidate on a settings page; keep the request configurable.
+         * Launch still gates each actual candidate, including an unsupported first candidate. */
+        fun forSettings(family: GraphicsFamily, kernel: String = "", version: String = ""): GraphicsCapabilities {
+            if (family == GraphicsFamily.ARTEMIS && kernel == EngineSettingsStore.ART_KERNEL_OFFICIAL &&
+                (version.isBlank() || version.trim() == EngineSettingsStore.ART_ENGINE_AUTO)) {
+                val candidates = ArtemisVersion.values().map { ArtemisLibraryIdentity.supports(it.libraryFilename) }
+                return GraphicsCapabilities(candidates.any { it }, runtimeDependent = candidates.any { !it })
+            }
+            return forRuntime(family, kernel, version)
+        }
+
         fun forRuntime(family: GraphicsFamily, kernel: String = "", version: String = ""): GraphicsCapabilities {
             val supported = when (family) {
                 GraphicsFamily.KR -> {

@@ -137,6 +137,8 @@ object EngineSettingsStore {
     const val KR_126 = "1.2.6"
     const val KERNEL_KIRIKIRI2 = "kirikiri2"
     const val KERNEL_KRKRSDL3 = "krkrsdl3"
+    val KR_VERSIONS = setOf(KR_AUTO, KR_139, KR_134, KR_126)
+    val KR_KERNELS = setOf(KR_AUTO, KERNEL_KIRIKIRI2, KERNEL_KRKRSDL3)
     const val KR_PATCH_OVERLAY_AUTO = "auto"
     const val KR_PATCH_OVERLAY_FORCE = "force"
     const val KR_PATCH_OVERLAY_OFF = "off"
@@ -655,10 +657,7 @@ object EngineSettingsStore {
     fun getArtPowerSaving(c: Context): String = artStringPref(c, KEY_ARTEMIS_POWER_SAVING, ART_TOGGLES)
     fun setArtPowerSaving(c: Context, v: String) = setArtStringPref(c, KEY_ARTEMIS_POWER_SAVING, v, ART_TOGGLES)
 
-    fun isArtAnime4kEnabled(c: Context): Boolean =
-        prefs(c).all[KEY_ARTEMIS_ANIME4K_ENABLED] as? Boolean ?: false
-    fun getArtAnime4kMode(c: Context): String =
-        normalizeArtAnime4kMode(prefs(c).all[KEY_ARTEMIS_ANIME4K_MODE] as? String)
+
     fun normalizeArtAnime4kMode(mode: String?): String =
         mode?.trim()?.takeIf { it in ART_ANIME4K_MODES } ?: ART_ANIME4K_DEFAULT
 

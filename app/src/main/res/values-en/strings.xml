@@ -797,6 +797,7 @@
     <string name="graphics_chain_limit">Up to %1$d nodes</string>
     <string name="graphics_filter_back_categories">Back</string>
     <string name="graphics_settings_unsupported">This engine version does not support filters</string>
+    <string name="graphics_settings_runtime_dependent">Auto selection: filter support depends on the actual engine version</string>
     <string name="graphics_filter_parameters">Parameters</string>
     <string name="graphics_filter_sharpness">Sharpness</string>
     <string name="graphics_filter_scale_type">Type</string>

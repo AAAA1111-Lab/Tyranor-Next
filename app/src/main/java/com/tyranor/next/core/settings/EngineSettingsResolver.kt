@@ -39,7 +39,7 @@ object EngineSettingsResolver {
                 EngineSettingsStore.getGraphicsSettings(app, GraphicsFamily.SIGLUS),
                 GraphicsSettingsCodec.readOverride(override, GraphicsFamily.SIGLUS),
             ),
-            krEngineVersion = EffectiveEngineSettings.resolve(
+            krEngineVersion = EffectiveEngineSettings.resolveKrVersion(
                 str(PerGameSettingsStore.F_ENGINE_VERSION),
                 EngineSettingsStore.getKrEngineVersion(app),
             ),

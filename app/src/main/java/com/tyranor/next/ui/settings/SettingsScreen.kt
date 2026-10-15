@@ -871,7 +871,7 @@ internal fun EngineSettingsDetailScreen(kind: EngineSettingsKind) {
                     graphicsFamily?.let { family ->
                         GlobalGraphicsSettings(
                             settings = graphics,
-                            capability = GraphicsCapabilities.forRuntime(family, if (family == GraphicsFamily.KR) krKernel else artKernel, if (family == GraphicsFamily.KR) krVersion else artVersion),
+                            capability = GraphicsCapabilities.forSettings(family, if (family == GraphicsFamily.KR) krKernel else artKernel, if (family == GraphicsFamily.KR) krVersion else artVersion),
                         ) { graphics = it }
                     }
                 },
@@ -1515,15 +1515,6 @@ internal fun DropdownRow(
     options: List<Pair<String, String>>,
     current: String,
     onSelect: (String) -> Unit,
-) = DropdownRow(label, options, current, enabled = true, onSelect = onSelect)
-
-@Composable
-internal fun DropdownRow(
-    label: String,
-    options: List<Pair<String, String>>,
-    current: String,
-    enabled: Boolean,
-    onSelect: (String) -> Unit,
 ) {
     val keys = options.map { it.first }
     val labels = options.map { it.second }
@@ -1532,7 +1523,6 @@ internal fun DropdownRow(
         title = label,
         items = labels,
         selectedIndex = index,
-        enabled = enabled,
         onSelectedIndexChange = { onSelect(keys[it]) },
     )
 }

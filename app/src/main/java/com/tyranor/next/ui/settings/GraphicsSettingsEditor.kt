@@ -25,8 +25,9 @@ internal fun GlobalGraphicsSettings(
     onChange: (GraphicsSettings) -> Unit,
 ) {
     EngineCard(stringResource(R.string.graphics_settings_title)) {
-        if (!capability.supported) {
-            Text(stringResource(R.string.graphics_settings_unsupported), style = MaterialTheme.typography.bodyMedium,
+        if (!capability.supported || capability.runtimeDependent) {
+            Text(stringResource(if (capability.runtimeDependent) R.string.graphics_settings_runtime_dependent
+                else R.string.graphics_settings_unsupported), style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
         }
         SwitchPreference(
@@ -69,8 +70,9 @@ internal fun PerGameGraphicsSettings(
 ) {
     val resolved = GraphicsSettingsCodec.resolve(global, override)
     EngineCard(stringResource(R.string.graphics_settings_title)) {
-        if (!capability.supported) {
-            Text(stringResource(R.string.graphics_settings_unsupported), style = MaterialTheme.typography.bodyMedium,
+        if (!capability.supported || capability.runtimeDependent) {
+            Text(stringResource(if (capability.runtimeDependent) R.string.graphics_settings_runtime_dependent
+                else R.string.graphics_settings_unsupported), style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
         }
         OverrideSwitch(

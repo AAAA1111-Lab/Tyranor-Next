@@ -297,4 +297,24 @@ class EffectiveEngineSettingsTest {
         }
     }
 
+    @Test fun staleKrVersionAndKernelOverridesFollowValidatedGlobalValues() {
+        assertEquals(EngineSettingsStore.KR_134,
+            EffectiveEngineSettings.resolveKrVersion("retired", EngineSettingsStore.KR_134))
+        assertEquals(EngineSettingsStore.KR_AUTO,
+            EffectiveEngineSettings.resolveKrVersion("retired", "invalid"))
+        assertEquals(EngineSettingsStore.KR_139,
+            EffectiveEngineSettings.resolveKrVersion(" 1.3.9 ", EngineSettingsStore.KR_134))
+        assertEquals(EngineSettingsStore.KERNEL_KRKRSDL3,
+            EffectiveEngineSettings.resolveKrKernel("retired", EngineSettingsStore.KERNEL_KRKRSDL3, false))
+        assertEquals(EngineSettingsStore.KERNEL_KIRIKIRI2,
+            EffectiveEngineSettings.resolveKrKernel("retired", EngineSettingsStore.KERNEL_KRKRSDL3, true))
+        assertEquals(EngineSettingsStore.KR_AUTO,
+            EffectiveEngineSettings.resolveKrKernel("retired", "invalid", false))
+        val version = EffectiveEngineSettings.resolveKrVersion("retired", EngineSettingsStore.KR_134)
+        val kernel = EffectiveEngineSettings.resolveKrKernel("retired", EngineSettingsStore.KERNEL_KIRIKIRI2, false)
+        assertTrue(GraphicsCapabilities.forSettings(GraphicsFamily.KR, kernel, version).supported)
+        assertEquals(GraphicsCapabilities.forRuntime(GraphicsFamily.KR, kernel, version),
+            GraphicsCapabilities.forSettings(GraphicsFamily.KR, kernel, version))
+    }
+
 }

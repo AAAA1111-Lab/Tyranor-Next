@@ -154,4 +154,21 @@ class GraphicsLaunchPolicyTest {
         assertFalse(GraphicsFilterChain.parse(combined[LaunchContract.GRAPHICS_FILTER_CHAIN] as String)!!.hasActive())
     }
 
+    @Test fun conditionalAutoPreviewKeepsRequestsForEachResolvedCandidate() {
+        val preview = GraphicsCapabilities.forSettings(GraphicsFamily.ARTEMIS,
+            EngineSettingsStore.ART_KERNEL_OFFICIAL, EngineSettingsStore.ART_ENGINE_AUTO)
+        assertTrue(preview.runtimeDependent)
+        assertTrue(GraphicsSettingsCodec.effectiveEnabled(saved, preview))
+        for (version in listOf(EngineSettingsStore.ART_ENGINE_V2, EngineSettingsStore.ART_ENGINE_V3)) {
+            val actual = GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS,
+                EngineSettingsStore.ART_KERNEL_OFFICIAL, version)
+            val request = GraphicsLaunchPolicy.artemisExtras(saved, actual)
+            assertEquals(actual.supported, request[LaunchContract.GRAPHICS_FILTER_ENABLED])
+            assertEquals(actual.supported, request[LaunchContract.GRAPHICS_FILTER_ANALYZER])
+            assertEquals(true, request[LaunchContract.ARTEMIS_GRAPHICS_REQUESTED_ENABLED])
+            assertEquals(true, request[LaunchContract.ARTEMIS_GRAPHICS_REQUESTED_ANALYZER])
+            assertEquals(GraphicsSettingsCodec.encodeChain(saved.chain), request[LaunchContract.GRAPHICS_FILTER_CHAIN])
+        }
+    }
+
 }
