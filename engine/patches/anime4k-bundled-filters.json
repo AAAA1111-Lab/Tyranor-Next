@@ -30,6 +30,15 @@
     {
       "file": "Anime4K_Restore_CNN_Soft_S.glsl",
       "sha256": "9f6867f2ef42786729522d86fe24147cb4ea145418e3974df70496acf52dc392"
+    },
+    {
+      "file": "LICENSE.bundled.txt",
+      "sha256": "5bad448b737378e3d0c977ad0d0521fa37ad279a7e76ea9a31d9257eeb6953f5",
+      "license": "MIT",
+      "upstream": "https://github.com/bloc97/Anime4K",
+      "revision": "7684e9586f8dcc738af08a1cdceb024cc184f426",
+      "upstreamPath": "LICENSE",
+      "gitBlob": "140b2c983100845a3ad52e12d20573459d0f484c"
     }
   ]
 }
