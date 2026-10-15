@@ -28,6 +28,7 @@ final class ArtemisOfficialSurfaceProxy {
     private static final int MAX_RELEASE_ATTEMPTS = 5;
     // Only unrecoverable driver failures reach this collection. Retain resource
     // ownership until process exit without retaining a proxy, Activity or thread.
+    // Admission slots bound active, closing and retained owners together; never evict one.
     private static final List<HandleOwner> RETAINED_HANDLES = new ArrayList<>();
     private static final class HandleOwner {
         final EGLDisplay display;
@@ -38,8 +39,10 @@ final class ArtemisOfficialSurfaceProxy {
         final SurfaceTexture texture;
         final int[] glNames;
         final boolean initialized;
+        final GraphicsProxyResourceSlots.Slot resourceSlot;
         HandleOwner(ArtemisOfficialSurfaceProxy proxy) {
             display = proxy.display; context = proxy.eglContext; initialized = proxy.initialized;
+            resourceSlot = proxy.resourceSlot;
             parking = proxy.parking; output = proxy.output; pipeline = proxy.pipeline;
             producer = proxy.producer; screen = proxy.screen; texture = proxy.texture;
             glNames = new int[]{proxy.oesProgram, proxy.copyProgram, proxy.fbo,
@@ -64,6 +67,7 @@ final class ArtemisOfficialSurfaceProxy {
     private final ArtemisGraphicsStats stats = new ArtemisGraphicsStats();
     private final HandlerThread thread = new HandlerThread("Artemis-official-GLES");
     private final Handler worker;
+    private final GraphicsProxyResourceSlots.Slot resourceSlot;
     private final Map<Long, Frame> frames = new LinkedHashMap<>();
     private final int[] scratch = new int[1];
     private final float[] transform = new float[16];
@@ -85,7 +89,16 @@ final class ArtemisOfficialSurfaceProxy {
 
     ArtemisOfficialSurfaceProxy(Context context, GraphicsFilterChain chain, boolean analyzer) {
         this.context=context.getApplicationContext();this.chain=chain;this.analyzer=analyzer;
-        thread.start();worker=new Handler(thread.getLooper());
+        resourceSlot = GraphicsProxyResourceSlots.acquireForProcess();
+        if (resourceSlot == null) throw new IllegalStateException("Proxy resource capacity exhausted");
+        try {
+            thread.start();worker=new Handler(thread.getLooper());
+        } catch (RuntimeException | Error failure) {
+            // No EGL work can have been queued before construction returns.
+            try { thread.quitSafely(); }
+            finally { resourceSlot.release(); }
+            throw failure;
+        }
     }
     Surface connect(Surface nextScreen, int width, int height, int producerWidth, int producerHeight) {
         if (closed || failed) { nextScreen.release();return null; }
@@ -360,7 +373,7 @@ final class ArtemisOfficialSurfaceProxy {
         catch (RuntimeException failure) {
             if (releaseAttempts == 1) android.util.Log.w("ArtemisOfficial", "EGL cleanup failed", failure);
         }
-        if (disposed) { thread.quitSafely();return; }
+        if (disposed) { resourceSlot.release();thread.quitSafely();return; }
         if (lastAttempt) {
             // No foreign thread may destroy resources whose unbinding failed.
             // Stop automatic work, retaining the handles without retaining this owner.
@@ -369,7 +382,7 @@ final class ArtemisOfficialSurfaceProxy {
             synchronized (this) {
                 if (pendingDisconnect != null) pendingDisconnect.complete(false);
             }
-            android.util.Log.w("ArtemisOfficial", "EGL cleanup exhausted; retaining driver handles until process exit");
+            android.util.Log.w("ArtemisOfficial", "EGL cleanup exhausted; retaining driver handles and resource slot until process exit");
             thread.quitSafely();
         } else {
             if (releaseAttempts == 1) android.util.Log.w("ArtemisOfficial", "EGL cleanup deferred; retrying with bounded backoff");

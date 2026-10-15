@@ -386,9 +386,9 @@ public final class SiglusActivity extends AppCompatActivity implements
             return;
         }
         long engineHandle = handle;
-        proxyPreparing = true;
-        surfaceReady = false;
-        SiglusGraphicsProxy candidate = new SiglusGraphicsProxy(this, chain, stageGeometry[0], stageGeometry[1],
+        SiglusGraphicsProxy candidate;
+        try {
+            candidate = new SiglusGraphicsProxy(this, chain, stageGeometry[0], stageGeometry[1],
                 getIntent().getBooleanExtra(LaunchContract.GRAPHICS_FILTER_ANALYZER, false),
                 new SiglusGraphicsProxy.Listener() {
                     @Override public void onPrepared(SiglusGraphicsProxy proxy, Surface producer) {
@@ -427,6 +427,12 @@ public final class SiglusActivity extends AppCompatActivity implements
                         if (!destroying && graphicsProxy == proxy && handle == engineHandle) restoreDirect(proxy);
                     }
                 });
+        } catch (RuntimeException failure) {
+            Log.w(TAG, "Surface proxy unavailable; keeping direct output", failure);
+            return;
+        }
+        proxyPreparing = true;
+        surfaceReady = false;
         graphicsProxy = candidate;
         candidate.prepare();
     }

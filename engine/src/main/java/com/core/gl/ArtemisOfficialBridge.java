@@ -41,10 +41,15 @@ public final class ArtemisOfficialBridge implements ArtemisPerformanceOverlay.So
     /** Render-thread call; GLES preparation never needs an Activity-thread callback. */
     public static synchronized Surface connect(Surface screen, int width, int height, int producerWidth, int producerHeight) {
         if (!requested || screen == null) return null;
+        boolean handedToProxy = false;
         try {
             if (proxy == null) proxy = new ArtemisOfficialSurfaceProxy(context, chain, analyzer);
+            handedToProxy = true;
             return proxy.connect(screen, width, height, producerWidth, producerHeight);
         } catch (RuntimeException failure) {
+            // Construction can reject a new consumer before connect owns this reference.
+            // Once handed over, claim/cancel/release remains entirely the proxy's job.
+            if (!handedToProxy) screen.release();
             state = GraphicsStatus.NATIVE_FAILED;
             android.util.Log.w("ArtemisOfficial", "Surface proxy unavailable; keeping direct output", failure);
             // Keep the instance until native confirms its output has disconnected.

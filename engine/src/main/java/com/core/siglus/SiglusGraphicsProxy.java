@@ -21,6 +21,7 @@ import com.core.gl.ArtemisGraphicsStats;
 import com.core.gl.ArtemisPerformanceOverlay;
 import com.core.gl.GraphicsFilterChain;
 import com.core.gl.GraphicsFilterPipeline;
+import com.core.gl.GraphicsProxyResourceSlots;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -45,6 +46,7 @@ final class SiglusGraphicsProxy implements ArtemisPerformanceOverlay.Source {
     private static final int MAX_RELEASE_ATTEMPTS = 5;
     // Permanent driver failures retain only resources until process exit, never
     // the proxy's Listener (which can own an Activity) or its worker thread.
+    // Admission slots bound active, closing and retained owners together; never evict one.
     private static final List<HandleOwner> RETAINED_HANDLES = new ArrayList<>();
     private static final class HandleOwner {
         final EGLDisplay display;
@@ -55,8 +57,10 @@ final class SiglusGraphicsProxy implements ArtemisPerformanceOverlay.Source {
         final SurfaceTexture texture;
         final int[] glNames;
         final boolean initialized;
+        final GraphicsProxyResourceSlots.Slot resourceSlot;
         HandleOwner(SiglusGraphicsProxy proxy) {
             display = proxy.display; context = proxy.eglContext; initialized = proxy.initialized;
+            resourceSlot = proxy.resourceSlot;
             parking = proxy.parking; output = proxy.output; pipeline = proxy.pipeline;
             producer = proxy.producer; texture = proxy.texture;
             glNames = new int[]{proxy.oesProgram, proxy.copyProgram, proxy.inputFbo,
@@ -83,6 +87,7 @@ final class SiglusGraphicsProxy implements ArtemisPerformanceOverlay.Source {
     private final Handler main = new Handler(Looper.getMainLooper());
     private final HandlerThread thread = new HandlerThread("Siglus-GLES");
     private final Handler worker;
+    private final GraphicsProxyResourceSlots.Slot resourceSlot;
     private final ArtemisGraphicsStats stats = new ArtemisGraphicsStats();
     private final SiglusFrameGate frameGate = new SiglusFrameGate();
     private final float[] transform = new float[16];
@@ -125,7 +130,16 @@ final class SiglusGraphicsProxy implements ArtemisPerformanceOverlay.Source {
         this.chain = chain;
         stageWidth = width; stageHeight = height;
         analyzerRequested = analyzer; this.listener = listener;
-        thread.start(); worker = new Handler(thread.getLooper());
+        resourceSlot = GraphicsProxyResourceSlots.acquireForProcess();
+        if (resourceSlot == null) throw new IllegalStateException("Proxy resource capacity exhausted");
+        try {
+            thread.start(); worker = new Handler(thread.getLooper());
+        } catch (RuntimeException | Error failure) {
+            // No EGL work can have been queued before construction returns.
+            try { thread.quitSafely(); }
+            finally { resourceSlot.release(); }
+            throw failure;
+        }
     }
 
     void prepare() {
@@ -470,13 +484,13 @@ final class SiglusGraphicsProxy implements ArtemisPerformanceOverlay.Source {
         catch (RuntimeException failure) {
             if (releaseAttempts == 1) Log.w(TAG, "EGL cleanup failed", failure);
         }
-        if (disposed) { thread.quitSafely();return; }
+        if (disposed) { resourceSlot.release();thread.quitSafely();return; }
         if (lastAttempt) {
             // The worker may exit, but a failed EGL unbind must not transfer
             // native-window ownership to another thread or force-release it.
             synchronized (RETAINED_HANDLES) { RETAINED_HANDLES.add(new HandleOwner(this)); }
             worker.removeCallbacksAndMessages(null);
-            Log.w(TAG, "EGL cleanup exhausted; retaining driver handles until process exit");
+            Log.w(TAG, "EGL cleanup exhausted; retaining driver handles and resource slot until process exit");
             thread.quitSafely();
         } else {
             if (releaseAttempts == 1) Log.w(TAG, "EGL cleanup deferred; retrying with bounded backoff");
