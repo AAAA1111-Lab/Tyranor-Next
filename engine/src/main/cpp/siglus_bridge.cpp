@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <mutex>
-#include <string>
+#include <new>
 #include <unordered_map>
 
 #define LOG_TAG "siglus_bridge"
@@ -83,13 +83,18 @@ static ANativeWindow* replace_owned_window(void* handle, ANativeWindow* window) 
     std::lock_guard<std::mutex> lock(g_window_mutex);
     ANativeWindow* previous = nullptr;
     auto found = g_windows.find(handle);
-    if (found != g_windows.end()) previous = found->second;
-    if (window != nullptr) g_windows[handle] = window;
-    else g_windows.erase(handle);
+    if (found == g_windows.end()) return nullptr;
+    previous = found->second;
+    // Replacing an already-live handle must never allocate after Rust accepted its window.
+    if (window != nullptr) found->second = window;
+    else g_windows.erase(found);
     return previous;
 }
 
 static JavaVM* g_java_vm = nullptr;
+static std::mutex g_context_mutex;
+// Rust's ndk_context borrows the first pointer for the process lifetime, including audio.
+static jobject g_app_context = nullptr;
 static jclass g_native_class = nullptr;         // com/core/siglus/NativeSiglus
 static jmethodID g_on_messagebox_method = nullptr;
 
@@ -203,18 +208,22 @@ static void messagebox_trampoline(void* user_data,
     }
 }
 
-static std::string jstring_to_string(JNIEnv* env, jstring value) {
-    if (value == nullptr) {
-        return std::string();
+class ScopedUtfChars {
+public:
+    ScopedUtfChars(JNIEnv* env, jstring value)
+            : env_(env), value_(value),
+              chars_(value == nullptr ? nullptr : env->GetStringUTFChars(value, nullptr)) {}
+    ~ScopedUtfChars() {
+        if (chars_ != nullptr) env_->ReleaseStringUTFChars(value_, chars_);
     }
-    const char* chars = env->GetStringUTFChars(value, nullptr);
-    if (chars == nullptr) {
-        return std::string();
-    }
-    std::string out(chars);
-    env->ReleaseStringUTFChars(value, chars);
-    return out;
-}
+    ScopedUtfChars(const ScopedUtfChars&) = delete;
+    ScopedUtfChars& operator=(const ScopedUtfChars&) = delete;
+    const char* get() const { return chars_; }
+private:
+    JNIEnv* env_;
+    jstring value_;
+    const char* chars_;
+};
 
 extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
     g_java_vm = vm;
@@ -251,29 +260,43 @@ Java_com_core_siglus_NativeSiglus_nativeInitContext(JNIEnv* env, jclass, jobject
         LOGW("nativeInitContext: null context");
         return;
     }
+    std::lock_guard<std::mutex> lock(g_context_mutex);
+    if (g_app_context != nullptr) return;
     jobject global = env->NewGlobalRef(app_context);
+    if (global == nullptr || env->ExceptionCheck()) {
+        if (global != nullptr) env->DeleteGlobalRef(global);
+        return; // Preserve a pending JNI exception; a later call may retry allocation.
+    }
     g_api.init_context(reinterpret_cast<void*>(g_java_vm), reinterpret_cast<void*>(global));
+    g_app_context = global; // Never release per game: Rust initializes this borrowed pointer once.
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_core_siglus_NativeSiglus_nativeSetLanguage(JNIEnv* env, jclass, jstring language) {
-    std::string value = jstring_to_string(env, language);
-    if (value.empty()) {
+    ScopedUtfChars value(env, language);
+    if (env->ExceptionCheck()) return;
+    if (value.get() == nullptr || value.get()[0] == '\0') {
         // Keep upstream default (JP).
         return;
     }
     // The Rust runtime reads SIGLUS_LANGUAGE when the VM boots (siglus_android_create),
     // so this must be called before create(). Value is a pass-through of GET_LANGUAGE.
-    setenv("SIGLUS_LANGUAGE", value.c_str(), 1);
-    LOGI("SIGLUS_LANGUAGE=%s", value.c_str());
+    setenv("SIGLUS_LANGUAGE", value.get(), 1);
+    LOGI("SIGLUS_LANGUAGE=%s", value.get());
 }
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_core_siglus_NativeSiglus_create(JNIEnv* env, jclass, jobject surface, jint width_px,
                                          jint height_px, jdouble native_scale, jstring game_dir) {
     load_api_once();
-    if (g_api.create == nullptr || surface == nullptr) {
+    if (g_api.create == nullptr || g_api.destroy == nullptr || surface == nullptr) {
         LOGE("create: engine symbols unavailable");
+        return 0;
+    }
+    ScopedUtfChars dir(env, game_dir);
+    if (env->ExceptionCheck()) return 0;
+    if (dir.get() == nullptr || dir.get()[0] == '\0') {
+        LOGE("create: empty game dir");
         return 0;
     }
     ANativeWindow* window = ANativeWindow_fromSurface(env, surface);
@@ -281,22 +304,26 @@ Java_com_core_siglus_NativeSiglus_create(JNIEnv* env, jclass, jobject surface, j
         LOGE("create: ANativeWindow_fromSurface failed");
         return 0;
     }
-    std::string dir = jstring_to_string(env, game_dir);
-    if (dir.empty()) {
-        LOGE("create: empty game dir");
-        ANativeWindow_release(window);
-        return 0;
-    }
     void* handle = g_api.create(window, static_cast<uint32_t>(width_px > 0 ? width_px : 1),
                                 static_cast<uint32_t>(height_px > 0 ? height_px : 1),
-                                native_scale, dir.c_str());
+                                native_scale, dir.get());
     if (handle == nullptr) {
         LOGE("create: engine returned null handle");
         ANativeWindow_release(window);
-    } else {
-        replace_owned_window(handle, window);
+        return 0;
     }
-    return reinterpret_cast<jlong>(handle);
+    try {
+        // New Rust instances have unique live handles. Only initial registration allocates.
+        std::lock_guard<std::mutex> lock(g_window_mutex);
+        g_windows.emplace(handle, window);
+        return reinterpret_cast<jlong>(handle);
+    } catch (const std::bad_alloc&) {
+        // The handle was never published to Java. Drop Rust's Surface before its shim reference.
+        g_api.destroy(handle);
+        ANativeWindow_release(window);
+        LOGE("create: cannot allocate engine ownership record");
+        return 0;
+    }
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -376,9 +403,11 @@ Java_com_core_siglus_NativeSiglus_keyEvent(JNIEnv* env, jclass, jlong handle, ji
     if (g_api.key_event == nullptr || handle == 0) {
         return;
     }
-    std::string text_value = jstring_to_string(env, text);
+    ScopedUtfChars text_value(env, text);
+    if (env->ExceptionCheck()) return;
+    const char* chars = text_value.get();
     g_api.key_event(reinterpret_cast<void*>(handle), key_code,
-                    text_value.empty() ? nullptr : text_value.c_str(), is_repeat ? 1 : 0);
+                    chars == nullptr || chars[0] == '\0' ? nullptr : chars, is_repeat ? 1 : 0);
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -386,9 +415,10 @@ Java_com_core_siglus_NativeSiglus_textInput(JNIEnv* env, jclass, jlong handle, j
     if (g_api.text_input == nullptr || handle == 0) {
         return;
     }
-    std::string value = jstring_to_string(env, text);
-    if (!value.empty()) {
-        g_api.text_input(reinterpret_cast<void*>(handle), value.c_str());
+    ScopedUtfChars value(env, text);
+    if (env->ExceptionCheck()) return;
+    if (value.get() != nullptr && value.get()[0] != '\0') {
+        g_api.text_input(reinterpret_cast<void*>(handle), value.get());
     }
 }
 
@@ -398,12 +428,14 @@ Java_com_core_siglus_NativeSiglus_imePreedit(JNIEnv* env, jclass, jlong handle, 
     if (g_api.ime_preedit == nullptr || handle == 0) {
         return;
     }
+    ScopedUtfChars value(env, text);
+    if (env->ExceptionCheck()) return;
     if (text == nullptr) {
         g_api.ime_preedit(reinterpret_cast<void*>(handle), nullptr, -1, -1);
         return;
     }
-    std::string value = jstring_to_string(env, text);
-    g_api.ime_preedit(reinterpret_cast<void*>(handle), value.c_str(), cursor_start, cursor_end);
+    g_api.ime_preedit(reinterpret_cast<void*>(handle), value.get() != nullptr ? value.get() : "",
+                      cursor_start, cursor_end);
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -429,11 +461,12 @@ Java_com_core_siglus_NativeSiglus_gameNameFromDir(JNIEnv* env, jclass, jstring g
     if (g_api.game_name_from_dir == nullptr || g_api.string_free == nullptr) {
         return nullptr;
     }
-    std::string dir = jstring_to_string(env, game_dir);
-    if (dir.empty()) {
+    ScopedUtfChars dir(env, game_dir);
+    if (env->ExceptionCheck()) return nullptr;
+    if (dir.get() == nullptr || dir.get()[0] == '\0') {
         return nullptr;
     }
-    char* raw = g_api.game_name_from_dir(dir.c_str());
+    char* raw = g_api.game_name_from_dir(dir.get());
     if (raw == nullptr) {
         return nullptr;
     }
