@@ -287,7 +287,12 @@ InstallStage install(JNIEnv* env,jclass cls,const std::string& path) {
     if(installed)return InstallStage::Installed;
     // Query the existing mapping first. Never load a replacement engine.
     void* handle=dlopen(path.c_str(),RTLD_NOW|RTLD_NOLOAD);
-    if(!handle)return InstallStage::LibraryLookup;
+    if(!handle) {
+        const char* failure=dlerror();
+        __android_log_print(ANDROID_LOG_WARN,"Kr2RawFrame","Already-loaded engine lookup failed: %s",
+                            failure?failure:"unknown linker error");
+        return InstallStage::LibraryLookup;
+    }
     auto finish=[&](InstallStage stage){dlclose(handle);return stage;};
     auto resolve=[&](const char* symbol){return dlsym(handle,symbol);};
     originalInit=reinterpret_cast<Init>(resolve(kInit));
