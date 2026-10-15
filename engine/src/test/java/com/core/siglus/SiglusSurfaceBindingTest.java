@@ -54,6 +54,20 @@ public final class SiglusSurfaceBindingTest {
         assertEquals(0, window.resizes);
     }
 
+    @Test public void preparationTimeoutCanResumeOnlyTheCurrentDirectGeneration() {
+        SiglusSurfaceBinding binding = new SiglusSurfaceBinding();
+        assertFalse(binding.isDirectCurrent());
+        binding.surfaceCreated();
+        binding.directConnected();
+        assertTrue(binding.isDirectCurrent());
+        binding.surfaceDestroyed();
+        assertFalse(binding.isDirectCurrent());
+        binding.surfaceCreated();
+        assertFalse(binding.isDirectCurrent());
+        binding.directConnected();
+        assertTrue(binding.isDirectCurrent());
+    }
+
     @Test public void failedReconnectDoesNotClaimOwnershipForTheRetry() {
         SiglusSurfaceBinding binding = new SiglusSurfaceBinding();
         binding.surfaceCreated();

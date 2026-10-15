@@ -35,6 +35,7 @@ import java.util.function.Consumer;
 final class SiglusGraphicsProxy implements ArtemisPerformanceOverlay.Source {
     interface Listener {
         void onPrepared(SiglusGraphicsProxy proxy, Surface producer);
+        void onPreparationTimeout(SiglusGraphicsProxy proxy);
         void onOutputReady(SiglusGraphicsProxy proxy);
         void onFirstFrame(SiglusGraphicsProxy proxy);
         void onFailure(SiglusGraphicsProxy proxy, RuntimeException failure);
@@ -42,6 +43,7 @@ final class SiglusGraphicsProxy implements ArtemisPerformanceOverlay.Source {
 
     private static final String TAG = "SiglusGraphics";
     private static final long DISCONNECT_TIMEOUT_MS = 4000L;
+    private static final long PREPARATION_TIMEOUT_MS = 10000L;
     private static final long RELEASE_RETRY_MS = 1000L;
     private static final int MAX_RELEASE_ATTEMPTS = 5;
     // Permanent driver failures retain only resources until process exit, never
@@ -90,6 +92,7 @@ final class SiglusGraphicsProxy implements ArtemisPerformanceOverlay.Source {
     private final GraphicsProxyResourceSlots.Slot resourceSlot;
     private final ArtemisGraphicsStats stats = new ArtemisGraphicsStats();
     private final SiglusFrameGate frameGate = new SiglusFrameGate();
+    private final SiglusPreparationGate preparation = new SiglusPreparationGate();
     private final float[] transform = new float[16];
     private final int[] scratch = new int[1];
     private volatile boolean closed, terminalFailure, rawVerified;
@@ -97,6 +100,15 @@ final class SiglusGraphicsProxy implements ArtemisPerformanceOverlay.Source {
     private volatile long outputGeneration;
     private volatile SiglusViewport viewport;
     private volatile int status = GraphicsStatus.WAITING;
+
+    private final Runnable preparationTimeout = () -> {
+        if (closed || terminalFailure || !preparation.cancel()) return;
+        Listener callback = listener;
+        // No producer has reached Rust and initialize() cannot attach the display.
+        // Close before notification so even a queued late onPrepared cannot transfer it.
+        release();
+        if (callback != null) callback.onPreparationTimeout(this);
+    };
 
     // GLES-thread state only.
     private EGLDisplay display = EGL14.EGL_NO_DISPLAY;
@@ -143,13 +155,19 @@ final class SiglusGraphicsProxy implements ArtemisPerformanceOverlay.Source {
     }
 
     void prepare() {
+        main.postDelayed(preparationTimeout, PREPARATION_TIMEOUT_MS);
         worker.post(() -> {
             if (closed) return;
             try {
                 initialize();
                 // Rust still owns the display producer. The Activity switches
                 // it to our producer before asking us to connect the display.
-                main.post(() -> { if (!closed && !terminalFailure && listener != null) listener.onPrepared(this, producer); });
+                main.post(() -> {
+                    if (!closed && !terminalFailure && listener != null && preparation.deliver()) {
+                        main.removeCallbacks(preparationTimeout);
+                        listener.onPrepared(this, producer);
+                    }
+                });
             } catch (RuntimeException failure) { fail(failure); }
         });
     }
@@ -471,7 +489,9 @@ final class SiglusGraphicsProxy implements ArtemisPerformanceOverlay.Source {
     void release() {
         if (closed) return;
         closed = true; rawVerified = false; nextOutput(false);
+        preparation.cancel();
         listener = null;
+        main.removeCallbacks(preparationTimeout);
         main.removeCallbacks(detachTimeout);
         detachCompletion = null;
         worker.post(this::finishRelease);

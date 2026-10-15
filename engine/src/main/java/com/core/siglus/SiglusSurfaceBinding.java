@@ -26,8 +26,12 @@ final class SiglusSurfaceBinding {
         directGeneration = -1;
     }
 
+    boolean isDirectCurrent() {
+        return directGeneration == generation;
+    }
+
     boolean restoreDirect(boolean proxyAttached, Connection connection) {
-        if (!proxyAttached && directGeneration == generation) {
+        if (!proxyAttached && isDirectCurrent()) {
             // Rust still owns this window. setSurface would create a second Vulkan
             // surface before dropping the first and fail with NATIVE_WINDOW_IN_USE.
             connection.resize();

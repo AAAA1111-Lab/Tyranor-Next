@@ -414,6 +414,21 @@ public final class SiglusActivity extends AppCompatActivity implements
                         if (resumed) graphicsOverlay.show();
                         maybeStartFrameLoop();
                     }
+                    @Override public void onPreparationTimeout(SiglusGraphicsProxy proxy) {
+                        if (destroying || graphicsProxy != proxy || handle != engineHandle
+                                || !proxyPreparing || proxyAttached) return;
+                        // The proxy closed before this callback and never delivered a producer.
+                        // Rust keeps direct output; only a current holder generation may resume.
+                        graphicsProxy = null;
+                        proxyPreparing = false;
+                        proxyFailed = false;
+                        SurfaceHolder current = surfaceView.getHolder();
+                        surfaceReady = current.getSurface().isValid() && surfaceBinding.isDirectCurrent();
+                        Log.w(TAG, "Graphics preparation timed out; keeping Rust direct output");
+                        Toast.makeText(SiglusActivity.this, uiString(R.string.graphics_siglus_fallback),
+                                Toast.LENGTH_LONG).show();
+                        maybeStartFrameLoop();
+                    }
                     @Override public void onOutputReady(SiglusGraphicsProxy proxy) {
                         if (destroying || graphicsProxy != proxy || handle != engineHandle || !proxyAttached) return;
                         surfaceReady = surfaceView.getHolder().getSurface().isValid();
