@@ -105,7 +105,11 @@ final class LanczosScale {
                 bytes = Math.addExact(bytes, Math.multiplyExact(Math.multiplyExact((long) ow, oh), 4L));
             }
             if (ow != sw && oh != sh) {
-                bytes = Math.addExact(bytes, Math.multiplyExact(Math.multiplyExact((long) ow, sh), 8L));
+                // Pure scale nodes use RGBA8; reconstruction keeps the negative
+                // lobes in RGBA16F until its final output.
+                long horizontalBytesPerPixel = restore ? 8L : 4L;
+                bytes = Math.addExact(bytes, Math.multiplyExact(
+                        Math.multiplyExact((long) ow, sh), horizontalBytesPerPixel));
             }
             return bytes;
         } catch (ArithmeticException overflow) {

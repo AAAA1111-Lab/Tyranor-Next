@@ -52,7 +52,7 @@ public final class LanczosScaleTest {
         assertTrue(reduction.horizontal); assertTrue(reduction.vertical);
         assertEquals(800, reduction.horizontalWidth); assertEquals(900, reduction.horizontalHeight);
         assertTrue(LanczosScale.fitsLimits(1600, 900, 800, 225, 4096, 4096));
-        assertEquals(800L * 225 * 4 + 800L * 900 * 8,
+        assertEquals(800L * 225 * 4 + 800L * 900 * 4,
                 LanczosScale.estimatedOwnedBytes(1600, 900, 800, 225, 0, 0, false, false));
         LanczosScale.Plan mixed = LanczosScale.resample(1600, 900, 3200, 450);
         assertEquals(3200, mixed.outputWidth); assertEquals(450, mixed.outputHeight);
@@ -83,6 +83,18 @@ public final class LanczosScaleTest {
         assertEquals(340000L, LanczosScale.estimatedOwnedBytes(100, 100, 100, 150, 3, 0, false));
     }
 
+    @Test public void scaleOnlyBudgetUsesRgba8ForBothAxisPassesWithoutRestoreStorage() {
+        // 200x200 output plus a 200x100 horizontal pass, both four-byte RGBA8.
+        assertEquals(240000L, LanczosScale.estimatedOwnedBytes(
+                100, 100, 200, 200, 0, 0, false, false));
+        assertEquals(60000L, LanczosScale.estimatedOwnedBytes(
+                100, 100, 150, 100, 0, 0, false, false));
+        assertEquals(60000L, LanczosScale.estimatedOwnedBytes(
+                100, 100, 100, 150, 0, 0, false, false));
+        // Reconstruction's restore target and horizontal pass keep their original formats.
+        assertEquals(360000L, LanczosScale.estimatedOwnedBytes(
+                100, 100, 200, 200, 0, 0, false, true));
+    }
     @Test public void budgetSeparatesSafeAndTooLargeRestoreLRequests() {
         long sameSize = LanczosScale.estimatedOwnedBytes(2560, 1440, 2560, 1440, 8, 0, false);
         long enlarged = LanczosScale.estimatedOwnedBytes(2560, 1440, 3840, 2160, 8, 0, false);

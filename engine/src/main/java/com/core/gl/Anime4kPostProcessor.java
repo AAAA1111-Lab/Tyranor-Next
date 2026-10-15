@@ -471,7 +471,10 @@ public final class Anime4kPostProcessor {
             mOutput = mRestore;
             if (scale.horizontal || scale.vertical || mScaleOnly) mOutput = createTexFbo(outWidth, outHeight, false);
             if (scale.horizontal && scale.vertical) {
-                mScaleHorizontal = createTexFbo(scale.horizontalWidth, scale.horizontalHeight, true);
+                // Pure Lanczos needs only ES3 RGBA8 targets. Its horizontal result
+                // deliberately accepts 8-bit quantization/negative-lobe clipping;
+                // CNN intermediates and their later resample retain RGBA16F.
+                mScaleHorizontal = createTexFbo(scale.horizontalWidth, scale.horizontalHeight, !mScaleOnly);
             }
             if (!mScaleOnly) {
                 int scratchWidth = scratchDimension(width), scratchHeight = scratchDimension(height);

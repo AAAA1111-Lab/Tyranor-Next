@@ -85,7 +85,7 @@ public final class GraphicsFilterChainTest {
                 1600, 900, 2400, 1200);
         assertEquals(1, alone.execute.length); assertTrue(alone.execute[0]);
         assertEquals(2133, alone.outputWidths[0]); assertEquals(1200, alone.outputHeights[0]);
-        assertEquals(320000L, LanczosScale.estimatedOwnedBytes(100, 100, 200, 200, 0, 0, false, false));
+        assertEquals(240000L, LanczosScale.estimatedOwnedBytes(100, 100, 200, 200, 0, 0, false, false));
         GraphicsFilterPlan smaller = GraphicsFilterPlan.create(GraphicsFilterChain.parse("v1:lanczos,s"),
                 1280, 720, 800, 600);
         assertEquals(800, smaller.fitted.width); assertEquals(450, smaller.fitted.height);
