@@ -5,10 +5,11 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public final class KirikiroidLibraryIdentityTest {
-    @Test public void onlyTheTwoBundledHookTargetsAreSupported() {
+    @Test public void onlyTheThreeBundledHookTargetsAreSupported() {
         assertTrue(KirikiroidLibraryIdentity.supports(NativePluginConstants.LIB_GAME_139));
         assertTrue(KirikiroidLibraryIdentity.supports(NativePluginConstants.LIB_GAME_134));
-        for (String library : new String[]{null, "", NativePluginConstants.LIB_GAME_126, "libunknown.so"}) {
+        assertTrue(KirikiroidLibraryIdentity.supports(NativePluginConstants.LIB_GAME_126));
+        for (String library : new String[]{null, "", "libunknown.so"}) {
             assertFalse(KirikiroidLibraryIdentity.supports(library));
         }
     }

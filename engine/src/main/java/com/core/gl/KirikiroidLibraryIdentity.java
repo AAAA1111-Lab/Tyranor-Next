@@ -7,6 +7,7 @@ public final class KirikiroidLibraryIdentity {
     private KirikiroidLibraryIdentity() {}
     public static boolean supports(String filename) {
         return NativePluginConstants.LIB_GAME_139.equals(filename)
-                || NativePluginConstants.LIB_GAME_134.equals(filename);
+                || NativePluginConstants.LIB_GAME_134.equals(filename)
+                || NativePluginConstants.LIB_GAME_126.equals(filename);
     }
 }

@@ -129,7 +129,7 @@ class GraphicsSettingsCodecTest {
         val kr = GraphicsCapabilities.forRuntime(GraphicsFamily.KR, EngineSettingsStore.KERNEL_KIRIKIRI2)
         assertTrue(kr.supported)
         assertFalse(GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, EngineSettingsStore.ART_KERNEL_CLEAN).supported)
-        assertFalse(GraphicsCapabilities.forRuntime(GraphicsFamily.KR, EngineSettingsStore.KERNEL_KRKRSDL3).supported)
+        assertTrue(GraphicsCapabilities.forRuntime(GraphicsFamily.KR, EngineSettingsStore.KERNEL_KRKRSDL3).supported)
         assertTrue(GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, EngineSettingsStore.ART_KERNEL_OFFICIAL, EngineSettingsStore.ART_ENGINE_V6).supported)
         assertFalse(GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, EngineSettingsStore.ART_KERNEL_OFFICIAL, EngineSettingsStore.ART_ENGINE_V2).supported)
         assertTrue(GraphicsCapabilities.forRuntime(GraphicsFamily.SIGLUS).supported)

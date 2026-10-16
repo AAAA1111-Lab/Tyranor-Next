@@ -1268,7 +1268,7 @@ object EngineLauncher {
             Log.i(TAG, "krkrsdl3 launch root=$path entry=$pickedLaunchEntry args=$args")
             // krkrsdl3 内核：gameargs 首项为启动文件绝对路径，后续为 TVP 命令行参数
             return Intent(context, Krkrsdl3Activity::class.java).apply {
-                putGraphicsSettings(settings.krGraphics, GraphicsCapabilities.forRuntime(GraphicsFamily.KR, kernel, settings.krEngineVersion))
+                putGraphicsSettings(settings.krGraphics, GraphicsCapabilities.forRuntime(GraphicsFamily.KR, kernel, settings.krEngineVersion, settings.krRenderer))
                 putStringArrayListExtra(LaunchContract.GAME_ARGS, args)
                 putExtra(LaunchContract.PATH, path)
                 putExtra(LaunchContract.GAME_PATH, pickedLaunchEntry)
@@ -1343,7 +1343,7 @@ object EngineLauncher {
             // 的根因：残留的 force_default_font=1 一直压住新设置的字体）。
             putExtra(LaunchContract.DEFAULT_FONT, defaultFont)
             putExtra(LaunchContract.FORCE_DEFAULT_FONT, forceFont)
-            putGraphicsSettings(settings.krGraphics, GraphicsCapabilities.forRuntime(GraphicsFamily.KR, kernel, settings.krEngineVersion))
+            putGraphicsSettings(settings.krGraphics, GraphicsCapabilities.forRuntime(GraphicsFamily.KR, kernel, settings.krEngineVersion, settings.krRenderer))
             // 渲染/内存偏好 JSON：单游戏覆盖 与 全局 逐键合并；字段映射由 KrRenderPrefs 单一来源提供
             runCatching {
                 putExtra(LaunchContract.KR_ENGINE_PREFS, EngineSettingsStore.buildKrEnginePrefsJson(context) { pref ->

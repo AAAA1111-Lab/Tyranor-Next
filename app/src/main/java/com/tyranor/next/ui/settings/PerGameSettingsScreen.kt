@@ -1126,6 +1126,7 @@ fun PerGameSettingsScreen(game: ScanGame) {
                             graphicsFamily, if (graphicsFamily == GraphicsFamily.KR) effectiveKrKernel else effectiveArtKernel,
                             if (graphicsFamily == GraphicsFamily.KR) effVersion
                             else EffectiveEngineSettings.resolveArtVersion(artVersion, globalArtVersion),
+                            effRenderer,
                         ),
                     ) { graphicsOverride = it }
                 }
