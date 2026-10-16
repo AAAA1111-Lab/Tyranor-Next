@@ -1,6 +1,6 @@
-# KR2 缺失版本的画质滤镜接入
+# Kirikiroid2 1.2.6 与 krkrsdl3 的画质滤镜接入
 
-分支最初从 `ac3a599799ea3088a412bf8f05a8832278bdac1e` 建立，随后快进同步 PR 审查修复至 `bec5d64bea110b19776b828e6b61a488f2c3c773`；分支为 `codex/krkr-local-raw-filters`。本轮仅增加宿主适配器，保留项目当前打包的引擎二进制，不推送远端，也不更新 PR。
+分支最初从 `ac3a599799ea3088a412bf8f05a8832278bdac1e` 建立，随后快进同步 PR 审查修复至 `bec5d64bea110b19776b828e6b61a488f2c3c773`；分支为 `codex/krkr-local-raw-filters`。本文记录截至 `efc441141e3288f737982934d4119bc1d3033863` 的两条宿主适配路线。该范围现按用户要求合并至 PR #108 候选，保留项目当前打包的引擎二进制；源分支后续的 CuNNy2 等本地追加不在此次合并内。
 
 ## 接入选择
 
@@ -52,7 +52,7 @@ krkrsdl3 的窗口纹理使用不透明句柄，当前库没有完整舞台的�
 
 全局、单游戏预览与实际启动共用能力判断，并传入实际 renderer；SDL3 OpenGL 不借用 Kirikiroid2 的版本选项，software / sw 禁用滤镜请求但不抹掉已保存链。Artemis 自动版本的原有运行时能力判断保留。引擎适配不依赖 App UI 或 Compose，设置页沿用现有 Miuix 组件，本轮没有新增布局或取色实现。
 
-## 静态审查报告（2026-10-16）
+## 源分支静态审查记录（2026-10-16）
 
 按 `AGENTS.md` 的逻辑、架构、健壮性、回归和规范视角完成独立交叉走读，并在修正后复核最终源码。复核闭环包括：
 
@@ -68,26 +68,12 @@ krkrsdl3 的窗口纹理使用不透明句柄，当前库没有完整舞台的�
 
 当前环境未找到 AGENTS 指定的 Android CLI 审查技能；没有把独立静态审查或 Gradle 构建声称为执行了该技能。静态复核未确认尚未闭环的可操作缺陷，不构成运行时兼容性证明。
 
-## 本地验证与交付
+## 源分支验证与本轮验收
 
-最终完整画布版本执行以下命令通过（JDK 17、NDK 28.0.13004108，离线缓存）：
+源分支 `efc4411` 的历史记录：JDK 17、NDK 28.0.13004108，离线缓存下 `:engine:testDebugUnitTest :app:testDebugUnitTest :engine:externalNativeBuildDebug :app:assembleDebug` 成功；engine 310 项、app 557 项 JVM 测试无失败/错误，app 的大小写敏感文件系统用例在 Windows 跳过一项。这些数量及原调试包只属于源分支，不能作为当前合并树的执行结果；本地产物和机器索引不随 PR 提交。
 
-```powershell
-$env:TYRANOR_APPLICATION_ID = 'com.tyranor.next.debug'
-.\gradlew.bat :engine:testDebugUnitTest :app:testDebugUnitTest :engine:externalNativeBuildDebug :app:assembleDebug --offline --no-daemon
-```
+独立 C++ 几何测试曾通过 NDK C++17 `-Wall -Wextra -Werror` 编译检查，未执行独立测试程序，也不计入 Gradle/JVM 运行数量。普通 Android 编译会编译新桥，但不自动运行这份独立几何测试。
 
-- `BUILD SUCCESSFUL in 35s`，83 个任务，17 个执行、66 个复用。
-- engine：310 个 JVM 测试，0 失败、0 错误、0 跳过。
-- app：557 个 JVM 测试，0 失败、0 错误、1 跳过；跳过的是依赖大小写敏感文件系统的 `RpgSaveScanDirsTest.keepsSavedataAndSavedataDistinctOnCaseSensitiveFilesystem`。
-- 新增 C++ 几何回归源码通过 NDK C++17 `-Wall -Wextra -Werror` 编译检查；未在本机执行该独立可执行测试，不计入上面的 JVM 测试数量。
-- 三个原始引擎库的 SHA-256 与上表一致；APK 包含新 SDL3 宿主桥和 KR 桥，包名经 aapt2 核对为 `com.tyranor.next.debug`，版本名 `1.58`、versionCode `1058000`。未提交 APK 或构建产物。
-- 构建保留既有 Android 废弃 API 警告；AGP 提示新 SDL3 桥未剥离符号而按原文件打包，没有导致构建失败。
+提交者随后明确确认这两个新增接入的编译及实机验收通过。本次在较新 PR 基线上复查和整合，不重复本地编译或设备操作；精确合并 head 的 CI 结果由 PR 正文/评论另行记录。
 
-APK：`app/build/outputs/apk/debug/app-debug.apk`。
-
-SHA-256：`2517e031d442fcbbcb240de62d212cf8df23ff2fa2cf5c6b38989c3c38cb9674`。
-
-本轮未执行远端 CI、推送、PR 更新、安装或实机测试。待设备确认：两个新版本的纹理方向、不同分辨率的原始输入与铺屏、滤镜开关与链切换、后台恢复和 EGL 上下文重建、动态叠加层与 Live2D、实际游戏输入。不能用先前官方 Artemis 的两小时验收代替上述新增路径的验证。
-
-提交 head 与本地备份索引记录在仓库外的 `D:/Tyranor-Next/local-notes/krkr-local-20261016/index.json`，以该索引和当前分支 `git rev-parse HEAD` 为准。
+设备验收没有被扩展成以下承诺：所有厂商 EGL/GL 故障、意外上下文丢失、未知外部插件、动态 Live2D 组合及全部异常输入都已测试。新增路径的静态整合报告见 [PR108 KR 整合复核](reviews/PR108-kr-integration-review-20261016.md)。
