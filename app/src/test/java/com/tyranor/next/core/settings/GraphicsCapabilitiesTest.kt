@@ -36,6 +36,18 @@ class GraphicsCapabilitiesTest {
         assertFalse(unknown.runtimeDependent)
     }
 
+    @Test fun sdl3PreviewUsesTheSelectedRendererWithoutBorrowingKirikiroidVersion() {
+        for (version in listOf(EngineSettingsStore.KR_126, "unknown")) {
+            for (renderer in listOf("", "opengl", "software", " SW ")) {
+                val preview = GraphicsCapabilities.forSettings(GraphicsFamily.KR,
+                    EngineSettingsStore.KERNEL_KRKRSDL3, version, renderer)
+                assertEquals(GraphicsCapabilities.forRuntime(GraphicsFamily.KR,
+                    EngineSettingsStore.KERNEL_KRKRSDL3, version, renderer), preview)
+                assertFalse(preview.runtimeDependent)
+            }
+        }
+    }
+
     @Test fun otherFamiliesKeepTheirExistingCapabilityContract() {
         for (version in EngineSettingsStore.KR_VERSIONS) {
             assertEquals(GraphicsCapabilities.forRuntime(GraphicsFamily.KR,

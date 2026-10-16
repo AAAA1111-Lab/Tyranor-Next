@@ -19,7 +19,7 @@ class GraphicsLaunchPolicyTest {
 
     @Test fun unsupportedKernelsCarryDisabledContractWithoutSwitchingOrBorrowingSettings() {
         for (capability in listOf(
-            GraphicsCapabilities.forRuntime(GraphicsFamily.KR, EngineSettingsStore.KERNEL_KRKRSDL3),
+            GraphicsCapabilities.forRuntime(GraphicsFamily.KR, EngineSettingsStore.KERNEL_KRKRSDL3, renderer = EngineSettingsStore.RENDERER_SOFTWARE),
             GraphicsCapabilities.forRuntime(GraphicsFamily.ARTEMIS, EngineSettingsStore.ART_KERNEL_OFFICIAL, EngineSettingsStore.ART_ENGINE_V2),
         )) {
             val extras = GraphicsLaunchPolicy.extras(saved, capability)
@@ -96,6 +96,26 @@ class GraphicsLaunchPolicyTest {
             }
         }
     }
+    @Test fun sdl3OpenGlIsIndependentOfTheKirikiroidVersionAndSoftwareKeepsItsSettings() {
+        for (version in listOf(EngineSettingsStore.KR_AUTO, EngineSettingsStore.KR_126, "unknown")) {
+            for (renderer in listOf("", "opengl", "gl", "gpu")) {
+                val capability = GraphicsCapabilities.forRuntime(GraphicsFamily.KR,
+                    EngineSettingsStore.KERNEL_KRKRSDL3, version, renderer)
+                assertTrue(capability.supported)
+                assertEquals(true, GraphicsLaunchPolicy.extras(saved, capability)[LaunchContract.GRAPHICS_FILTER_ENABLED])
+            }
+            for (renderer in listOf("software", "sw", " SW ")) {
+                val capability = GraphicsCapabilities.forRuntime(GraphicsFamily.KR,
+                    EngineSettingsStore.KERNEL_KRKRSDL3, version, renderer)
+                val extras = GraphicsLaunchPolicy.extras(saved, capability)
+                assertFalse(capability.supported)
+                assertEquals(false, extras[LaunchContract.GRAPHICS_FILTER_ENABLED])
+                assertEquals(false, extras[LaunchContract.GRAPHICS_FILTER_ANALYZER])
+                assertEquals("v1:m,!deblur,lanczos", extras[LaunchContract.GRAPHICS_FILTER_CHAIN])
+            }
+        }
+    }
+
     @Test fun artemisActualCandidatesGateWithoutErasingTheOriginalRequest() {
         val supported = listOf(EngineSettingsStore.ART_ENGINE_AUTO, EngineSettingsStore.ART_ENGINE_V1,
             EngineSettingsStore.ART_ENGINE_V3, EngineSettingsStore.ART_ENGINE_V4,

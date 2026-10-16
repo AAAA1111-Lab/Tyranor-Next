@@ -871,7 +871,7 @@ internal fun EngineSettingsDetailScreen(kind: EngineSettingsKind) {
                     graphicsFamily?.let { family ->
                         GlobalGraphicsSettings(
                             settings = graphics,
-                            capability = GraphicsCapabilities.forSettings(family, if (family == GraphicsFamily.KR) krKernel else artKernel, if (family == GraphicsFamily.KR) krVersion else artVersion),
+                            capability = GraphicsCapabilities.forSettings(family, if (family == GraphicsFamily.KR) krKernel else artKernel, if (family == GraphicsFamily.KR) krVersion else artVersion, krRenderer),
                         ) { graphics = it }
                     }
                 },

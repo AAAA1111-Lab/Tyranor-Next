@@ -82,16 +82,16 @@ data class GraphicsCapabilities(val supported: Boolean, val runtimeDependent: Bo
     companion object {
         /** Auto has no resolved game candidate on a settings page; keep the request configurable.
          * Launch still gates each actual candidate, including an unsupported first candidate. */
-        fun forSettings(family: GraphicsFamily, kernel: String = "", version: String = ""): GraphicsCapabilities {
+        fun forSettings(family: GraphicsFamily, kernel: String = "", version: String = "", renderer: String = ""): GraphicsCapabilities {
             if (family == GraphicsFamily.ARTEMIS && kernel == EngineSettingsStore.ART_KERNEL_OFFICIAL &&
                 (version.isBlank() || version.trim() == EngineSettingsStore.ART_ENGINE_AUTO)) {
                 val candidates = ArtemisVersion.values().map { ArtemisLibraryIdentity.supports(it.libraryFilename) }
                 return GraphicsCapabilities(candidates.any { it }, runtimeDependent = candidates.any { !it })
             }
-            return forRuntime(family, kernel, version)
+            return forRuntime(family, kernel, version, renderer)
         }
 
-        fun forRuntime(family: GraphicsFamily, kernel: String = "", version: String = ""): GraphicsCapabilities {
+        fun forRuntime(family: GraphicsFamily, kernel: String = "", version: String = "", renderer: String = ""): GraphicsCapabilities {
             val supported = when (family) {
                 GraphicsFamily.KR -> {
                     val library = when (version) {
@@ -100,7 +100,10 @@ data class GraphicsCapabilities(val supported: Boolean, val runtimeDependent: Bo
                         EngineSettingsStore.KR_126 -> NativePluginConstants.LIB_GAME_126
                         else -> null
                     }
-                    kernel in setOf(EngineSettingsStore.KR_AUTO, EngineSettingsStore.KERNEL_KIRIKIRI2) &&
+                    if (kernel == EngineSettingsStore.KERNEL_KRKRSDL3) {
+                        // SDL3 defaults to OpenGL; its software renderer has no GLES stage interface.
+                        renderer.trim().lowercase() !in setOf(EngineSettingsStore.RENDERER_SOFTWARE, "sw")
+                    } else kernel in setOf(EngineSettingsStore.KR_AUTO, EngineSettingsStore.KERNEL_KIRIKIRI2) &&
                         KirikiroidLibraryIdentity.supports(library)
                 }
                 GraphicsFamily.ARTEMIS -> {
