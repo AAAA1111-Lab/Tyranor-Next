@@ -18,6 +18,7 @@
 #include <cstring>
 #include <map>
 #include <memory>
+#include <new>
 #include <mutex>
 #include <limits>
 #include <vector>
@@ -42,7 +43,12 @@ struct Env {
     ~Env() { if (attached) vm->DetachCurrentThread(); }
     bool clear() { if (!value || !value->ExceptionCheck()) return false;value->ExceptionClear();return true; }
 };
+struct SurfaceState;
+using SurfaceRegistry = std::map<EGLSurface, std::shared_ptr<SurfaceState>>;
 struct SurfaceState {
+    // Allocate before connecting any window. While parked here, mapped() stays null
+    // so the spare node cannot form a shared_ptr cycle back to this state.
+    SurfaceRegistry::node_type directAlias;
     // The original handle remains a live alias until the engine destroys it.
     // EGL/producer fields are guarded separately from the registry: no registry
     // lock may span JNI, EGL, or the original engine's Display callback.
@@ -64,7 +70,7 @@ std::mutex surfacesMutex;
 // Lock order: state operationMutex -> surfaceLifecycleMutex -> surfacesMutex;
 // create has no published state yet and never acquires operationMutex.
 std::mutex surfaceLifecycleMutex;
-std::map<EGLSurface, std::shared_ptr<SurfaceState>> surfaces;
+SurfaceRegistry surfaces;
 std::atomic<int> logicalWidth{0}, logicalHeight{0}, screenWidth{0}, screenHeight{0};
 std::atomic<bool> directOutput{false}, allowed{false}, nativeFailed{false}, gesture{false};
 std::atomic_flag installing = ATOMIC_FLAG_INIT;
@@ -97,6 +103,25 @@ std::shared_ptr<SurfaceState> findSurface(EGLSurface surface) {
     std::lock_guard<std::mutex> lock(surfacesMutex);
     auto found = surfaces.find(surface);
     return found == surfaces.end() ? nullptr : found->second;
+}
+SurfaceRegistry::node_type allocateSurfaceEntry() {
+    SurfaceRegistry pending;
+    pending.emplace(EGL_NO_SURFACE, nullptr);
+    return pending.extract(EGL_NO_SURFACE);
+}
+// Same default allocator and pointer comparator: node insertion does not allocate.
+// Keep rejected entries reusable without retaining their proposed owner.
+bool registerSurfaceEntry(SurfaceRegistry::node_type& entry, EGLSurface surface,
+                          const std::shared_ptr<SurfaceState>& state) {
+    if (entry.empty()) return false;
+    entry.key() = surface;
+    entry.mapped() = state;
+    std::lock_guard<std::mutex> lock(surfacesMutex);
+    auto inserted = surfaces.insert(std::move(entry));
+    if (inserted.inserted) return true;
+    entry = std::move(inserted.node);
+    entry.mapped().reset();
+    return false;
 }
 bool noSurfaces() {
     std::lock_guard<std::mutex> lock(surfacesMutex);
@@ -150,6 +175,17 @@ EGLSurface createSurface(EGLDisplay display,EGLConfig config,EGLNativeWindowType
     auto* screen=reinterpret_cast<ANativeWindow*>(window);
     int width=ANativeWindow_getWidth(screen),height=ANativeWindow_getHeight(screen);
     if(width<=0 || height<=0)return direct();
+    std::shared_ptr<SurfaceState> state;
+    SurfaceRegistry::node_type producerEntry;
+    try {
+        state = std::make_shared<SurfaceState>();
+        producerEntry = allocateSurfaceEntry();
+        state->directAlias = allocateSurfaceEntry();
+    } catch (const std::bad_alloc&) {
+        // No consumer, native window reference or producer EGLSurface exists yet.
+        __android_log_print(ANDROID_LOG_WARN,"ArtemisOfficial","Cannot allocate surface ownership; using direct output");
+        return direct();
+    }
     jobject screenSurface=ANativeWindow_toSurface(env.value,screen);
     const bool screenFailed = env.clear();
     if(!screenSurface || screenFailed) {
@@ -187,12 +223,14 @@ EGLSurface createSurface(EGLDisplay display,EGLConfig config,EGLNativeWindowType
     if(result==EGL_NO_SURFACE){ANativeWindow_release(producer);status(3);
         return disconnect() == DisconnectResult::Detached ? direct() : EGL_NO_SURFACE;}
     ANativeWindow_acquire(screen);
-    auto state = std::make_shared<SurfaceState>();
     state->actual=result;state->config=config;state->screen=screen;state->producer=producer;
     state->presentationTime=presentationTime;state->producerWidth=producerWidth;state->producerHeight=producerHeight;
-    {
-        std::lock_guard<std::mutex> lock(surfacesMutex);
-        surfaces.emplace(result,state);
+    if (!registerSurfaceEntry(producerEntry,result,state)) {
+        eglDestroySurface(display,result);
+        ANativeWindow_release(producer);
+        ANativeWindow_release(screen);
+        status(3);
+        return disconnect() == DisconnectResult::Detached ? direct() : EGL_NO_SURFACE;
     }
     screenWidth=width;screenHeight=height;directOutput=false;
     logicalWidth=stageTarget ? producerWidth : 0;
@@ -273,14 +311,24 @@ RestoreResult restoreDirect(EGLDisplay display,const std::shared_ptr<SurfaceStat
     EGLContext context=eglGetCurrentContext();
     EGLSurface restored=eglCreateWindowSurface(display,state->config,state->screen,nullptr);
     if(restored==EGL_NO_SURFACE)return RestoreResult::Failed;
-    if(!eglMakeCurrent(display,restored,restored,context)){eglDestroySurface(display,restored);return RestoreResult::Failed;}
+    // Register the real alias before committing the EGL switch; this consumes only
+    // the preallocated node and never allocates after the screen has been acquired.
+    if (!registerSurfaceEntry(state->directAlias,restored,state)) {
+        eglDestroySurface(display,restored);
+        return RestoreResult::Failed;
+    }
+    if (!eglMakeCurrent(display,restored,restored,context)) {
+        {
+            std::lock_guard<std::mutex> lock(surfacesMutex);
+            state->directAlias = surfaces.extract(restored);
+            if (!state->directAlias.empty()) state->directAlias.mapped().reset();
+        }
+        eglDestroySurface(display,restored);
+        return RestoreResult::Failed;
+    }
     state->retainedProducer=state->actual;
     state->actual=restored;state->direct=true;
     if(state->producer){ANativeWindow_release(state->producer);state->producer=nullptr;}
-    {
-        std::lock_guard<std::mutex> lock(surfacesMutex);
-        surfaces.emplace(restored,state); // Also accept eglGetCurrentSurface's real handle.
-    }
     directOutput=true;gesture=false;
     directRestored();
     __android_log_print(ANDROID_LOG_WARN,"ArtemisOfficial","Consumer unavailable; restored official direct output without restarting VM");
@@ -497,7 +545,9 @@ bool installArtemisOfficialGraphics(void* handle,ANativeActivity* activity,const
     Image image;
     image.base = reinterpret_cast<uintptr_t>(info.dli_fbase);
     dl_iterate_phdr(findImage, &image);
-    std::string identity = loadedBuildId(image);
+    std::string identity;
+    try { identity = loadedBuildId(image); }
+    catch (const std::bad_alloc&) { return failed(); }
     if (identity.empty()) return failed();
     jmethodID verify = method("verifyLibrary", "(Ljava/lang/String;Ljava/lang/String;)Z");
     if (!verify) return failed();
@@ -516,10 +566,6 @@ bool installArtemisOfficialGraphics(void* handle,ANativeActivity* activity,const
     resizeMethod = method("resizeProducer", "(II)Z");
     if (!connectMethod || !submittedMethod || !healthyMethod || !disconnectMethod || !resizeMethod)
         return failed();
-    vm = activity->vm;
-    bridge = static_cast<jclass>(env->NewGlobalRef(cls));
-    if (env->ExceptionCheck() || !bridge) return failed();
-    env->DeleteLocalRef(cls);
     const Elf64_Dyn* dynamic=nullptr;size_t count=0;
     for(size_t i=0;i<image.count;++i)if(image.phdr[i].p_type==PT_DYNAMIC){dynamic=reinterpret_cast<const Elf64_Dyn*>(image.base+image.phdr[i].p_vaddr);count=image.phdr[i].p_memsz/sizeof(Elf64_Dyn);}
     const Elf64_Sym* symbols=nullptr;const char* strings=nullptr;const Elf64_Rela* relocs=nullptr;size_t bytes=0;bool rela=false;
@@ -529,19 +575,34 @@ bool installArtemisOfficialGraphics(void* handle,ANativeActivity* activity,const
         if(d.d_tag==DT_JMPREL)relocs=reinterpret_cast<const Elf64_Rela*>(address(image.base,d.d_un.d_ptr));
         if(d.d_tag==DT_PLTRELSZ)bytes=d.d_un.d_val;if(d.d_tag==DT_PLTREL)rela=d.d_un.d_val==DT_RELA;
     }
-    const std::map<std::string,void*> hooks={{kDisplay,reinterpret_cast<void*>(displayStage)},
-        {"eglCreateWindowSurface",reinterpret_cast<void*>(createSurface)},{"eglDestroySurface",reinterpret_cast<void*>(destroySurface)},
-        {"eglQuerySurface",reinterpret_cast<void*>(querySurface)},{"eglMakeCurrent",reinterpret_cast<void*>(makeCurrent)},
-        {"eglSwapBuffers",reinterpret_cast<void*>(swap)},{"AMotionEvent_getX",reinterpret_cast<void*>(inputX)},
-        {"AMotionEvent_getY",reinterpret_cast<void*>(inputY)},{"AInputQueue_getEvent",reinterpret_cast<void*>(inputEvent)}};
-    std::vector<Change> changes;std::map<std::string,int> found;bool ok=symbols && strings && relocs && rela && bytes%sizeof(Elf64_Rela)==0;
-    if(ok)for(size_t i=0;i<bytes/sizeof(Elf64_Rela);++i) {
-        if(ELF64_R_TYPE(relocs[i].r_info)!=R_AARCH64_JUMP_SLOT)continue;
-        const char* name=strings+symbols[ELF64_R_SYM(relocs[i].r_info)].st_name;auto hook=hooks.find(name);if(hook==hooks.end())continue;
-        void* before=dlsym(handle,name);ok=collect(image,changes,reinterpret_cast<void**>(image.base+relocs[i].r_offset),before,hook->second)&&ok;++found[name];
+    std::vector<Change> changes;
+    bool ok=symbols && strings && relocs && rela && bytes%sizeof(Elf64_Rela)==0;
+    try {
+        const std::map<std::string,void*> hooks={{kDisplay,reinterpret_cast<void*>(displayStage)},
+            {"eglCreateWindowSurface",reinterpret_cast<void*>(createSurface)},{"eglDestroySurface",reinterpret_cast<void*>(destroySurface)},
+            {"eglQuerySurface",reinterpret_cast<void*>(querySurface)},{"eglMakeCurrent",reinterpret_cast<void*>(makeCurrent)},
+            {"eglSwapBuffers",reinterpret_cast<void*>(swap)},{"AMotionEvent_getX",reinterpret_cast<void*>(inputX)},
+            {"AMotionEvent_getY",reinterpret_cast<void*>(inputY)},{"AInputQueue_getEvent",reinterpret_cast<void*>(inputEvent)}};
+        std::map<std::string,int> found;
+        if(ok)for(size_t i=0;i<bytes/sizeof(Elf64_Rela);++i) {
+            if(ELF64_R_TYPE(relocs[i].r_info)!=R_AARCH64_JUMP_SLOT)continue;
+            const char* name=strings+symbols[ELF64_R_SYM(relocs[i].r_info)].st_name;auto hook=hooks.find(name);if(hook==hooks.end())continue;
+            void* before=dlsym(handle,name);ok=collect(image,changes,reinterpret_cast<void**>(image.base+relocs[i].r_offset),before,hook->second)&&ok;++found[name];
+        }
+        for(auto& hook:hooks)if(!found[hook.first])ok=false;
+    } catch (const std::bad_alloc&) {
+        // All metadata allocations precede both global registration and PLT writes.
+        return failed();
     }
-    for(auto& hook:hooks)if(!found[hook.first])ok=false;
-    if(!ok){status(1);return false;}
+    if (!ok) return failed();
+    vm = activity->vm;
+    jclass registered = static_cast<jclass>(env->NewGlobalRef(cls));
+    if (env->ExceptionCheck() || !registered) {
+        if (registered) env->DeleteGlobalRef(registered);
+        return failed();
+    }
+    bridge = registered;
+    env->DeleteLocalRef(cls);
     for(size_t i=0;i<changes.size();++i)if(!change(changes[i],false)) {
         bool restored=true;size_t applied=i+1;while(applied)restored=change(changes[--applied],true)&&restored;
         status(3);__android_log_print(ANDROID_LOG_ERROR,"ArtemisOfficial","Registration failed; rollback=%d",restored);return false;
