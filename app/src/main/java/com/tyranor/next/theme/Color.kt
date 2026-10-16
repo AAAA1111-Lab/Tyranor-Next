@@ -2,6 +2,8 @@ package com.tyranor.next.theme
 
 import androidx.compose.ui.graphics.Color
 
+val EthornellCoverColor = Color(0xFF526F95)
+
 // 主色
 val Blue40 = Color(0xFF307DEF)
 val Teal40 = Color(0xFF2E7D78)

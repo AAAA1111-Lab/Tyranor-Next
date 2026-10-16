@@ -65,6 +65,8 @@ object EngineSettingsStore {
 
     // FVP（rfvp）应用级默认（文本编码 / 系统字体回退 / 文本高分辨率渲染 / 自定义字体）
     const val KEY_FVP_NLS = "fvp_nls"
+    const val KEY_ETHORNELL_NLS = "ethornell_nls"
+    const val KEY_ETHORNELL_FONT = "ethornell_font"
     const val KEY_FVP_SYSTEM_FONT = "fvp_system_font"
     const val KEY_FVP_TEXT_HIDPI = "fvp_text_hidpi"
     const val KEY_FVP_FONT = "fvp_font"
@@ -294,6 +296,9 @@ object EngineSettingsStore {
 
     // FVP 文本编码取值（创建引擎时固定，改动后需重启本局）
     const val FVP_NLS_SJIS = "sjis"
+    const val ETHORNELL_NLS_SJIS = "sjis"
+    const val ETHORNELL_NLS_GBK = "gbk"
+    val ETHORNELL_NLS_VALUES: Set<String> = linkedSetOf(ETHORNELL_NLS_SJIS, ETHORNELL_NLS_GBK)
     const val FVP_NLS_GBK = "gbk"
     const val FVP_NLS_UTF8 = "utf8"
     val FVP_NLS_VALUES: Set<String> = linkedSetOf(
@@ -723,6 +728,16 @@ object EngineSettingsStore {
         prefs(c).edit().putString(KEY_FB_NLS, normalizeFbNls(v)).apply()
     fun normalizeFbNls(v: String?): String =
         v?.trim()?.lowercase()?.takeIf { it in FB_NLS_VALUES } ?: FB_NLS_AUTO
+
+    // ---------- Ethornell / BGI ----------
+    fun getEthornellNls(c: Context): String =
+        normalizeEthornellNls(prefs(c).getString(KEY_ETHORNELL_NLS, ETHORNELL_NLS_SJIS))
+    fun setEthornellNls(c: Context, value: String) =
+        prefs(c).edit().putString(KEY_ETHORNELL_NLS, normalizeEthornellNls(value)).apply()
+    fun normalizeEthornellNls(value: String?): String =
+        value?.trim()?.lowercase(java.util.Locale.ROOT)?.takeIf { it in ETHORNELL_NLS_VALUES } ?: ETHORNELL_NLS_SJIS
+    fun getEthornellFont(c: Context): String = prefs(c).getString(KEY_ETHORNELL_FONT, "").orEmpty()
+    fun setEthornellFont(c: Context, value: String) = prefs(c).edit().putString(KEY_ETHORNELL_FONT, value.trim()).apply()
 
     // ---------- FVP ----------
     fun getFvpNls(c: Context): String =

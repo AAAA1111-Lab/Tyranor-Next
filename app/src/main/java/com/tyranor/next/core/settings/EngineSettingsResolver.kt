@@ -184,6 +184,14 @@ object EngineSettingsResolver {
                 EngineSettingsStore.FVP_NLS_VALUES,
                 EngineSettingsStore.FVP_NLS_SJIS,
             ),
+            ethornellNls = EffectiveEngineSettings.resolveEthornellNls(
+                str(PerGameSettingsStore.F_ETHORNELL_NLS),
+                EngineSettingsStore.getEthornellNls(app),
+            ),
+            ethornellFont = EffectiveEngineSettings.resolve(
+                str(PerGameSettingsStore.F_ETHORNELL_FONT),
+                EngineSettingsStore.getEthornellFont(app),
+            ),
             fvpSystemFont = EffectiveEngineSettings.resolveBool(
                 bool(PerGameSettingsStore.F_FVP_SYSTEM_FONT),
                 EngineSettingsStore.isFvpSystemFont(app),
@@ -283,6 +291,10 @@ data class ResolvedEngineSettings(
     val fbNls: String,
     /** FVP 生效文本编码（sjis/gbk/utf8；创建引擎时固定，改动需重启本局）。 */
     val fvpNls: String,
+    /** Graphics text only, sjis/gbk; resource names and UI locale are independent. */
+    val ethornellNls: String,
+    /** Empty = engine fallback; nonempty paths must pass the private-font launch preflight. */
+    val ethornellFont: String,
     /** FVP 生效系统字体回退开关。 */
     val fvpSystemFont: Boolean,
     /** FVP 生效文本高分辨率渲染开关。 */

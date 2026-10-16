@@ -14,6 +14,7 @@ import com.tyranor.next.core.game.scan.SiglusTitleFeedback
 import com.tyranor.next.core.game.scan.Xs35TitleFeedback
 import com.tyranor.next.core.game.model.ScanGame
 import com.tyranor.next.core.settings.AppSettingsStore
+import com.tyranor.next.ui.cover.coverErrorMessage
 import com.tyranor.next.ui.game.cleanupDeletedGame
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
@@ -109,7 +110,7 @@ class MainLibraryViewModel(application: Application) : AndroidViewModel(applicat
                         result.failedCount,
                     )
                 } else {
-                    task.error
+                    task.error?.coverErrorMessage(appContext)
                 }
                 if (result != null) {
                     acceptPersistedGames(result.games, task.eventId, message)

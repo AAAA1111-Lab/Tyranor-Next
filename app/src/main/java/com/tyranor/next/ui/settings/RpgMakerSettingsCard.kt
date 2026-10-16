@@ -44,6 +44,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.runInterruptible
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 
@@ -199,7 +200,7 @@ internal fun RpgMakerRgssSettingsCard(
         scope.launch {
             val okMsg = ctx.getString(R.string.engine_settings_rpgm_custom_font_imported)
             val failedMsg = ctx.getString(R.string.engine_settings_rpgm_custom_font_import_failed)
-            val path = withContext(Dispatchers.IO) { RpgMakerRuntimeEnvironment.importCustomFont(ctx, uri) }
+            val path = runInterruptible(Dispatchers.IO) { RpgMakerRuntimeEnvironment.importCustomFont(ctx, uri) }
             if (path != null) onSettings(settings.copy(customFont = path))
             Toast.makeText(ctx, if (path != null) okMsg else failedMsg, Toast.LENGTH_SHORT).show()
         }

@@ -90,6 +90,7 @@ object EnginePluginBootstrap {
             EngineType.XSYS35,
             EngineType.UK2,
             EngineType.FVP,
+            EngineType.ETHORNELL,
             EngineType.YURIS,
             EngineType.CATSYSTEM2,
             EngineType.PC,

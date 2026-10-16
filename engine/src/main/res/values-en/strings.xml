@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="engine_ethornell_invalid_config">Invalid Ethornell configuration. Please select a local game directory again.</string>
+    <string name="engine_ethornell_failed">Ethornell failed. Check game resources, fonts and the currently supported features.</string>
+    <string name="engine_ethornell_game_menu">Open game menu (right click)</string>
+    <string name="engine_ethornell_backlog">Backlog (scroll up)</string>
+    <string name="engine_ethornell_host_request">Game confirmation</string>
     <string name="engine_game_loading">Game loading</string>
     <string name="engine_starting_game">Starting game</string>
     <string name="engine_preparing_game">Please wait while the game content is prepared</string>

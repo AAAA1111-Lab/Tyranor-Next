@@ -468,6 +468,7 @@ private fun engineTabOf(engine: EngineType): EngineTab = when (engine) {
     EngineType.RPGMAKER, EngineType.RPG_MV, EngineType.RPG_MZ -> EngineTab.RPGM
     EngineType.KIRIKIRI, EngineType.ONS, EngineType.ARTEMIS, EngineType.SIGLUS,
     EngineType.REALLIVE, EngineType.AVG32, EngineType.XSYS35, EngineType.UK2, EngineType.FVP,
+    EngineType.ETHORNELL,
     EngineType.RENPY, EngineType.YURIS, EngineType.CATSYSTEM2 -> EngineTab.GAL
     // PC（手动添加，经 Winlator 运行）与主机模拟器同属「主机」分类
     EngineType.PSP, EngineType.NINTENDO_SWITCH, EngineType.PC -> EngineTab.CONSOLE
@@ -499,6 +500,7 @@ private fun engineDescription(engine: EngineType): String = when (engine) {
     EngineType.XSYS35 -> stringResource(R.string.engine_desc_xsys35)
     EngineType.UK2 -> stringResource(R.string.engine_desc_uk2)
     EngineType.FVP -> stringResource(R.string.engine_desc_fvp)
+    EngineType.ETHORNELL -> stringResource(R.string.engine_desc_ethornell)
 
     EngineType.YURIS -> stringResource(R.string.engine_desc_yuris)
     EngineType.CATSYSTEM2 -> stringResource(R.string.engine_desc_cs2)
@@ -540,6 +542,7 @@ private val rpgMakerWebBuiltin = listOf(
 
 /** 各内置引擎的「版本条目」弹窗内容（条目顺序即展示顺序）。 */
 private val builtinDialogEntries: Map<EngineType, List<EngineDialogEntry>> = mapOf(
+    EngineType.ETHORNELL to listOf(builtinEntry("internal.ethornell", "ethornell-rs / Android host ABI 1")),
     EngineType.TYRANO to tyranorWebBuiltin,
     EngineType.WEB_OTHER to tyranorWebBuiltin,
     EngineType.VN to tyranorWebBuiltin,

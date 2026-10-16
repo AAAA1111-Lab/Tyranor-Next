@@ -7,6 +7,7 @@ add_library(artemis_loader SHARED artemis_loader.cpp artemis_host_class.cpp arte
 add_library(siglus_bridge SHARED siglus_bridge.cpp)
 add_library(rfvp_bridge SHARED rfvp_bridge.cpp)
 add_library(games_bridge SHARED games_bridge.cpp)
+add_library(ethornell_bridge SHARED ethornell_bridge.cpp)
 
 find_library(log-lib log)
 find_library(dl-lib dl)
@@ -20,6 +21,7 @@ target_link_libraries(artemis_loader ${log-lib} ${dl-lib} ${android-lib} ${egl-l
 target_link_libraries(siglus_bridge ${log-lib} ${dl-lib} ${android-lib})
 target_link_libraries(rfvp_bridge ${log-lib} ${dl-lib} ${android-lib})
 target_link_libraries(games_bridge ${log-lib} ${dl-lib} ${android-lib})
+target_link_libraries(ethornell_bridge ${log-lib} ${dl-lib} ${android-lib})
 
 add_library(graphics_timer SHARED graphics_timer.cpp)
 target_link_libraries(graphics_timer ${egl-lib} ${gles-lib})

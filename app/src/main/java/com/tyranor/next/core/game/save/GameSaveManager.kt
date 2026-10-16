@@ -6,13 +6,16 @@ import androidx.annotation.StringRes
 import androidx.documentfile.provider.DocumentFile
 import com.tyranor.next.R
 import com.tyranor.next.core.engine.EngineType
+import com.tyranor.next.core.game.launch.EthornellOperationGate
 import com.tyranor.next.core.game.manual.AndroidAppGames
+import com.tyranor.next.core.game.model.EthornellPaths
 import com.tyranor.next.core.game.model.GamePathUtils
 import com.tyranor.next.core.game.model.ScanGame
 import com.tyranor.next.core.game.model.Xs35Paths
 import com.tyranor.next.core.i18n.AppLocaleController
 import com.tyranor.next.core.settings.EngineSettingsResolver
 import com.tyranor.next.core.settings.EngineSettingsStore
+import kotlinx.coroutines.ensureActive
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -41,6 +44,25 @@ class GameSaveManager(private val context: Context) {
                 null,
                 text(R.string.save_location_engine_no_file_interface, game.engine.displayName),
                 false,
+            )
+        }
+        // Exact private identity root even when the resource volume is absent.
+        // Admission remains disabled until the device save-IO fixture is accepted.
+        if (game.engine == EngineType.ETHORNELL) {
+            val directory = try {
+                val expected = EthornellPaths.userDataDir(appContext.filesDir, game.uri)
+                EthornellPaths.validateUserDataDir(appContext.filesDir, game.uri, expected.absolutePath)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: IOException) {
+                null
+            } catch (_: SecurityException) {
+                null
+            }
+            return SaveLocation(
+                directory,
+                text(R.string.save_location_engine_scoped, game.engine.displayName),
+                directory != null && EthornellSaveCapability.available,
             )
         }
         val root = resolveGameDirectory(game)
@@ -111,6 +133,8 @@ class GameSaveManager(private val context: Context) {
                 }
             }
             EngineType.VN, EngineType.WEB_OTHER, EngineType.RPGMAKER, EngineType.RENPY,
+            // ETHORNELL returns its exact private user root above; exhaustive fallback only.
+            EngineType.ETHORNELL,
             EngineType.PSP, EngineType.NINTENDO_SWITCH, EngineType.CATSYSTEM2, EngineType.PC,
             // ANDROID_APP 在函数开头已提前返回（无文件存档接口），此分支仅为 when 完备性
             EngineType.ANDROID_APP ->
@@ -183,7 +207,24 @@ class GameSaveManager(private val context: Context) {
         return File(File(File(external, "save"), "tyrano"), GamePathUtils.safeSaveName(root))
     }
 
-    fun listSaveFiles(game: ScanGame): List<File> {
+    suspend fun listSaveFiles(game: ScanGame): List<File> {
+        if (game.engine == EngineType.ETHORNELL) {
+            // Existing SaveUI refresh does not catch errors. Busy/disabled data
+            // has no safe snapshot; action methods still throw typed failures.
+            if (!EthornellSaveCapability.available) return emptyList()
+            return EthornellOperationGate.exclusive {
+                try {
+                    if (EthornellOperationGate.isSaveBusy(appContext)) emptyList()
+                    else ethornellStore(game).listFiles()
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (_: IOException) {
+                    emptyList()
+                } catch (_: SecurityException) {
+                    emptyList()
+                }
+            }
+        }
         val directory = resolveSaveLocation(game).directory ?: return emptyList()
         if (!directory.isDirectory) return emptyList()
         return buildList {
@@ -195,11 +236,17 @@ class GameSaveManager(private val context: Context) {
     enum class ExportFormat { TYRANOR, STANDARD }
 
     @Throws(IOException::class)
-    fun exportToZip(
+    suspend fun exportToZip(
         game: ScanGame,
         destinationUri: Uri,
         format: ExportFormat = ExportFormat.TYRANOR,
     ): Int {
+        if (game.engine == EngineType.ETHORNELL) return ethornellOperation(game) { store ->
+            store.export {
+                appContext.contentResolver.openOutputStream(destinationUri, "w")
+                    ?: throw GameSaveException(SaveErrorCode.CREATE_EXPORT_ZIP)
+            }
+        }
         val location = resolveSaveLocation(game)
         val source = location.directory ?: throw GameSaveException(SaveErrorCode.RESOLVE_SAVE_DIR_FAILED)
         if (!source.isDirectory) throw GameSaveException(SaveErrorCode.NO_EXPORTABLE_FILES)
@@ -228,12 +275,18 @@ class GameSaveManager(private val context: Context) {
     }
 
     @Throws(IOException::class)
-    fun importFromZip(game: ScanGame, sourceUri: Uri): Int = synchronized(importLock) {
-        // 与存档互通同步共享 INTEROP_LOCK（H3）：导入的提交阶段会把整个存档目录 rename 走再换入
-        // staging，若并发 sync 正在复制/写清单，其文件会随旧目录一起被丢弃，清单却记「存在」——
-        // 下轮同步将误触删除语义。锁序恒为 importLock → INTEROP_LOCK（sync 只取后者），无死锁环。
-        synchronized(RpgSaveSyncState.INTEROP_LOCK) {
-            importFromZipLocked(game, sourceUri)
+    suspend fun importFromZip(game: ScanGame, sourceUri: Uri): Int {
+        if (game.engine == EngineType.ETHORNELL) return ethornellOperation(game) { store ->
+            store.import {
+                appContext.contentResolver.openInputStream(sourceUri)
+                    ?: throw GameSaveException(SaveErrorCode.READ_IMPORT_ZIP)
+            }
+        }
+        return synchronized(importLock) {
+            // 锁序恒为 importLock → INTEROP_LOCK（sync 只取后者），无死锁环。
+            synchronized(RpgSaveSyncState.INTEROP_LOCK) {
+                importFromZipLocked(game, sourceUri)
+            }
         }
     }
 
@@ -309,11 +362,14 @@ class GameSaveManager(private val context: Context) {
     }
 
     @Throws(IOException::class)
-    fun deleteSaves(game: ScanGame): Int = synchronized(RpgSaveSyncState.INTEROP_LOCK) {
-        // 与存档互通同步互斥（H3）：删除与并发同步交错会产生半删状态
-        val directory = resolveSaveLocation(game).directory ?: throw GameSaveException(SaveErrorCode.RESOLVE_SAVE_DIR_FAILED)
-        if (!directory.isDirectory) return 0
-        return clearSaveDirectory(directory, game.engine)
+    suspend fun deleteSaves(game: ScanGame): Int {
+        if (game.engine == EngineType.ETHORNELL) return ethornellOperation(game) { it.delete() }
+        return synchronized(RpgSaveSyncState.INTEROP_LOCK) {
+            // 与存档互通同步互斥（H3）：删除与并发同步交错会产生半删状态
+            val directory = resolveSaveLocation(game).directory ?: throw GameSaveException(SaveErrorCode.RESOLVE_SAVE_DIR_FAILED)
+            if (!directory.isDirectory) return 0
+            clearSaveDirectory(directory, game.engine)
+        }
     }
 
     /**
@@ -321,6 +377,21 @@ class GameSaveManager(private val context: Context) {
      * 仅触碰应用专属存储，绝不删除游戏目录内的任何文件。
      */
     fun cleanupAppData(game: ScanGame) {
+        if (game.engine == EngineType.ETHORNELL) {
+            // Retain on busy, disabled, damaged path, or incomplete recovery.
+            // Library removal is not permission to delete an uncertain tree.
+            if (!EthornellSaveCapability.available) return
+            try {
+                EthornellOperationGate.cleanupIfIdle(appContext) { ethornellStore(game).delete() }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: IOException) {
+                // Best effort cleanup: never redirect or broaden deletion.
+            } catch (_: SecurityException) {
+                // Permission failure retains the private tree.
+            }
+            return
+        }
         // 块体（审查跟进 #2）：表达式体 + 内部 return 会触发 KTLC-288 前向兼容告警，
         // Kotlin 2.5 起将变为错误
         synchronized(RpgSaveSyncState.INTEROP_LOCK) {
@@ -381,6 +452,30 @@ class GameSaveManager(private val context: Context) {
             }
         }
     }
+
+    private fun ethornellStore(game: ScanGame) = EthornellSaveStore(appContext.filesDir, game.uri)
+
+    private suspend fun <T> ethornellOperation(game: ScanGame, block: (EthornellSaveStore) -> T): T =
+        EthornellOperationGate.exclusive {
+            if (!EthornellSaveCapability.available) {
+                throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
+            }
+            val coroutine = kotlinx.coroutines.currentCoroutineContext()
+            try {
+                EthornellOperationGate.requireIdle(appContext)
+                block(EthornellSaveStore(appContext.filesDir, game.uri, checkCancelled = {
+                    coroutine.ensureActive()
+                }))
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (typed: GameSaveException) {
+                throw typed
+            } catch (error: IOException) {
+                throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE, cause = error)
+            } catch (error: SecurityException) {
+                throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE, cause = error)
+            }
+        }
 
     private fun resolveGameDirectory(game: ScanGame): String? {
         // 与 EngineLauncher.resolveGameDirectory 保持同源：镜像 key 由 (uri, path) 派生，

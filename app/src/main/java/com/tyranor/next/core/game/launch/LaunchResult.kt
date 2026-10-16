@@ -19,6 +19,8 @@ enum class MirrorPrepareStage {
     CREATE_FAILED,
 }
 
+enum class EthornellPrepareError { RESOURCE_ROOT, BOOTSTRAP, FONT, USER_DATA, SESSION_BUSY }
+
 /**
  * 引擎启动结果（P0-6 错误协议）：成功 / 失败两类，失败携带可程序化区分的类型，
  * UI 层统一经 `ui/common/LaunchErrorMessages.kt` 映射本地化文案；core 不再拼接展示文案。
@@ -33,6 +35,7 @@ sealed interface LaunchResult {
 
         /** 无法把游戏 URI 解析为本地目录路径。 */
         data object GameDirUnresolved : Failure
+        data class EthornellPrepareFailed(val error: EthornellPrepareError) : Failure
 
         /** 已打开「管理所有文件」系统授权页，用户返回后需再次启动。 */
         data object AllFilesAccessRequested : Failure

@@ -58,6 +58,8 @@ iOS版本计划中...
 
 CatSystem2 游戏按 `config/startup.xml`、`.int/.cst/.hg3/.kcs` 等目录特征组合评分识别（`cs2.exe` 仅作辅助，不单独判定），启动同样经外置 Winlator（目录 + 主程序；Runtime 允许 `.bin` 且优先 `cs2.exe`）。
 
+**实验接入：Ethornell / BGI（ethornell-rs）** 已接入扫描、内置宿主启动与 SJIS/GBK、字体设置；原创像素、基础 ABI、退出重入与合成VM持久化已有设备证据，合法样本的三语言选择、正常标题、中文菜单与两句真实中文推进已视觉验证。但商业存档槽位尚无实际保存，精确ABI与完整兼容仍待验收，不能统称可玩。API26当前测试硬件无可用GPU adapter，不代表所有API26设备不支持。App 存档管理默认关闭；完整 IME、BMV、WMV、实时 SWF 与电影音轨尚未支持。进度见 [移植计划](docs/Ethornell-BGI-Android化移植计划方案.md) 和 [测试验收记录](docs/Ethornell测试验收记录.md)。
+
 YU-RIS（Windows）游戏通过外置 Winlator（winlator-cn）运行：扫描按 `yscfg.dat`、`pac/*.ypf`、引擎 DLL 与 `.ymv` 特征识别，启动时以「游戏目录 + 主程序 exe」经 Winlator 外置启动协议拉起（目录由 Winlator 自动分配空闲盘符临时挂载，`save=false` 不写回容器配置）；主程序自动选择，可在游戏详情「启动文件」手动覆盖。存档与运行参数由 Winlator 管理，主 App 不接管。
 
 内置 Web 运行环境同时支持部分以 `app.asar` 打包的 NW\.js 游戏；启动时会根据归档内容进一步识别具体类型。

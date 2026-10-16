@@ -694,6 +694,10 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
 
 @Composable
 internal fun EngineSettingsDetailScreen(kind: EngineSettingsKind) {
+    if (kind == EngineSettingsKind.ETHORNELL) {
+        EthornellSettingsScreen()
+        return
+    }
     val ctx = LocalContext.current
     val graphicsFamily = kind.graphicsFamily()
     var graphics by remember(kind) {
@@ -756,25 +760,33 @@ internal fun EngineSettingsDetailScreen(kind: EngineSettingsKind) {
     var ppssppVersion by remember { mutableStateOf(EngineSettingsStore.getPpssppVersion(ctx)) }
     var webShellPort by remember { mutableStateOf(EngineSettingsStore.getWebShellPort(ctx)) }
 
+    val fontImportScope = rememberCoroutineScope()
+    var importingFont by remember { mutableStateOf(false) }
     val fontLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) {
-            val path = FontImport.importToPrivate(ctx, uri)
-            if (path != null) {
-                krFont = path
+        if (uri != null && !importingFont) {
+            importingFont = true
+            fontImportScope.launch {
+                try {
+                    val path = FontImport.importToPrivate(ctx, uri)
+                    if (path != null) krFont = path
+                } finally { importingFont = false }
             }
         }
     }
     val fvpFontLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) {
-            val path = FontImport.importToPrivate(ctx, uri)
-            if (path != null) {
-                fvpFont = path
-            } else {
-                android.widget.Toast.makeText(
-                    ctx,
-                    ctx.getString(R.string.engine_settings_fvp_font_import_failed),
-                    android.widget.Toast.LENGTH_SHORT,
-                ).show()
+        if (uri != null && !importingFont) {
+            importingFont = true
+            fontImportScope.launch {
+                try {
+                    val path = FontImport.importToPrivate(ctx, uri)
+                    if (path != null) fvpFont = path else {
+                        android.widget.Toast.makeText(
+                            ctx,
+                            ctx.getString(R.string.engine_settings_fvp_font_import_failed),
+                            android.widget.Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                } finally { importingFont = false }
             }
         }
     }

@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="engine_ethornell_invalid_config">Ethornell 启动配置无效，请重新选择本地游戏目录</string>
+    <string name="engine_ethornell_failed">Ethornell 运行失败；请检查游戏资源、字体与当前支持范围</string>
+    <string name="engine_ethornell_game_menu">打开游戏菜单（右键）</string>
+    <string name="engine_ethornell_backlog">回看（向上滚动）</string>
+    <string name="engine_ethornell_host_request">游戏确认</string>
     <string name="engine_game_loading">游戏加载中</string>
     <string name="engine_starting_game">正在启动游戏</string>
     <string name="engine_preparing_game">请稍候，正在准备游戏内容</string>

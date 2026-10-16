@@ -119,6 +119,17 @@ object LaunchContract {
     /** 自定义字体路径（App 私有目录绝对路径；不传表示跟随游戏默认/不强制）。 */
     const val FVP_FONT_PATH = "fvp_font_path"
 
+    // ---------- Ethornell / BGI ----------
+
+    /** Graphics text encoding only: sjis (default) or gbk. ROOT_URI is identity; PATH is a real directory. */
+    const val ETHORNELL_NLS = "ETHORNELL_NLS"
+    /** Optional imported font inside the app-private files/fonts directory. */
+    const val ETHORNELL_FONT_PATH = "ETHORNELL_FONT_PATH"
+    /** Explicit private writable user root, separate from the read-only game resource root. */
+    const val ETHORNELL_USER_DATA_DIR = "ETHORNELL_USER_DATA_DIR"
+    /** Durable one-shot launch dispatch lease; issued/claimed through EthornellDispatchRegistry. */
+    const val ETHORNELL_DISPATCH_TOKEN = "ETHORNELL_DISPATCH_TOKEN"
+
     // ---------- System35 (xsystem35) ----------
 
     /** 生效存档目录**绝对路径**（由 App 按「独立存档开关」解析，禁止宿主自行推导）。 */
@@ -161,6 +172,7 @@ object LaunchContract {
     const val LAUNCH_MODE_ARTEMIS = "internal.artemis"
     const val LAUNCH_MODE_SIGLUS = "internal.siglus"
     const val LAUNCH_MODE_FVP = "internal.fvp"
+    const val LAUNCH_MODE_ETHORNELL = "internal.ethornell"
     const val LAUNCH_MODE_FRAMEBUFFER = "internal.framebuffer"
     const val LAUNCH_MODE_XSYS35 = "internal.xsys35"
 }

@@ -45,6 +45,7 @@ import com.tyranor.next.core.engine.external.ExternalEngineModuleRegistry
 import com.tyranor.next.core.engine.plugin.EnginePluginBootstrap
 import com.tyranor.next.core.game.manual.AndroidAppGames
 import com.tyranor.next.core.game.model.GamePathUtils
+import com.tyranor.next.core.game.model.EthornellPaths
 import com.tyranor.next.core.game.model.ScanGame
 import com.tyranor.next.core.game.model.Xs35Paths
 import com.tyranor.next.core.game.save.GameSaveException
@@ -130,6 +131,7 @@ object EngineLauncher {
         EngineType.XSYS35,
         EngineType.UK2,
         EngineType.FVP,
+        EngineType.ETHORNELL,
         EngineType.RENPY,
         // YURIS / CatSystem2 / PC 由外置 Winlator 承载（GAL 分组），引擎页条目点击进入引擎专属弹窗
         EngineType.YURIS,
@@ -213,6 +215,23 @@ object EngineLauncher {
         Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
 
     private suspend fun launchInternal(context: Context, game: ScanGame, patchChoice: ArtemisPatchChoice?): LaunchResult {
+        if (game.engine == EngineType.ETHORNELL) {
+            return EthornellOperationGate.exclusive {
+                try {
+                    launchTracked(context, game, patchChoice)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: java.io.IOException) {
+                    LaunchResult.Failure.EthornellPrepareFailed(EthornellPrepareError.SESSION_BUSY)
+                } catch (_: SecurityException) {
+                    LaunchResult.Failure.EthornellPrepareFailed(EthornellPrepareError.SESSION_BUSY)
+                }
+            }
+        }
+        return launchTracked(context, game, patchChoice)
+    }
+
+    private suspend fun launchTracked(context: Context, game: ScanGame, patchChoice: ArtemisPatchChoice?): LaunchResult {
         launchingUris.add(game.uri)
         try {
             return launchInternalChecked(context, game, patchChoice)
@@ -222,6 +241,19 @@ object EngineLauncher {
     }
 
     private suspend fun launchInternalChecked(context: Context, game: ScanGame, patchChoice: ArtemisPatchChoice?): LaunchResult {
+        if (game.engine == EngineType.ETHORNELL) {
+            currentCoroutineContext().ensureActive()
+            val live = EngineSessionRegistry.currentLiveGame(context, EngineSessionRegistry.HOST_ETHORNELL)
+            val alive = EngineSessionRegistry.isHostAlive(context, EngineSessionRegistry.HOST_ETHORNELL)
+            val busy = EthornellOperationGate.isBusy(context)
+            when (EthornellLaunchPolicy.decide(game.uri, live, alive)) {
+                EthornellLaunchPolicy.Action.RESTORE_EXISTING -> return restoreEthornell(context, game)
+                EthornellLaunchPolicy.Action.BUSY -> return LaunchResult.Failure.EthornellPrepareFailed(EthornellPrepareError.SESSION_BUSY)
+                EthornellLaunchPolicy.Action.START_NEW -> if (busy) {
+                    return LaunchResult.Failure.EthornellPrepareFailed(EthornellPrepareError.SESSION_BUSY)
+                }
+            }
+        }
         // 手动添加的安卓游戏：无引擎会话/存档/权限前置，按包名直接跳转（必须在目录解析之前分流）
         if (AndroidAppGames.isAndroidApp(game)) {
             return launchAndroidApp(context, game)
@@ -287,6 +319,9 @@ object EngineLauncher {
             return LaunchResult.Failure.GameDirUnresolved
         }
         requestAllFilesAccessIfNeeded(context, game, path)?.let { return it }
+        if (game.engine == EngineType.ETHORNELL) {
+            prepareEthornell(context, game, path, settings)?.let { return it }
+        }
         EnginePluginBootstrap.ensureForLaunch(context, game.engine)?.let {
             return LaunchResult.Failure.PluginBootstrapFailed(it)
         }
@@ -391,6 +426,9 @@ object EngineLauncher {
             // Intent 组装后、真正拉起引擎前最后一次确认，取消后不 startActivity
             currentCoroutineContext().ensureActive()
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (game.engine == EngineType.ETHORNELL) {
+                intent.putExtra(LaunchContract.ETHORNELL_DISPATCH_TOKEN, EthornellOperationGate.issue(context, game.uri))
+            }
             context.startActivity(intent)
             GameLibraryFacade.recordRecentGame(context, game)
             LaunchResult.Success
@@ -844,6 +882,7 @@ object EngineLauncher {
             EngineType.XSYS35 -> buildXs35Intent(context, path, game, settings)
 
             EngineType.FVP -> buildFvpIntent(context, path, game, settings)
+            EngineType.ETHORNELL -> buildEthornellIntent(context, path, game, settings)
 
             EngineType.RPGMAKER,
             EngineType.RENPY -> error("${engine.displayName} is handled by external engine launcher")
@@ -1029,10 +1068,85 @@ object EngineLauncher {
         else -> null
     }
 
-    /**
-     * FVP（rfvp）启动：真实路径 + 文本编码 + 字体/HiDPI 生效设置。
-     * 存档目录由引擎固定为 `<游戏根>/save`（一期不支持独立存档）。
-     */
+    /** Restore a live task without re-reading changed settings/resources or sending a new game payload. */
+    private fun restoreEthornell(context: Context, game: ScanGame): LaunchResult {
+        return try {
+            val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            val task = manager?.appTasks?.firstOrNull { candidate ->
+                val base = candidate.taskInfo?.baseIntent ?: return@firstOrNull false
+                base.component?.packageName == context.packageName &&
+                    base.component?.className == "com.core.ethornell.EthornellActivity" &&
+                    base.getStringExtra(LaunchContract.ROOT_URI) == game.uri
+            } ?: return LaunchResult.Failure.EthornellPrepareFailed(EthornellPrepareError.SESSION_BUSY)
+            // moveToFront cannot create a new Activity or deliver a mismatched onNewIntent payload.
+            task.moveToFront()
+            runCatching { GameLibraryFacade.recordRecentGame(context, game) }
+            LaunchResult.Success
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            LaunchResult.Failure.StartFailed(error.message)
+        }
+    }
+
+    /** Ethornell preflight never writes to the resource root or guesses a save subdirectory. */
+    private fun ethornellStorageRoot(path: String): File? {
+        if (path == "/storage/emulated/0" || path.startsWith("/storage/emulated/0/")) return File("/storage/emulated/0")
+        if (!path.startsWith("/storage/")) return null
+        val volume = path.removePrefix("/storage/").substringBefore('/')
+        if (!Regex("[A-Za-z0-9_-]+").matches(volume)) return null
+        return File("/storage/$volume")
+    }
+
+    private fun prepareEthornell(
+        context: Context, game: ScanGame, path: String, settings: ResolvedEngineSettings,
+    ): LaunchResult.Failure? {
+        fun failed(error: EthornellPrepareError) = LaunchResult.Failure.EthornellPrepareFailed(error)
+        var stage = EthornellPrepareError.RESOURCE_ROOT
+        return try {
+            val root = File(path).canonicalFile
+            if (Uri.parse(game.uri).scheme == "content") {
+                val allowed = ethornellStorageRoot(path)?.canonicalFile ?: return failed(EthornellPrepareError.RESOURCE_ROOT)
+                if (!root.toPath().startsWith(allowed.toPath())) return failed(EthornellPrepareError.RESOURCE_ROOT)
+            }
+            if (!root.isDirectory || !root.canRead()) return failed(EthornellPrepareError.RESOURCE_ROOT)
+            if (EngineScanner.detectEngine(root).engine != EngineType.ETHORNELL) return failed(EthornellPrepareError.BOOTSTRAP)
+            stage = EthornellPrepareError.FONT
+            if (EthornellPaths.validatedFont(context.filesDir, settings.ethornellFont) == null) {
+                return failed(EthornellPrepareError.FONT)
+            }
+            stage = EthornellPrepareError.USER_DATA
+            com.tyranor.next.core.game.save.EthornellSaveStore(context.filesDir, game.uri).recoverForLaunch()
+            val dir = EthornellPaths.userDataDir(context.filesDir, game.uri)
+            EthornellPaths.validateUserDataDir(context.filesDir, game.uri, dir.absolutePath)
+            if ((!dir.isDirectory && !dir.mkdirs()) || !dir.canWrite() ||
+                !dir.canonicalFile.toPath().startsWith(context.filesDir.canonicalFile.toPath())) {
+                return failed(EthornellPrepareError.USER_DATA)
+            }
+            null
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: java.io.IOException) {
+            failed(stage)
+        } catch (_: SecurityException) {
+            failed(stage)
+        }
+    }
+
+    private fun buildEthornellIntent(
+        context: Context, path: String, game: ScanGame, settings: ResolvedEngineSettings,
+    ): Intent = Intent().setClassName(context, "com.core.ethornell.EthornellActivity").apply {
+        putExtra(LaunchContract.PATH, File(path).canonicalPath)
+        putExtra(LaunchContract.GAME_PATH, File(path).canonicalPath)
+        putExtra(LaunchContract.ROOT_URI, game.uri)
+        putExtra(LaunchContract.LAUNCH_MODE, LaunchContract.LAUNCH_MODE_ETHORNELL)
+        putExtra(LaunchContract.ETHORNELL_NLS, settings.ethornellNls)
+        putExtra(LaunchContract.ETHORNELL_FONT_PATH, EthornellPaths.validatedFont(context.filesDir, settings.ethornellFont))
+        putExtra(LaunchContract.ETHORNELL_USER_DATA_DIR, EthornellPaths.userDataDir(context.filesDir, game.uri).absolutePath)
+        putExtra(LaunchContract.UI_LANGUAGE_TAG, com.tyranor.next.core.i18n.AppLocaleController.wrap(context).resources.configuration.locales[0].toLanguageTag())
+    }
+
+    /** FVP uses its own fixed `<resource root>/save` protocol. */
     private fun buildFvpIntent(
         context: Context,
         path: String,
@@ -2045,6 +2159,30 @@ object EngineLauncher {
      */
     private fun resolveGameDirectory(context: Context, game: ScanGame): String? {
         val uriText = game.uri
+        if (game.engine == EngineType.ETHORNELL) {
+            return try {
+                val uri = Uri.parse(uriText)
+                if (uri.scheme == "content" && uri.authority != "com.android.externalstorage.documents") return null
+                val mapped = GamePathUtils.safUriToPath(uriText) ?: return null
+                val file = File(mapped)
+                // Resolve identity/provider/containment first. Actual access is tested only after
+                // requestAllFilesAccessIfNeeded, so an unreadable directory can reach the grant UI.
+                if (!file.isAbsolute) return null
+                // Provider/path validation is lexical until the storage permission gate. Canonical
+                // containment and actual readability are checked in prepareEthornell afterwards.
+                if (uri.scheme == "content") {
+                    val allowed = ethornellStorageRoot(mapped) ?: return null
+                    if (!file.toPath().normalize().startsWith(allowed.toPath())) return null
+                }
+                file.absolutePath
+            } catch (_: java.io.IOException) {
+                null
+            } catch (_: SecurityException) {
+                null
+            } catch (_: IllegalArgumentException) {
+                null
+            }
+        }
 
         // 1) 首选 SAF documentId → 文件路径映射（兼容 child 子目录 document uri）
         GamePathUtils.safUriToPath(uriText)?.let { mapped ->

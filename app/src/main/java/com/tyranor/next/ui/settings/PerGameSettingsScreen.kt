@@ -70,6 +70,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.runInterruptible
 import org.json.JSONObject
 import top.yukonga.miuix.kmp.basic.Card as MiuixCard
 import top.yukonga.miuix.kmp.basic.Scaffold as MiuixScaffold
@@ -116,6 +117,8 @@ fun PerGameSettingsScreen(game: ScanGame) {
     var siglusLanguage by remember { mutableStateOf(PerGameSettingsStore.getStr(ctx, gid, PerGameSettingsStore.F_SIGLUS_LANGUAGE)) }
     var fbNls by remember { mutableStateOf(PerGameSettingsStore.getStr(ctx, gid, PerGameSettingsStore.F_FB_NLS)) }
     var fvpNls by remember { mutableStateOf(PerGameSettingsStore.getStr(ctx, gid, PerGameSettingsStore.F_FVP_NLS)) }
+    var ethornellNls by remember { mutableStateOf(PerGameSettingsStore.getStr(ctx, gid, PerGameSettingsStore.F_ETHORNELL_NLS)) }
+    var ethornellFont by remember { mutableStateOf(PerGameSettingsStore.getStr(ctx, gid, PerGameSettingsStore.F_ETHORNELL_FONT)) }
     var fvpSystemFont by remember { mutableStateOf(PerGameSettingsStore.getBool(ctx, gid, PerGameSettingsStore.F_FVP_SYSTEM_FONT)) }
     var fvpTextHidpi by remember { mutableStateOf(PerGameSettingsStore.getBool(ctx, gid, PerGameSettingsStore.F_FVP_TEXT_HIDPI)) }
     var ppssppVersion by remember { mutableStateOf(PerGameSettingsStore.getStr(ctx, gid, PerGameSettingsStore.F_PPSSPP_VERSION)) }
@@ -237,32 +240,52 @@ fun PerGameSettingsScreen(game: ScanGame) {
     }
     val rpgm = rpgmOverride ?: RpgMakerOverride()
 
+    val scope = rememberCoroutineScope()
+    var importingFont by remember(gid) { mutableStateOf(false) }
     val fontLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) {
-            val p = FontImport.importToPrivate(ctx, uri)
-            if (p != null) krFont = p
-        }
-    }
-    val fvpFontLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) {
-            val p = FontImport.importToPrivate(ctx, uri)
-            if (p != null) {
-                fvpFont = p
-            } else {
-                android.widget.Toast.makeText(
-                    ctx,
-                    ctx.getString(R.string.engine_settings_fvp_font_import_failed),
-                    android.widget.Toast.LENGTH_SHORT,
-                ).show()
+        if (uri != null && !importingFont) {
+            importingFont = true
+            scope.launch {
+                try {
+                    val p = FontImport.importToPrivate(ctx, uri)
+                    if (p != null) krFont = p
+                } finally { importingFont = false }
             }
         }
     }
-    val scope = rememberCoroutineScope()
+    val fvpFontLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null && !importingFont) {
+            importingFont = true
+            scope.launch {
+                try {
+                    val p = FontImport.importToPrivate(ctx, uri)
+                    if (p != null) fvpFont = p else {
+                        android.widget.Toast.makeText(
+                            ctx,
+                            ctx.getString(R.string.engine_settings_fvp_font_import_failed),
+                            android.widget.Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                } finally { importingFont = false }
+            }
+        }
+    }
+    val ethornellFontLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null && !importingFont) {
+            importingFont = true
+            scope.launch {
+                try {
+                    val path = FontImport.importToPrivate(ctx, uri)
+                    if (path != null) ethornellFont = path else android.widget.Toast.makeText(ctx, R.string.ethornell_error_font, android.widget.Toast.LENGTH_SHORT).show()
+                } finally { importingFont = false }
+            }
+        }
+    }
     // RPGM 外置插件读不到 App 私有目录，自定义字体必须落共享存储（见 RpgMakerRuntimeEnvironment）
     val rpgFontLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
-            val path = withContext(Dispatchers.IO) { RpgMakerRuntimeEnvironment.importCustomFont(ctx, uri) }
+            val path = runInterruptible(Dispatchers.IO) { RpgMakerRuntimeEnvironment.importCustomFont(ctx, uri) }
             if (path != null) rpgmOverride = rpgm.copy(customFont = path)
             val msg = if (path != null) {
                 R.string.engine_settings_rpgm_custom_font_imported
@@ -412,6 +435,8 @@ fun PerGameSettingsScreen(game: ScanGame) {
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_SIGLUS_LANGUAGE, siglusLanguage)
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_FB_NLS, fbNls)
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_FVP_NLS, fvpNls)
+        PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_ETHORNELL_NLS, ethornellNls)
+        PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_ETHORNELL_FONT, ethornellFont)
         PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_FVP_SYSTEM_FONT, fvpSystemFont)
         PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_FVP_TEXT_HIDPI, fvpTextHidpi)
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_PPSSPP_VERSION, ppssppVersion)
@@ -800,6 +825,21 @@ fun PerGameSettingsScreen(game: ScanGame) {
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
                             )
+                        }
+                    }
+                    EngineType.ETHORNELL -> item {
+                        SectionCard("Ethornell / BGI") {
+                            OverrideChoice(stringResource(R.string.ethornell_nls_title), ethornellNlsOptions().toMap(), EngineSettingsStore.getEthornellNls(ctx), ethornellNls) { ethornellNls = it }
+                            OverrideFontPreference(
+                                label = stringResource(R.string.ethornell_font_title),
+                                globalValue = EngineSettingsStore.getEthornellFont(ctx),
+                                override = ethornellFont,
+                                followGameDefaultLabel = stringResource(R.string.ethornell_font_default),
+                                onSet = { ethornellFont = it },
+                                onPick = { if (!importingFont) ethornellFontLauncher.launch("*/*") },
+                                enabled = !importingFont,
+                            )
+                            Text(stringResource(R.string.ethornell_settings_note), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(16.dp))
                         }
                     }
                     EngineType.XSYS35 -> item {
@@ -1349,6 +1389,7 @@ private fun OverrideFontPreference(
     followGameDefaultLabel: String,
     onSet: (String?) -> Unit,
     onPick: () -> Unit,
+    enabled: Boolean = true,
 ) {
     var open by remember { mutableStateOf(false) }
     val globalLabel = globalValue.substringAfterLast('/').ifBlank { followGameDefaultLabel }
@@ -1360,6 +1401,7 @@ private fun OverrideFontPreference(
     ArrowPreference(
         title = label,
         summary = summary,
+        enabled = enabled,
         onClick = { open = true },
     )
     if (open) {
@@ -1375,6 +1417,7 @@ private fun OverrideFontPreference(
                         title = stringResource(R.string.engine_settings_follow_global_with_value, globalLabel),
                         leadingIcon = R.drawable.ic_font_bookmark,
                         containerColor = DialogItemSurface,
+                        indication = null,
                     ) {
                         onSet(null)
                         open = false
@@ -1383,6 +1426,7 @@ private fun OverrideFontPreference(
                         title = followGameDefaultLabel,
                         leadingIcon = R.drawable.ic_font_bookmark,
                         containerColor = DialogItemSurface,
+                        indication = null,
                     ) {
                         onSet("")
                         open = false
@@ -1391,6 +1435,7 @@ private fun OverrideFontPreference(
                         title = stringResource(R.string.engine_settings_select_font_file),
                         leadingIcon = R.drawable.ic_font_bookmark,
                         containerColor = DialogItemSurface,
+                        indication = null,
                     ) {
                         open = false
                         onPick()

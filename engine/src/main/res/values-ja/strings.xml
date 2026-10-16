@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="engine_ethornell_invalid_config">Ethornell の起動設定が無効です。ローカルのゲームフォルダを選択し直してください。</string>
+    <string name="engine_ethornell_failed">Ethornell の実行に失敗しました。ゲームデータ、フォント、現在の対応範囲を確認してください。</string>
+    <string name="engine_ethornell_game_menu">ゲームメニュー（右クリック）</string>
+    <string name="engine_ethornell_backlog">バックログ（上スクロール）</string>
+    <string name="engine_ethornell_host_request">ゲームの確認</string>
     <string name="engine_game_loading">ゲームを読み込み中</string>
     <string name="engine_starting_game">ゲームを起動しています</string>
     <string name="engine_preparing_game">ゲームデータを準備しています。しばらくお待ちください</string>

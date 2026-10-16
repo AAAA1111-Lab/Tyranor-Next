@@ -13,6 +13,7 @@
 -keep class com.core.archive.** { *; }
 -keep class com.akira.tyranoemu.remote.** { *; }
 -keep class com.core.fvp.** { *; }
+-keep class com.core.ethornell.** { *; }
 -keep class com.core.xsys35.** { *; }
 # xsystem35 使用 vendored SDL2 2.32.10 Java 层（新包名，与 ONS 的 org.libsdl.app 并存）。
 -keep class org.libsdl.app32.** { *; }

@@ -557,12 +557,10 @@ object RpgMakerRuntimeEnvironment {
     /**
      * 导入自定义字体到共享目录，返回插件可读的绝对路径；扩展名非法或 IO 失败返回 null。
      *
-     * 先写同目录临时文件再 rename：直写目标名会在写入失败/被杀时留下半成品并**截断
-     * 旧字体**；临时文件 + rename 让目标名的替换是原子的，失败时旧字体保持原样。
-     * 「失败」包含**零字节/短读源**——见 [copyFontToStaging]。
+     * 每次导入均使用唯一文件；64MiB 实际字节上限、签名/平台字体解析验证后才发布路径。
+     * 同名导入不会覆盖其它游戏仍引用的字体。
      */
     fun importCustomFont(context: Context, uri: Uri): String? {
-        var temp: File? = null
         return try {
             val displayName = runCatching {
                 context.contentResolver
@@ -571,23 +569,18 @@ object RpgMakerRuntimeEnvironment {
             }.getOrNull() ?: uri.lastPathSegment
             val name = (displayName ?: "font.ttf").substringAfterLast('/').substringAfterLast('\\')
             if (FONT_EXTENSIONS.none { name.lowercase(Locale.ROOT).endsWith(it) }) return null
-            val dir = File(Environment.getExternalStorageDirectory(), FONT_PARENT)
+            val dir = File(Environment.getExternalStorageDirectory().canonicalFile, FONT_PARENT)
             if (!dir.isDirectory && !dir.mkdirs()) return null
-            val target = File(dir, name)
-            val staging = File(dir, ".$name.${System.currentTimeMillis()}.tmp")
-            temp = staging
-            val copied = context.contentResolver.openInputStream(uri)?.use { input ->
-                copyFontToStaging(input, staging)
-            } ?: false
-            if (!copied) return null
-            // rename 覆盖已存在目标（同目录原子替换）；失败则保留旧字体，返回 null
-            if (!staging.renameTo(target)) return null
-            target.absolutePath
-        } catch (_: Throwable) {
+            if (dir.canonicalFile != dir.absoluteFile) return null
+            com.tyranor.next.core.settings.ImmutableFontImport.import(
+                directory = dir, displayName = name,
+                input = { context.contentResolver.openInputStream(uri) },
+                validate = { android.graphics.Typeface.createFromFile(it) != null },
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
             null
-        } finally {
-            // 失败/被杀路径不留半成品（成功时 staging 已改名，此处无操作）
-            temp?.let { if (it.exists()) runCatching { it.delete() } }
         }
     }
 

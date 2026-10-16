@@ -23,6 +23,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.runInterruptible
 import java.io.File
 import java.util.Locale
 
@@ -78,7 +79,7 @@ object EngineScanner {
         val all = coroutineScope {
             roots.map { root ->
                 async {
-                    gate.withPermit { scanRootInternal(context.applicationContext, root, maxDepth) }
+                    gate.withPermit { runInterruptible { scanRootInternal(context.applicationContext, root, maxDepth) } }
                 }
             }.awaitAll().flatten()
         }
@@ -152,7 +153,7 @@ object EngineScanner {
      * 增量扫描（游戏库已有数据时调用）：遍历根目录时对已识别游戏目录剪枝跳过，
      * 只发现新游戏；返回 现有游戏 + 新发现游戏（已删除游戏保留，不主动移除）。
      */
-    suspend fun incrementalScan(context: Context): List<ScanGame> = withContext(Dispatchers.IO) {
+    suspend fun incrementalScan(context: Context): List<ScanGame> = runInterruptible(Dispatchers.IO) {
         val existing = GameLibraryFacade.loadGames(context)
         val known = existing.mapTo(HashSet()) { it.uri }
         val seen = HashSet<String>()
@@ -216,7 +217,7 @@ object EngineScanner {
         }
     }
 
-    suspend fun scanRoot(context: Context, rootUriStr: String, maxDepth: Int = 3): List<ScanGame> = withContext(Dispatchers.IO) {
+    suspend fun scanRoot(context: Context, rootUriStr: String, maxDepth: Int = 3): List<ScanGame> = runInterruptible(Dispatchers.IO) {
         scanRootInternal(context.applicationContext, rootUriStr, maxDepth)
     }
 
@@ -326,6 +327,7 @@ object EngineScanner {
                                     documentId = documentId,
                                     name = name,
                                     isDirectory = mimeType == DocumentsContract.Document.MIME_TYPE_DIR,
+                                    size = if (it.isNull(3)) null else it.getLong(3).takeIf { size -> size >= 0 },
                                 )
                             )
                         }
@@ -355,14 +357,18 @@ object EngineScanner {
             }
         }.getOrNull()
 
-        /** 读取文件头字节，用于 AVG32/RealLive 的 `SEEN.TXT` 与 UK2 `.MES` 内容判定。 */
-        fun readHead(node: SafNode, maxBytes: Int = 64 * 1024): ByteArray? = runCatching {
+        /** Bounded content evidence shared by the framebuffer and Ethornell scanners. */
+        fun readHead(node: SafNode, maxBytes: Int = 64 * 1024): ByteArray? = try {
             resolver.openInputStream(node.uri)?.use { input ->
-                val buffer = ByteArray(maxBytes)
-                val count = input.read(buffer)
-                if (count <= 0) null else buffer.copyOf(count)
+                EthornellArchiveProbe.readHead(input, maxBytes)
             }
-        }.getOrNull()
+        } catch (cancelled: java.util.concurrent.CancellationException) {
+            throw cancelled
+        } catch (_: java.io.IOException) {
+            null
+        } catch (_: SecurityException) {
+            null
+        }
     }
 
     private data class SafNode(
@@ -370,12 +376,14 @@ object EngineScanner {
         val documentId: String,
         val name: String,
         val isDirectory: Boolean,
+        val size: Long? = null,
     )
 
     private val SAF_PROJECTION = arrayOf(
         DocumentsContract.Document.COLUMN_DOCUMENT_ID,
         DocumentsContract.Document.COLUMN_DISPLAY_NAME,
         DocumentsContract.Document.COLUMN_MIME_TYPE,
+        DocumentsContract.Document.COLUMN_SIZE,
     )
 
     fun applyLocalCover(context: Context, game: ScanGame): ScanGame {
@@ -538,16 +546,20 @@ object EngineScanner {
             dir.listFiles() ?: emptyArray()
         }
 
-        /** 读取文件头字节，用于 AVG32/RealLive 的 `SEEN.TXT` 与 UK2 `.MES` 内容判定。 */
+        /** Bounded content evidence shared by the framebuffer and Ethornell scanners. */
         fun readHead(file: File, maxBytes: Int = 64 * 1024): ByteArray? =
             headCache.getOrPut(file.absolutePath) {
-                runCatching {
+                try {
                     file.inputStream().use { input ->
-                        val buffer = ByteArray(maxBytes)
-                        val count = input.read(buffer)
-                        if (count <= 0) null else buffer.copyOf(count)
+                        EthornellArchiveProbe.readHead(input, maxBytes)
                     }
-                }.getOrNull()
+                } catch (cancelled: java.util.concurrent.CancellationException) {
+                    throw cancelled
+                } catch (_: java.io.IOException) {
+                    null
+                } catch (_: SecurityException) {
+                    null
+                }
             }
     }
 
@@ -647,13 +659,25 @@ object EngineScanner {
         val externalModuleAlias: String? = null,
     )
 
-    fun detectEngine(dir: DocumentFile): Detection {
+    fun detectEngine(context: Context, dir: DocumentFile): Detection {
         if (!dir.isDirectory) return UNKNOWN_DETECTION
         return detectEngine(
             children = dir.listFiles().asIterable(),
             nameOf = { it.name.orEmpty() },
             isDirectory = { it.isDirectory },
             childrenOf = { it.listFiles().asIterable() },
+            headOf = { file ->
+                try {
+                    context.contentResolver.openInputStream(file.uri)?.use { EthornellArchiveProbe.readHead(it) }
+                } catch (cancelled: java.util.concurrent.CancellationException) {
+                    throw cancelled
+                } catch (_: java.io.IOException) {
+                    null
+                } catch (_: SecurityException) {
+                    null
+                }
+            },
+            sizeOf = { it.length().takeIf { size -> size > 0 } },
         )
     }
 
@@ -668,6 +692,7 @@ object EngineScanner {
         isDirectory = { it.isDirectory },
         childrenOf = { session.children(it).asIterable() },
         headOf = { session.readHead(it) },
+        sizeOf = { it.length() },
     )
 
     private fun detectEngine(
@@ -680,14 +705,16 @@ object EngineScanner {
         isDirectory = { it.isDirectory },
         childrenOf = childrenOf,
         headOf = headOf,
+        sizeOf = { it.size },
     )
 
-    private fun <T> detectEngine(
+    internal fun <T> detectEngine(
         children: Iterable<T>,
         nameOf: (T) -> String,
         isDirectory: (T) -> Boolean,
         childrenOf: (T) -> Iterable<T>,
         headOf: (T) -> ByteArray? = { null },
+        sizeOf: (T) -> Long? = { null },
     ): Detection {
 
         val xp3Files = mutableListOf<String>()
@@ -753,8 +780,11 @@ object EngineScanner {
         var seenArchiveNode: T? = null
         var seenArchiveIsRoot = false
         var uk2MesNode: T? = null
+        var ethornellSystemNode: T? = null
+        var ambiguousEthornellSystem = false
 
         fun collect(entry: T, rel: String) {
+            if (Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException()
             val lower = nameOf(entry).lowercase(Locale.ROOT)
             if (lower.isEmpty()) return
             val childRel = if (rel.isEmpty()) lower else "$rel/$lower"
@@ -799,6 +829,10 @@ object EngineScanner {
                 return
             }
             when {
+                rel.isEmpty() && lower == "system.arc" -> {
+                    if (ethornellSystemNode != null) ambiguousEthornellSystem = true
+                    ethornellSystemNode = entry
+                }
                 lower == "index.html" || lower == "index.htm" -> hasIndex = true
                 childRel == "js/rpg_core.js" || childRel.endsWith("/js/rpg_core.js") -> hasRpgMvCore = true
                 childRel == "js/rmmz_core.js" || childRel.endsWith("/js/rmmz_core.js") -> hasRpgMzCore = true
@@ -897,6 +931,10 @@ object EngineScanner {
         val uk2Mes = uk2MesNode
         if (uk2Mes != null && hasUk2MesHeader(headOf(uk2Mes))) {
             return Detection(EngineType.UK2, 90, LAUNCH_TARGET_GAME_DIR)
+        }
+        // Preserve explicit UK2 evidence; only outrank its weak generic .mes fallback.
+        if (!ambiguousEthornellSystem && ethornellSystemNode?.let { EthornellArchiveProbe.hasBootstrap(headOf(it), sizeOf(it)) } == true) {
+            return Detection(EngineType.ETHORNELL, 96, LAUNCH_TARGET_GAME_DIR)
         }
         val seenKind = classifySeenArchive(seenArchiveNode?.let { headOf(it) })
         if (hasGameexeIni && seenKind != null) {
