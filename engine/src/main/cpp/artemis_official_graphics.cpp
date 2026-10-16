@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -31,7 +32,7 @@ StageDisplay stageDisplay = nullptr;
 JavaVM* vm = nullptr;
 jclass bridge = nullptr;
 jmethodID connectMethod = nullptr, submittedMethod = nullptr, healthyMethod = nullptr,
-        disconnectMethod = nullptr, resizeMethod = nullptr, statusMethod = nullptr, directRestoredMethod = nullptr;
+        disconnectMethod = nullptr, resizeMethod = nullptr, statusMethod = nullptr, directRestoredMethod = nullptr, outputSizeMethod = nullptr;
 struct Env {
     JNIEnv* value = nullptr; bool attached = false;
     Env() {
@@ -71,7 +72,9 @@ std::mutex surfacesMutex;
 // create has no published state yet and never acquires operationMutex.
 std::mutex surfaceLifecycleMutex;
 SurfaceRegistry surfaces;
-std::atomic<int> logicalWidth{0}, logicalHeight{0}, screenWidth{0}, screenHeight{0};
+std::atomic<int> logicalWidth{0}, logicalHeight{0};
+// Initial display bounds until the consumer publishes its first successful frame.
+std::atomic<uint64_t> screenSize{0};
 std::atomic<bool> directOutput{false}, allowed{false}, nativeFailed{false}, gesture{false};
 std::atomic_flag installing = ATOMIC_FLAG_INIT;
 thread_local bool stageFrame = false;
@@ -143,6 +146,23 @@ bool healthy() {
     if (nativeFailed.load()) return false;
     Env env;if(!env.value)return false;
     bool result = env.value->CallStaticBooleanMethod(bridge,healthyMethod);return !env.clear() && result;
+}
+uint64_t packScreenSize(int width,int height) {
+    return (static_cast<uint64_t>(width)<<32)|static_cast<uint32_t>(height);
+}
+uint64_t currentScreenSize() {
+    // This getter only reads Java volatile state. Never wait for the EGL worker:
+    // Display can hold operationMutex while requesting a logical producer resize.
+    // Use the returned pair directly, so concurrent readers cannot regress a cache.
+    const uint64_t initial=screenSize.load();
+    Env env;
+    if(!env.value || !bridge || !outputSizeMethod)return initial;
+    jlong packed=env.value->CallStaticLongMethod(bridge,outputSizeMethod);
+    if(env.clear() || packed<=0)return initial;
+    uint64_t size=static_cast<uint64_t>(packed);
+    uint32_t width=static_cast<uint32_t>(size>>32),height=static_cast<uint32_t>(size);
+    if(width==0 || height==0 || width>std::numeric_limits<int>::max() || height>std::numeric_limits<int>::max())return initial;
+    return size;
 }
 void directRestored() {
     Env env;
@@ -232,7 +252,7 @@ EGLSurface createSurface(EGLDisplay display,EGLConfig config,EGLNativeWindowType
         status(3);
         return disconnect() == DisconnectResult::Detached ? direct() : EGL_NO_SURFACE;
     }
-    screenWidth=width;screenHeight=height;directOutput=false;
+    screenSize=packScreenSize(width,height);directOutput=false;
     logicalWidth=stageTarget ? producerWidth : 0;
     logicalHeight=stageTarget ? producerHeight : 0;
     if(stageTarget)stageFrame=true;
@@ -404,8 +424,11 @@ void displayStage(void* stage) {
 }
 struct Viewport {float left=0,top=0,width=0,height=0;int sw=0,sh=0;};
 Viewport inputViewport() {
-    Viewport v;v.sw=logicalWidth.load();v.sh=logicalHeight.load();int dw=screenWidth.load(),dh=screenHeight.load();
-    if(directOutput.load()||v.sw<=0||v.sh<=0||dw<=0||dh<=0)return {};
+    Viewport v;v.sw=logicalWidth.load();v.sh=logicalHeight.load();
+    if(directOutput.load()||v.sw<=0||v.sh<=0)return {};
+    const uint64_t size=currentScreenSize();
+    int dw=static_cast<int>(size>>32),dh=static_cast<int>(static_cast<uint32_t>(size));
+    if(dw<=0||dh<=0)return {};
     if(static_cast<int64_t>(dw)*v.sh<=static_cast<int64_t>(dh)*v.sw) {
         v.width=dw;v.height=std::max<int64_t>(1,static_cast<int64_t>(v.sh)*dw/v.sw);
     } else {
@@ -562,9 +585,10 @@ bool installArtemisOfficialGraphics(void* handle,ANativeActivity* activity,const
     connectMethod = method("connect", "(Landroid/view/Surface;IIII)Landroid/view/Surface;");
     submittedMethod = method("submitted", "(JIIZ)V");
     healthyMethod = method("healthy", "()Z");
+    outputSizeMethod = method("outputSize", "()J");
     disconnectMethod = method("disconnect", "()I");
     resizeMethod = method("resizeProducer", "(II)Z");
-    if (!connectMethod || !submittedMethod || !healthyMethod || !disconnectMethod || !resizeMethod)
+    if (!connectMethod || !submittedMethod || !healthyMethod || !outputSizeMethod || !disconnectMethod || !resizeMethod)
         return failed();
     const Elf64_Dyn* dynamic=nullptr;size_t count=0;
     for(size_t i=0;i<image.count;++i)if(image.phdr[i].p_type==PT_DYNAMIC){dynamic=reinterpret_cast<const Elf64_Dyn*>(image.base+image.phdr[i].p_vaddr);count=image.phdr[i].p_memsz/sizeof(Elf64_Dyn);}

@@ -65,6 +65,7 @@ final class ArtemisOfficialSurfaceProxy {
     private final GraphicsFilterChain chain;
     private final boolean analyzer;
     private final ArtemisGraphicsStats stats = new ArtemisGraphicsStats();
+    private final ArtemisOfficialOutputSize outputSize = new ArtemisOfficialOutputSize();
     private final HandlerThread thread = new HandlerThread("Artemis-official-GLES");
     private final Handler worker;
     private final GraphicsProxyResourceSlots.Slot resourceSlot;
@@ -127,7 +128,7 @@ final class ArtemisOfficialSurfaceProxy {
                 output=EGL14.eglCreateWindowSurface(display,config,screen,new int[]{EGL14.EGL_NONE},0);
                 if (output==EGL14.EGL_NO_SURFACE || !current(output)) throw new IllegalStateException("Display unavailable");
                 if (cancelled.get() || closed || failed) throw new IllegalStateException("Consumer unavailable");
-                EGL14.eglSwapInterval(display,0);stats.surface(width,height);directOutput=false;outputWanted=true;
+                EGL14.eglSwapInterval(display,0);outputSize.clear();directOutput=false;outputWanted=true;
                 result.set(producer);
             } catch (RuntimeException failure) {
                 error.set(failure);fail(failure);
@@ -201,6 +202,7 @@ final class ArtemisOfficialSurfaceProxy {
         }
     }
     boolean failed() { return failed || closed; }
+    long outputSize() { return outputSize.get(); }
     ArtemisGraphicsStats stats() { return stats; }
     int status() {
         if (directOutput) return GraphicsStatus.WAITING;
@@ -301,6 +303,15 @@ final class ArtemisOfficialSurfaceProxy {
         inputWidth=width;inputHeight=height;
     }
     private void draw(Frame frame) {
+        if(!current(output)) throw new IllegalStateException("Display context unavailable");
+        // A NativeWindow may resize without replacing either Surface or EGLSurface.
+        // Query the consumer output, not the logical producer's stage-sized queue.
+        if(!EGL14.eglQuerySurface(display,output,EGL14.EGL_WIDTH,scratch,0) || scratch[0]<=0)
+            throw new IllegalStateException("Display width unavailable");
+        screenWidth=scratch[0];
+        if(!EGL14.eglQuerySurface(display,output,EGL14.EGL_HEIGHT,scratch,0) || scratch[0]<=0)
+            throw new IllegalStateException("Display height unavailable");
+        screenHeight=scratch[0];
         allocate(frame.width,frame.height);
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER,fbo);setup(frame.width,frame.height);
         GLES30.glUseProgram(oesProgram);GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(oesProgram,"transform"),1,false,transform,0);
@@ -315,7 +326,6 @@ final class ArtemisOfficialSurfaceProxy {
         } else state=GraphicsStatus.WAITING;
         GraphicsOutputSize.Size v=GraphicsOutputSize.fit(frame.width,frame.height,screenWidth,screenHeight);
         if(v==null || !outputWanted) return;
-        if(!current(output)) throw new IllegalStateException("Display context unavailable");
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER,0);setup(screenWidth,screenHeight);
         GLES30.glClearColor(0,0,0,1);GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT);
         GLES30.glViewport((screenWidth-v.width)/2,(screenHeight-v.height)/2,v.width,v.height);
@@ -324,6 +334,10 @@ final class ArtemisOfficialSurfaceProxy {
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES,0,3);check("present");
         if (!outputWanted) return;
         if(!EGL14.eglSwapBuffers(display,output))throw new IllegalStateException("Display swap failed");
+        // Publish the dimensions used by this successful presentation as one pair.
+        // Native input mapping reads it without calling back into the EGL worker.
+        outputSize.presented(screenWidth,screenHeight);
+        stats.surface(screenWidth,screenHeight);
         if(analyzer&&frame.original){stats.frame(frame.width,frame.height,ow,oh,v.width,v.height);stats.presented();}
     }
     private void setup(int width,int height){

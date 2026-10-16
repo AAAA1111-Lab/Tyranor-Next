@@ -67,6 +67,11 @@ public final class ArtemisOfficialBridge implements ArtemisPerformanceOverlay.So
         if (current != null) current.submitted(timestamp, width, height, original);
     }
     public static boolean healthy() { ArtemisOfficialSurfaceProxy current = proxy; return current != null && !current.failed(); }
+    /** No monitor or worker wait: input/render hooks may already own a native surface lock. */
+    public static long outputSize() {
+        ArtemisOfficialSurfaceProxy current = proxy;
+        return current == null ? 0L : current.outputSize();
+    }
     /** Native detaches its EGL producer before dropping either Surface reference. */
     public static synchronized int disconnect() {
         ArtemisOfficialSurfaceProxy current = proxy;
