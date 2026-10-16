@@ -1,9 +1,11 @@
 name: Siglus Graphics Native CI
 
 on:
+  workflow_call:
   workflow_dispatch:
   push:
     paths:
+      - engine/src/main/jniLibs/arm64-v8a/libsiglus.so
       - engine/patches/siglus/**
       - tools/build-siglus-graphics.py
       - .github/workflows/siglus-graphics-ci.yml
@@ -12,7 +14,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: siglus-graphics-native-${{ github.ref }}
+  # Standalone, Android CI and release callers must not cancel one another.
+  group: siglus-graphics-native-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -119,21 +122,23 @@ jobs:
           if set(baseline['exports']) - set(patched['exports']):
               raise SystemExit('Patched runtime removed baseline exports')
           manifest = json.loads(Path('engine/patches/siglus/manifest.json').read_text())
-          installed = Path(manifest['libraryFile'])
-          installed_sha = hashlib.sha256(installed.read_bytes()).hexdigest()
+          installed = Path('engine/src/main/jniLibs/arm64-v8a/libsiglus.so')
+          if manifest['libraryFile'] != installed.as_posix():
+              raise SystemExit('Manifest must name the actual checked-in Siglus library')
+          installed_bytes = installed.read_bytes()
+          installed_sha = hashlib.sha256(installed_bytes).hexdigest()
           if installed_sha != manifest['librarySha256']:
-              raise SystemExit('Packaged library differs from manifest checksum')
-          if manifest['libraryStatus'] == 'upstream-baseline-awaiting-ci-rebuild':
-              if installed_sha != manifest['previousLibrarySha256']:
-                  raise SystemExit('Initial candidate must preserve the latest bundled library')
-          elif manifest['libraryStatus'] != 'ci-rebuilt-patched' or installed_sha != patched['librarySha256']:
-              raise SystemExit('Final packaged library must match this verified CI patched artifact')
+              raise SystemExit('Checked-in library differs from manifest checksum')
+          if manifest['libraryStatus'] != 'ci-rebuilt-patched':
+              raise SystemExit('Checked-in library must have final patched build status')
+          if installed_bytes != (directory / 'libsiglus-patched.so').read_bytes():
+              raise SystemExit('Checked-in library must match the verified source-built patched artifact')
           with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as summary:
               summary.write('Source: `' + patched['revision'] + '`\n\n')
               summary.write('| Build | Exports | SHA-256 |\n| --- | --- | --- |\n')
               for report in [baseline, patched]:
                   summary.write(f"| {report['buildKind']} | {len(report['exports'])} | `{report['librarySha256']}` |\n")
-              summary.write('\nArtifacts are rebuilt from pinned public upstream source; no installed library was overwritten.\n')
+              summary.write('\nThe checked-in library matches the patched artifact verified against pinned public upstream source; no checked-in library was overwritten.\n')
           PY
 
       - name: Upload native candidates and provenance
