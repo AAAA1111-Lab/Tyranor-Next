@@ -82,14 +82,14 @@ class GraphicsLaunchPolicyTest {
     @Test fun autoKernelPreservesMigratedModeAndUnsupportedVersionsStayDisabled() {
         val migrated = GraphicsSettingsCodec.legacyGlobal(GraphicsFamily.KR, krMode = "m")
         for (kernel in listOf(EngineSettingsStore.KR_AUTO, EngineSettingsStore.KERNEL_KIRIKIRI2)) {
-            for (version in listOf(EngineSettingsStore.KR_AUTO, EngineSettingsStore.KR_139, EngineSettingsStore.KR_134)) {
+            for (version in listOf(EngineSettingsStore.KR_AUTO, EngineSettingsStore.KR_139, EngineSettingsStore.KR_134, EngineSettingsStore.KR_126)) {
                 val capability = GraphicsCapabilities.forRuntime(GraphicsFamily.KR, kernel, version)
                 assertTrue(capability.supported)
                 val extras = GraphicsLaunchPolicy.extras(migrated, capability)
                 assertEquals(true, extras[LaunchContract.GRAPHICS_FILTER_ENABLED])
                 assertEquals(GraphicsSettingsCodec.encodeChain(migrated.chain), extras[LaunchContract.GRAPHICS_FILTER_CHAIN])
             }
-            for (version in listOf(EngineSettingsStore.KR_126, "unknown")) {
+            for (version in listOf("unknown")) {
                 val capability = GraphicsCapabilities.forRuntime(GraphicsFamily.KR, kernel, version)
                 assertFalse(capability.supported)
                 assertEquals(false, GraphicsLaunchPolicy.extras(migrated, capability)[LaunchContract.GRAPHICS_FILTER_ENABLED])
