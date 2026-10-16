@@ -21,13 +21,14 @@
 
 ## CI 构建与交付
 
-专属 `.github/workflows/siglus-graphics-ci.yml` 在 Ubuntu 24.04 上构建，允许手动运行，并由补丁、manifest、构建工具或该 workflow 的 push 触发。流程为：
+专属 `.github/workflows/siglus-graphics-ci.yml` 在 Ubuntu 24.04 上构建，允许手动运行，并由入库的 `libsiglus.so`、补丁、manifest、构建工具或该 workflow 的 push 触发。它同时作为可复用 workflow 接入 Android CI 的 PR / main push / 手动运行，以及版本变化后的 Beta 发布；Debug 打包和 Beta 发布均须等待该来源门禁通过。不同调用方的并发组相互独立，不会互相取消门禁。流程为：
 
 1. 校验固定源码归档、Cargo.lock、下游补丁及最新 TYN 55 个旧 ABI 清单的 SHA-256。
 2. 将归档解到独立 `build/siglus-ci/source`，核验 Git baseline 的所有 blob 与归档一致；先构建无补丁 `game_launcher --lib` 对照库。
 3. 应用三个文件的 geometry 补丁；使用临时 Git index 反向还原并比较整个 baseline tree，拒绝额外源码修改，再构建完整补丁库。
 4. 核对 Rust 完整 commit 与 NDK 精确版本、全部旧 ABI、仅新增 geometry ABI、16 KiB ELF LOAD 对齐；使用固定 `llvm-nm` 与独立 ELF 解析交叉检查导出。
-5. 上传 baseline / patched 两个库和来源、SHA、ABI、ELF 报告。workflow 不替换 `jniLibs`、不改 manifest、不提交代码。
+5. 固定核对 `engine/src/main/jniLibs/arm64-v8a/libsiglus.so`：manifest 必须指向该入库库、状态必须为 `ci-rebuilt-patched`，SHA 必须一致，并逐字节比较入库库与已验证的固定来源补丁构建产物；不再接受等待重建的 baseline 状态。此处验证入库库，不宣称 Gradle strip 后的 APK 库字节完全相同。
+6. 上传 baseline / patched 两个库和来源、SHA、ABI、ELF 报告。workflow 不替换 `jniLibs`、不改 manifest、不提交代码。
 
 构建指纹包括实际源码、依赖锁、补丁、工具链、ABI 锚点、工具和 workflow，排除安装库 SHA 等交付元数据。缓存只保存已验证的两个库和报告，使用精确指纹，无模糊回退；命中后再次核验文件 SHA、来源字段、导出及对齐，避免仅更新交付 SHA 时重复编译。
 

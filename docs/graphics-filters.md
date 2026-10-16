@@ -108,6 +108,14 @@ Siglus 的准备阶段仅在 producer 尚未交付时允许十秒超时，先关
 
 完整原因、回退与所有权证明、独立审查矩阵及 CI 边界见 [第六轮后端报告](reviews/PR108-backend-review-20261016-round6.md)。既有延期项不变。
 
+## 2026-10-16 第七轮人工审查响应
+
+官方 Artemis 每次绘制前由输出 worker 查询实际 EGLSurface 尺寸，成功显示后发布成对快照；滤镜目标、viewport/统计与 native 触摸映射使用该显示尺寸，逻辑舞台与 producer 不变。窗口原地 resize 无需重新加载游戏；驱动在 swap 后应用变化时，后续帧才观察到新尺寸。未新增设备验收。
+
+Siglus 原生来源 workflow 现在是 Android PR CI 和 Beta 发布的构建依赖，入库二进制变更也触发专属检查。最终入库库须逐字节等于固定源码/补丁构建产物，不能只更新 manifest SHA；缓存命中仍复核来源、ABI 和 ELF，旧 awaiting 状态不再通过。
+
+无图标跳转条目的现行规范争议保持待维护者确认，不以注释冒充批准，也不恢复与提交者明确要求冲突的图标。完整原因、实现边界、独立审查及 CI 记录见 [第七轮响应](reviews/PR108-review-response-20261016-round7.md)。AGENTS 与最新上游仍无净差异。
+
 ## 已知限制与审查边界
 
 - 文本排除处理暂停；滤镜作用于完整已合成舞台。
@@ -124,7 +132,7 @@ python tools/prepare-filter-sources.py --repository ../FidelityFX-CAS --manifest
 python tools/generate-cas-filters.py --sources build/filter-sources/cas --check
 ```
 
-`prepare-filter-sources.py` 从完整提交读取原始 blob，不受检出换行转换影响；CAS 生成器固定 revision 并验证 blob。普通构建的 `verifyGraphicsResources` 核对各贡献本地 SHA-256、Anime4K 补充资源、CAS 生成资源及许可、Siglus 补丁与旧导出锚点、已提交补丁库。它不下载上游，不替代生成器重建；原 Anime4K GLSL 全部采用字节保留属性。CI 同时运行 app / engine 的 JVM 单测。
+`prepare-filter-sources.py` 从完整提交读取原始 blob，不受检出换行转换影响；CAS 生成器固定 revision 并验证 blob。普通构建的 `verifyGraphicsResources` 核对各贡献本地 SHA-256、Anime4K 补充资源、CAS 生成资源及许可、Siglus 补丁与旧导出锚点、已提交补丁库。它不下载上游，不替代生成器重建；原 Anime4K GLSL 全部采用字节保留属性。Android CI 除 app / engine JVM 单测外，现强制依赖独立 Siglus 来源构建门禁；CAS 的来源生成复核仍按下方命令独立执行。
 
 描述符的 `asset` 必须是完整的相对 `.glsl` 路径（例如 `anime4k/Anime4K_Restore_CNN_S.glsl`），不能依赖目录或扩展名拼接。生成器中的路径规则同时生成到运行时目录，普通构建检查路径、文件存在性与来源记录；未登记 GLSL 阻止构建。该校验针对已提交滤镜资源及补丁清单，不是全仓文件清点。Siglus 的 `previousLibrarySha256` 仅追溯旧导出表来源，当前安装库由 `librarySha256` 核验，旧 ABI 由导出表逐项比对。
 
