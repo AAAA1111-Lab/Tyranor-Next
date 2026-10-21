@@ -57,7 +57,19 @@ jobs:
         with:
           packages: platform-tools
       - name: Install pinned official Linux NDK
-        run: sdkmanager "ndk;28.0.13004108"
+        run: |
+          # NDK 压缩包偶发下载损坏（Unzipping 阶段报 "Error on ZipFile unknown archive"），
+          # 属瞬时网络问题；清理半成品后重试，避免整条流水线因一次坏包失败。
+          for attempt in 1 2 3; do
+            if sdkmanager "ndk;28.0.13004108"; then
+              exit 0
+            fi
+            echo "::warning::sdkmanager install failed (attempt ${attempt}/3); clearing partial downloads before retry"
+            rm -rf "${ANDROID_HOME}/.temp" "${ANDROID_HOME}/.downloadIntermediates" "${ANDROID_HOME}/ndk/28.0.13004108"
+            sleep $((attempt * 15))
+          done
+          echo "::error::Failed to install NDK 28.0.13004108 after 3 attempts"
+          exit 1
       - name: Verify vendored ABI, artifact hashes, ELF and dependencies (source audit if requested)
         env:
           STRICT_RELEASE: ${{ inputs.strict-release }}

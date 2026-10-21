@@ -139,7 +139,19 @@ jobs:
 
       - name: Install Android SDK packages
         run: |
-          sdkmanager --channel=3 "platforms;android-36" "platforms;android-37.0" "build-tools;37.0.0" "ndk;28.0.13004108"
+          packages=("platforms;android-36" "platforms;android-37.0" "build-tools;37.0.0" "ndk;28.0.13004108")
+          # NDK 压缩包偶发下载损坏（Unzipping 阶段报 "Error on ZipFile unknown archive"），
+          # 属瞬时网络问题；清理半成品后重试，避免整条流水线因一次坏包失败。
+          for attempt in 1 2 3; do
+            if sdkmanager --channel=3 "${packages[@]}"; then
+              exit 0
+            fi
+            echo "::warning::sdkmanager install failed (attempt ${attempt}/3); clearing partial downloads before retry"
+            rm -rf "${ANDROID_HOME}/.temp" "${ANDROID_HOME}/.downloadIntermediates" "${ANDROID_HOME}/ndk/28.0.13004108"
+            sleep $((attempt * 15))
+          done
+          echo "::error::Failed to install Android SDK packages after 3 attempts"
+          exit 1
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
