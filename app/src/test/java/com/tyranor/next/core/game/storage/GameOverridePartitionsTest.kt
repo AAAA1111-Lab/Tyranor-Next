@@ -392,4 +392,18 @@ class GameOverridePartitionsTest {
         assertEquals("v2", saved.getString(PerGameSettingsStore.F_RPG_MV_VERSION))
     }
 
+
+    /** GL/GDI 预设经存储分区拆装后仍能还原成同一单游戏覆盖值。 */
+    @Test
+    fun winlatorRendererPresetsSurvivePartitionAndOverrideRoundTrip() {
+        for (preset in listOf("wined3d_gl", "wined3d_gdi")) {
+            val blob = JSONObject().put(PerGameSettingsStore.F_WINLATOR_DXWRAPPER, preset)
+            val row = GameOverridePartitions.split("/games/winlator", blob, 1L)
+            val restored = GameOverridePartitions.assemble(row)
+
+            assertEquals(1, restored.length())
+            assertEquals(preset, restored.getString(PerGameSettingsStore.F_WINLATOR_DXWRAPPER))
+            assertEquals(preset, PerGameSettingsStore.toWinlatorOverride(restored)?.dxwrapper)
+        }
+    }
 }
