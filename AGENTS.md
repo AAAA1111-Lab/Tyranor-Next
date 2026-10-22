@@ -1,8 +1,34 @@
-# Tyranor Next — AGENT 规范
+# Repository Guidelines
 
 本文档是 AI Agent 在本项目内开发时必须遵循的统一规范。新增或修改代码前请先阅读，与既有实现保持一致。
 
 > 领域术语：项目核心概念（引擎/游戏库/设置/封面/存档/界面规范等）的权威定义见 `CONTEXT.md`（仓库根目录）。开发与代码评审时若涉及上述领域词汇，以 `CONTEXT.md` 中的术语与 `_Avoid_` 意见为准，避免引入异名同义的新词。
+
+## 仓库导航与工作范围
+
+- [ARCHITECTURE.md](ARCHITECTURE.md)：模块、进程、数据流、资源构建与已知架构偏差。
+- [SPEC.md](SPEC.md)：当前功能行为、兼容边界与回归验收项；设计方案不等于已实现功能。
+- [CONTRIBUTING.md](CONTRIBUTING.md)：Issue 与 PR 流程；[README.md](README.md) 为用户入口。
+- `app/src/main/java/com/tyranor/next/{core,ui,theme}`：业务能力、Compose 页面与主题；`app/schemas/` 保存 Room schema。
+- `engine/src/main/{java,cpp,assets,jniLibs,nativeplugins}`：宿主、JNI 桥、脚本及预编译运行库；`engine/rust/` 为 XP3 Rust 源码。
+- 两模块的 `src/test/` 放 JVM 回归；`engine/src/test/js/` 放 Web 桥测试；`app/src/androidTest/` 和 `app/src/releaseProbe/` 放设备测试。
+- `buildSrc/` 管理图形资源生成与校验，`tools/` 放本地工具，`.github/workflows/` 定义 CI；`docs/`、`.archify/` 保存专题说明与图表。
+
+开始修改前检查 `git status --short`，保留已有工作；先读相关实现与调用方，再做最小必要修改。优先复用已有门面、错误类型和公共组件，遵循 KISS、YAGNI、DRY 与 SOLID，避免顺手重排无关代码。
+
+## 编码、命名与文档
+
+- 文件使用 UTF-8 无 BOM；Kotlin 遵循 `kotlin.code.style=official`，新增 Kotlin 代码通常使用四个空格缩进，已有文件保持局部风格，Gradle 配置也沿用所在文件格式。
+- 类型与 Composable 用 `PascalCase`，函数/属性用 `camelCase`，常量用 `UPPER_SNAKE_CASE`，包名小写；测试命名 `<Subject>Test.kt` / `.java`。
+- 用户可见文案同步维护两模块各自的 `values/`、`values-ja/`、`values-en/strings.xml`。运行 `python tools/check-hardcoded-ui-strings.py`；它不覆盖 Java 与注入 JS 的全部文案，后者须人工复核。
+- 当前未配置 ktlint、detekt 或覆盖率百分比门槛，不要宣称这些检查已通过；Android lint 与专项回归按改动范围执行。
+- 功能变更同步更新规格与 README，架构边界变化更新架构说明，术语变化更新 `CONTEXT.md`；维护 `CHANGELOG.md`，若存在 `README_EN.md` 也同步更新。
+
+## Commit 与 Pull Request
+
+历史采用 `feat:`、`fix:`、`refactor(scope):`、`docs:`、`build:` 等类型前缀，描述语言并不统一；本次起新提交建议使用英文祈使短句，例如 `docs: clarify engine launch boundaries`。每个提交聚焦一类修改。
+
+PR 说明问题、最终行为、影响的引擎/页面、验证命令及结果，并关联对应 Issue（如 `Fixes #123`）。UI 改动附前后截图及相关手机/平板、深浅色场景；原生引擎改动附设备、系统、运行库身份与真实样本证据。明确未执行的检查，不把编译、合成夹具或静态哈希验证当作游戏兼容性验收。
 
 ## 文档工作流 Skills（docs/skills）
 
@@ -23,9 +49,9 @@
 
 ## 技术栈
 
-- Android Jetpack Compose + Material 3
+- Android Jetpack Compose + Material 3 + Miuix
 
-- Kotlin
+- Kotlin、Java 17、C++ JNI，XP3 使用 Rust；版本以 `gradle/libs.versions.toml` 和构建脚本为准。
 
 - 底部导航结构：`app/src/main/java/com/tyranor/next/ui/main/MainScreen.kt`
 
@@ -74,12 +100,14 @@
 
 - `engine/src/main/assets`：底层引擎运行资源与共享引擎脚本源头。
 
-- `app/src/main/assets/engine`：App 专属注入脚本；共享脚本由 Gradle 从 `engine/src/main/assets` 生成到 app assets。
+- `app/src/main/assets`：App 自有资源（当前为 RTP）。共享脚本由 Gradle 从 `engine/src/main/assets` 同步到 `app/build/generated/assets/engine`，不要手工建立第二份脚本源。
 
 - `engine/src/main/nativeplugins`：共享 Native 插件 so 源头。
 - `app/src/main/nativeplugins`：插件 manifest 与 app-only 插件源头。
 
-- 禁止在 app 与 engine 两边手工维护同一份二进制或共享脚本；构建脚本会检查重复源文件。
+- 插件 zip 生成到 `app/build/generated/assets/nativeplugins`。禁止在 app 与 engine 两边手工维护同一份二进制或共享脚本；插件源合并通过 `DuplicatesStrategy.FAIL` 拒绝重名，脚本单一源归属仍需评审检查。
+
+- 原生运行库通常是已提交的预编译 `.so`；普通 Gradle 构建只编 JNI 桥，不重建全部运行时。更新运行库时必须同步固定来源、校验清单、许可证与设备验收证据，详见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 ***
 
@@ -102,11 +130,13 @@
 - 新增错误分支时优先扩展已有 sealed 类型/错误码枚举，不新增并行协议。
 - 取消（`CancellationException`）不属于失败，必须原样向上传播。
 
+存量偏差：`GameSaveManager.SaveLocation.description`、`HikarinagiAuthService` 和 `KrkrOnlinePatchService` 仍有本地化字符串载荷。上述协议是新增/改动代码的约束，并非全仓已完成迁移；修改相关接口时连同 UI 映射和调用方一起对齐，不新增并行错误风格。
+
 ***
 
 ## 页面顶部栏统一规范
 
-所有页面（首页 / 游戏 / 书库 / 设置）的顶部栏必须统一。**一律使用统一组件
+所有页面（首页 / 游戏 / 引擎 / 设置）的顶部栏必须统一。**一律使用统一组件
 `com.tyranor.next.ui.common.AppTopBar`**，禁止任何页面手写该结构；占位页可复用
 `com.tyranor.next.ui.common.PlaceholderPage`（内部同样走 AppTopBar）。
 
@@ -114,17 +144,17 @@
 
 - 页面顶部栏必须调用 `AppTopBar(title, ...)`；标题、结构、取色由组件兜底。
 - 参数约定：
-  - Material 页面（默认）：不传 `background`/`contentColor`，组件默认 `colorScheme.background` / `colorScheme.onBackground`。
+  - Material 页面（默认）：不传 `background`/`contentColor`，组件默认 `Color.Transparent` / `colorScheme.onBackground`。
   - Miuix 风格页面（设置类 MiuixScaffold 的 `topBar` 槽）：传 `background = Color.Transparent`（顶部栏背景恒为透明，交由根部背景层——`MiuixTheme.colorScheme.background` 实为 `PageGrey`，传它会盖住玻璃/渐变根背景）、`contentColor = MiuixTheme.colorScheme.onBackground`，并设 `contentWindowInsets = WindowInsets(0.dp)`。
-  - 需要「色调切换」参与取色的页面：传 `background = PageGrey`、`contentColor = TextColor`。
+  - 需要「色调切换」参与文字取色的页面：保持 `background = Color.Transparent`，传 `contentColor = TextColor`，背景仍由页面根层提供。
   - 右侧图标用 `trailing` 槽传入 `TopBarIcon`；标题下方的折叠内容（如游戏页搜索框）用 `underTitle` 槽。
 - 新页面/组件禁止再书写「背景层 + statusBarsPadding + 64dp + titleLarge Bold」结构。
 
 ### 1. 结构
 
-- 顶部栏使用 **Column + Centre**，**不使用** Material3 的 `TopAppBar` / `Scaffold`。
+- 顶部栏由公共组件内部使用 **Column + Row**，页面不自行使用 Material3 `TopAppBar` 替代；Miuix 页面壳按下文约定接入。
 
-- 页面整体由外层 `Column` 组装，顺序固定为：顶部栏 → 正文内容。
+- 普通/降级路径由外层 `Column` 组装为「顶部栏 → 正文内容」；启用渐进模糊时交给 `TopBarBlurHost` / `MiuixTopBarBlurScaffold` 叠层托管并消费 `topInset`，不要强行改回上下分离布局。
 
 - **禁止在顶部栏放置任何返回按钮/图标**。返回统一依赖系统返回键/手势（`Activity` 默认 `finish()`），不要通过 `onBack` 参数下发返回回调。
 
@@ -161,10 +191,10 @@
 
 ### 5. 状态栏
 
-- 状态栏必须是**透明沉浸式**（`window.statusBarColor = Color.TRANSPARENT`），顶部栏的
+- 状态栏必须是**透明沉浸式**，经 `enableEdgeToEdge` 配置，顶部栏的
   页面背景色向上延伸覆盖状态栏区域。
 
-- 状态栏/导航栏图标使用**深色**（`SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)`），因为页面背景为浅色。
+- 状态栏/导航栏图标跟随实际外观：浅色背景使用深色图标（`SystemBarStyle.light`），深色与玻璃风格使用浅色图标（`SystemBarStyle.dark`）；二级页复用 `AppScreenActivity`，不要写死浅色模式。
 
 - 顶部栏需使用 `Modifier.statusBarsPadding()`，使标题内容避开状态栏但背景色连续延伸。
 
@@ -172,17 +202,16 @@
 
 ### 6. 位置顺序
 
+以下示意仅对应普通/模糊降级路径；默认风格 Android 12+ 的模糊宿主按第 4 节处理正文与顶栏叠层。
+
 ```
 Column(fillMaxSize)                                // 页面根
-├── Column(fillMaxWidth, background(background))    // 页面背景色容器（不透明）
-│   ├── Column(statusBarsPadding)                    // 避开状态栏（背景延伸至状态栏）
-│   └── Column(height 64dp, padding horizontal 16dp)  // 标题区
+├── AppTopBar(background = Color.Transparent)       // 根背景透出；内部管理状态栏留白
+│   └── Row(height 64dp, padding horizontal 16dp)    // 标题与 TopBarIcon
 └── 正文内容
 ```
 
-> 设置类页面若使用 `MiuixScaffold`，`containerColor` 取 `Color.Transparent`（背景由根部背景层绘制）；顶部栏在 `topBar` 槽中按同样规则实现：
-> `Column(background(background)) { Column(statusBarsPadding) { Row(height 64dp, padding horizontal 16dp) { ... } } }`，
-> 并设 `contentWindowInsets = WindowInsets(0.dp)` 避免系统 inset 再次叠加间距。
+> 设置类页面若使用 `MiuixScaffold`，`containerColor` 取 `Color.Transparent`（背景由根部背景层绘制）；`topBar` 槽调用 `AppTopBar`，并设 `contentWindowInsets = WindowInsets(0.dp)`，不要自行重写顶栏结构。
 
 ### 7. 顶部栏图标按钮
 
@@ -197,7 +226,7 @@ Column(fillMaxSize)                                // 页面根
 ### 8. 明文豁免
 
 - **明文豁免（按键方案布局编辑器）**：`ui/settings/PadLayoutEditScreen.kt`（`PadLayoutEditActivity`）**不设顶部栏**，编辑画布占满全屏（含系统栏区域）——为有意设计，不受本节 0–7 条约束。理由：该页的核心契约是与游戏内按键层**同视口**（按钮位置按视口归一化存储，横竖屏按比例重映射），顶栏会压缩画布高度、使「所见即所得」失效。操作方式与退出方式由进屏 Toast 说明，保存经编辑面板内的「保存」触发，退出走系统返回键。**该豁免仅限本页**，其余页面一律使用 `AppTopBar`，不得援引。
-- **同一豁免的延伸（该页复用 engine 原生编辑 UI）**：本页把 engine 侧的原生按键层与编辑面板（`com.core.input.VirtualPadView` / `VirtualPadEditPanel`，由 core 门面 `PadEditorHost` 提供 `rootView`）整体当作画布，因此**该页内的自绘弹窗与文字尺寸**同样随本页豁免「跨页面一致性要求」的弹窗白底 / 8dp 圆角与两档排版（面板为深色卡片、随游戏画面同视口呈现，见 `VirtualPadEditPanel.showDarkDialog`）。延伸豁免**同样仅限本页与游戏内按键层**：设置域的其它弹窗（`AppAlertDialog`）必须照常遵守弹窗点击反馈、白底与 8dp 圆角规范。**理由修正**：该页 Activity 固定 `sensorLandscape`（见 `AndroidManifest.xml`），编辑器本身不经历横竖屏切换；「横竖屏按比例重映射」描述的是**游戏内**按键层的行为。
+- **同一豁免的延伸（该页复用 engine 原生编辑 UI）**：本页把 engine 侧的原生按键层与编辑面板（`com.core.input.VirtualPadView` / `VirtualPadEditPanel`，由 core 门面 `PadEditorHost` 提供 `rootView`）整体当作画布，因此**该页内的自绘弹窗与文字尺寸**同样随本页豁免应用统一弹窗材质、圆角与两档排版（面板为深色卡片、随游戏画面同视口呈现，见 `VirtualPadEditPanel.showDarkDialog`）。延伸豁免**同样仅限本页与游戏内按键层**：设置域的其它弹窗（`AppAlertDialog`）必须照常遵守弹窗点击反馈、动态面板取色与 `AppComponentShape` 规范。**理由修正**：该页 Activity 固定 `sensorLandscape`（见 `AndroidManifest.xml`），编辑器本身不经历横竖屏切换；「横竖屏按比例重映射」描述的是**游戏内**按键层的行为。
 
 ***
 
@@ -240,7 +269,7 @@ Column(fillMaxSize)                                // 页面根
   触觉反馈保留展开/收起、确认选中、长按进入移动与实际落位；接近、移入或切换子控件候选时不得震动。
   悬浮按钮在平板也保持圆球导航，弧形半径与选项尺寸按安全区自适应；其它样式的平板侧栏规则不变。
 
-- 所有弹窗背景必须为白色，且圆角必须使用统一圆角数值 **8dp**。
+- 所有应用弹窗使用 `AppAlertDialog`，背景与圆角由动态主题常量决定：默认浅色通常为白底 8dp，深浅色/色调切换使用 `NavWhite`，玻璃风格使用对应面板材质与 32dp；统一引用 `AppComponentShape`，不得写死白色或 8dp。原生按键编辑器的明文豁免仍仅限该页与游戏内按键层。
 
 ## 页面内容文字尺寸规范
 
@@ -250,6 +279,8 @@ Column(fillMaxSize)                                // 页面根
 2. `MaterialTheme.typography.bodyMedium` —— 正文、行值、辅助描述、按钮文字、空态/错误提示。
 
 - **禁止**使用 `bodySmall` / `bodyLarge` / `labelMedium` / `labelLarge` / `headlineMedium` / `headlineSmall` 等其它排版尺寸。
+
+- 存量组件例外：`AppNavItem` 内部摘要当前使用 `bodySmall`，仅限该共享组件既有实现；页面不得据此新增第三档字号。
 
 - Miuix preference 组件标题默认用 `headline1`(17sp)，已在 `MiuixSettingsTheme` 中全局覆盖为 15sp（`defaultTextStyles(headline1 = TextStyle(fontSize = 15.sp))`），使其严格落入两档并匹配 `titleMedium`；不要自行在单行上改字号。
 
@@ -482,9 +513,9 @@ Column(fillMaxSize)                                // 页面根
 
 - 图标 tint、高亮文字、选中态等一切"强调色"位置只能从上述 colorScheme 获取，**禁止**在页面里硬编码 `Color(0x...)`、`#307DEF`、`Blue40` 或任何品牌蓝。
 
-### 3. 中性色与语义色（固定，不属于主题色）
+### 3. 中性色与语义色（非主题强调色）
 
-以下颜色固定不变，从 `theme/Color.kt` 常量引用，**禁止**在页面中直接写 `Color(0x...)`：
+以下中性色/语义色不是主题强调色；它们包含随外观与色调计算的动态值，统一从 `theme/Color.kt` 引用，**禁止**在页面中直接写 `Color(0x...)`：
 
 - `PageGrey` 页面背景色、`NavWhite` 卡片/导航栏组件色；二者由应用设置「色调切换」控制是否互换。`TextColor` 正文深灰、`UnselectedGrey` 导航栏未选中灰。
 
@@ -553,7 +584,13 @@ Column(fillMaxSize)                                // 页面根
 
 ## 测试与审核
 
-必须让Agent使用阅读 Android CLI 中的审查技能
+使用 Android CLI 做设备审查前，先发现并阅读其中适用的审查技能；工具或技能不可用时记录缺失条件，继续可执行的本地审查，不编造已安装或已通过的结果。`--sdk=/tmp/androidsdk` 是既有验收环境示例，须替换为本机 SDK 路径。
+
+JVM 回归使用 JUnit 4，位于 app/engine 各自的 `src/test/`；覆盖扫描、设置解析、存档、输入、宿主生命周期与图形策略。测试聚焦行为和边界，不镜像实现，也不为纯文档修改新增业务测试。真机用例与 release R8 probe 的构建、安装和能力边界分别见 [androidTest](app/src/androidTest/README.md) 与 [releaseProbe](app/src/releaseProbe/README.md)；普通 Android CI 未自动运行设备验收。
+
+设备测试 JNI probe 的构建脚本当前只选择 Linux/macOS NDK host 路径，Windows 不能直接照搬这些测试 APK 构建命令；这不影响普通 App 构建与 JVM 测试命令的适用说明。
+
+Room schema 变更须提交 `app/schemas/` 并添加显式 `Migration`；仅既有 v1→v2 与降级恢复保留破坏性重建策略，不扩大例外。
 
 应由多个相互独立的 Agent 或 子Agent 从不同角度重新检查代码，例如：
 代码逻辑审核：检查实现逻辑、状态流转、边界条件以及潜在逻辑错误。
@@ -566,9 +603,22 @@ Column(fillMaxSize)                                // 页面根
 
 ## 构建
 
-- 构建命令：`./gradlew assembleDebug --no-daemon`
+- 使用仓库 Gradle Wrapper；CI 使用 JDK 17。安装 app 平台 `android-37.0`、engine 平台 `android-36`、Build Tools 37.0.0、NDK `28.0.13004108` 与 CMake `3.22.1`，通过未跟踪的 `local.properties`（`sdk.dir=...`）或 `ANDROID_HOME` 指定 SDK。`minSdk=26`、`targetSdk=36`，原生库仅 arm64-v8a。
 
-- 使用 Android CLI（`--sdk=/tmp/androidsdk`）安装到实机。
+| 命令（仓库根目录） | 用途 |
+| --- | --- |
+| `./gradlew assembleDebug --no-daemon` | 构建 Debug APK，输出到 `app/build/outputs/apk/debug/` |
+| `./gradlew testDebugUnitTest --no-daemon` | 执行 app 与 engine 的 JVM 回归 |
+| `./gradlew :app:lintDebug :engine:lintDebug --no-daemon` | 执行两模块 Android lint |
+| `python tools/check-hardcoded-ui-strings.py` | 离线检查三语言字符串键与 Kotlin CJK 字面量 |
+| `./gradlew -p buildSrc graphicsResourcesRegression --no-daemon` | 验证图形资源归属与校验逻辑 |
+| `./gradlew :engine:jsHarness --no-daemon` | 用本地 Node.js 验证 Web v2 桥；也接入 `:engine:check` |
+| `cargo test --manifest-path engine/rust/Cargo.toml --locked` | 修改 XP3 Rust 时运行宿主测试 |
+| `./gradlew :app:printAppVersion --no-daemon` | 输出版本名与自动推导的 versionCode |
+
+Windows PowerShell 使用 `./gradlew.bat`；Linux/macOS 使用 `./gradlew`。Python、Node、Rust 按相关任务安装；普通 Gradle 构建不运行 Rust 重编。执行 `check` 时仅在明确缺 Node 的场景可用 `-PskipJsHarness` 跳过，并在验证记录中说明。
+
+`HIKARINAGI_CLIENT_ID` 可由环境、`local.properties` 或 Gradle 属性提供（按此顺序取值）；它配置 OAuth 客户端，不应填写用户 token。不要提交签名密钥、认证数据或商业游戏资产。测试安装采用隔离包名 `TYRANOR_APPLICATION_ID=com.tyranor.next.ethornelltest`，避免覆盖正式安装；PowerShell 用 `$env:TYRANOR_APPLICATION_ID = 'com.tyranor.next.ethornelltest'`，操作后恢复。
 
 - 发版规则（issue #79）：只修改 `app/build.gradle.kts` 的 `appVersionName`；`versionCode` 由 `versionCodeOf()` 自动推导
   （`major*1_000_000 + minor*1_000 + patch`，minor/patch 必须 < 1000），禁止手写或回退 `versionCode`。

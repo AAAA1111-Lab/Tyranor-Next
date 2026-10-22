@@ -113,7 +113,7 @@ git remote -v
 
 基本要求：
 * vibe coding 必须严格遵守 `AGENTS.md` 中的代码规范。
-* 使用 Kotlin 13.0.0 或更高版本
+* 使用仓库 Gradle Wrapper 与固定工具链；Kotlin 版本以 `gradle/libs.versions.toml` 为准，环境和验证命令见 [AGENTS.md](AGENTS.md#构建)
 * 使用清晰、有意义的变量名
 * 避免无意义缩写
 * 避免重复代码
