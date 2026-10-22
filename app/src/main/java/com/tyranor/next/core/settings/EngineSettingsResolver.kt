@@ -258,10 +258,27 @@ object EngineSettingsResolver {
                 EngineSettingsStore.loadRenPy(app),
                 PerGameSettingsStore.toRenPyOverride(override),
             ),
-            winlator = EffectiveEngineSettings.mergeWinlator(
-                EngineSettingsStore.loadWinlator(app),
-                PerGameSettingsStore.toWinlatorOverride(override),
-            ),
+            winlator = run {
+                val winlatorOverride = PerGameSettingsStore.toWinlatorOverride(override)
+                when (PerGameSettingsStore.getWinlatorMode(app, game.uri)) {
+                    PerGameSettingsStore.WINLATOR_MODE_GLOBAL ->
+                        EngineSettingsStore.loadWinlator(app)
+
+                    PerGameSettingsStore.WINLATOR_MODE_CUSTOM ->
+                        EffectiveEngineSettings.mergeWinlator(
+                            EngineSettingsStore.loadWinlator(app),
+                            winlatorOverride,
+                        )
+
+                    else -> EffectiveEngineSettings.mergeWinlator(
+                        EngineSettingsStore.Winlator(),
+                        WinlatorOverride(
+                            containerId = winlatorOverride?.containerId,
+                            containerName = winlatorOverride?.containerName,
+                        ),
+                    )
+                }
+            },
         )
     }
 
