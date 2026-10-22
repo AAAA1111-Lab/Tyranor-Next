@@ -4,7 +4,7 @@
   <img src="screenshots/index.png" alt="Tyranor Next" width="850" />
 </p>
 
-基于 **Tyranor 模拟器逆向重写**的多引擎视觉小说（Galgame）聚合启动器，面向 Android 平台。内置 Kirikiri / ONScripter / Tyrano / Artemis / Siglus / RealLive / AVG32 / UK2 / FVP 九套引擎运行环境，并支持 Ren'Py、RPG Maker RGSS 外置 APK 引擎模块与 PSP / Nintendo Switch 外置模拟器跳转（PPSSPP / Eden），可识别和启动多类游戏，提供游戏库管理、封面获取、存档镜像、引擎参数调节等一体化体验。
+基于 **Tyranor 模拟器逆向重写**的多引擎视觉小说（Galgame）聚合启动器，面向 Android 平台。内置 Kirikiri / ONScripter / Tyrano / Artemis / Siglus / RealLive / AVG32 / UK2 / FVP / System35 / System4 等原生与 Web 运行环境，另含 Ethornell / BGI 实验接入，并支持 Ren'Py、RPG Maker RGSS 外置 APK 引擎模块与外置模拟器跳转（PPSSPP / Eden / Winlator），提供游戏库管理、封面获取、存档镜像、引擎参数调节等一体化体验。具体功能与兼容边界见 [SPEC.md](SPEC.md)。
 
 mac原生版本如下：
 
@@ -61,13 +61,19 @@ CatSystem2 游戏按 `config/startup.xml`、`.int/.cst/.hg3/.kcs` 等目录特�
 
 **实验接入：Ethornell / BGI（ethornell-rs）** 已接入扫描、内置宿主启动与 SJIS/GBK、字体设置；原创像素、基础 ABI、退出重入与合成VM持久化已有设备证据，合法样本的三语言选择、正常标题、中文菜单与两句真实中文推进已视觉验证。但商业存档槽位尚无实际保存，精确ABI与完整兼容仍待验收，不能统称可玩。API26当前测试硬件无可用GPU adapter，不代表所有API26设备不支持。App 存档管理默认关闭；完整 IME、BMV、WMV、实时 SWF 与电影音轨尚未支持。进度见 [移植计划](docs/Ethornell-BGI-Android化移植计划方案.md) 和 [测试验收记录](docs/Ethornell测试验收记录.md)。
 
-YU-RIS（Windows）游戏通过外置 Winlator（winlator-cn）运行：扫描按 `yscfg.dat`、`pac/*.ypf`、引擎 DLL 与 `.ymv` 特征识别，启动时以「游戏目录 + 主程序 exe」经 Winlator 外置启动协议拉起（目录由 Winlator 自动分配空闲盘符临时挂载，`save=false` 不写回容器配置）；主程序自动选择，可在游戏详情「启动文件」手动覆盖。存档与运行参数由 Winlator 管理，主 App 不接管。
+YU-RIS（Windows）游戏通过外置 Winlator（winlator-cn）运行：扫描按 `yscfg.dat`、`pac/*.ypf`、引擎 DLL 与 `.ymv` 特征识别，启动时以「游戏目录 + 主程序 exe」经 Winlator 外置启动协议拉起（目录由 Winlator 自动分配空闲盘符临时挂载，`save=false` 不写回容器配置）；主程序自动选择，可在游戏详情「启动文件」手动覆盖。主 App 可统一管理其游戏目录 `save/` 中的存档；Winlator 的运行环境仍由外部应用负责。
 
 内置 Web 运行环境同时支持部分以 `app.asar` 打包的 NW\.js 游戏；启动时会根据归档内容进一步识别具体类型。
 Ren'Py 与 RPG Maker XP/VX/VX Ace/mkxp-z 当前通过外置 APK 模块运行：Ren'Py 支持 8.5 / 7.7.1 版本，可在全局或单游戏设置中选择引擎版本；自动模式会读取 Ren'Py `script_version` 与 Python2 运行库特征，在 8.5 / 7.7.1 模块间匹配。主 App 默认启用该能力，仅在引擎页检查目标模块是否已安装；未安装时引擎 item 显示打叉并提示下载安装。RPG Maker MV/MZ 属于 Web runtime，继续使用内置 Web 运行环境。
-PC 游戏（任意 Windows 程序）通过游戏页顶栏「添加 PC 游戏」手动入库（不参与扫描）：选择目录并从目录检索 exe、指定启动程序；启动经外置 Winlator，启动文件可在游戏详情中随时切换。PC 游戏不纳入存档管理与引擎参数配置。
+PC 游戏（任意 Windows 程序）通过游戏页顶栏「添加 PC 游戏」手动入库（不参与扫描）：选择目录并从目录检索 exe、指定启动程序；启动经外置 Winlator，启动文件可在游戏详情中随时切换。PC 游戏不纳入统一存档管理；可在单游戏设置中逐项覆盖 Winlator 参数，并选择 WineD3D + GDI 预设。
 
 PSP 与 Nintendo Switch 游戏通过外置模拟器跳转运行：扫描按 ROM 扩展名识别并逐条入库（.iso/.cso/.pbp/.chd、.nsp/.xci/.nca/.nro），启动时按类型拉起已安装的 PPSSPP / Eden（显式组件 + 读取授权，使用 SAF 内容 URI；文件回退路径经 FileProvider 转换）。这两类游戏的存档与设置由模拟器自行管理，主 App 不接管；引擎页「外置跳转支持」入口可查看安装状态并跳转下载页。引擎页可在应用设置中开启「引擎页分类显示」，按 GAL / RPGM / 主机 / 网页 分页展示引擎项。
+
+### Winlator 图形加速
+
+全局 Winlator 设置与单游戏覆盖可选「跟随容器配置」、DXVK、WineD3D（跟随容器渲染器）、WineD3D + OpenGL、WineD3D + GDI。需要 GDI 的游戏请选择明确的 GDI 预设；旧 WineD3D 设置不迁移、不强制改为 GL 或 GDI。
+
+显式 GL/GDI 预设通过现有 `dxwrapperConfig` 协议整项覆盖 WineD3D 配置，其它子参数使用 Winlator 默认值；开启「写入容器配置」时也会保存该预设。Box64 预设可同时下发。该能力适用于带外置启动协议的 winlator-cn，不代表任意 Winlator 分支均支持。
 
 ### 平台与文件要求
 
@@ -87,6 +93,8 @@ PSP 与 Nintendo Switch 游戏通过外置模拟器跳转运行：扫描按 ROM 
 如果代码一眼丁真，一定拒绝合并。
 
 ## 技术架构
+
+开发与维护文档：[仓库规范](AGENTS.md) · [架构说明](ARCHITECTURE.md) · [功能规格与验收清单](SPEC.md) · [领域术语](CONTEXT.md) · [变更记录](CHANGELOG.md)。专题方案与 `.archify/` 图表保留其生成时的上下文；当前实现以源码及上述架构/规格说明为准。
 
 ### 模块划分
 
@@ -140,7 +148,7 @@ UI 层按页面域继续拆分：
 - **UI**：Jetpack Compose + Material 3 + [Miuix](https://github.com/compose-miuix-ui/miuix)
 - **导航**：底部导航 `NavigationBar`；主 Tab 内容页使用水平移动切换，详情/设置等独立 Activity 进入使用向上翻页、退出使用向下翻页
 - **构建**：Gradle 9.5.1 / AGP 9.2.1 / Kotlin 2.x + Compose Compiler，`compileSdk 37`、`minSdk 26`、`targetSdk 36`
-- **持久化**：SharedPreferences（扫描结果、引擎全局设置、单游戏设置覆盖、最近记录）
+- **持久化**：Room v2（游戏库、扫描根、最近打开时间、快捷启动、单游戏覆盖与识别缓存）+ SharedPreferences（应用/引擎设置、跨进程配置及旧库恢复镜像）
 - **文件访问**：Storage Access Framework（SAF）管理外部游戏目录，`documentFile` 库辅助
 
 ### 引擎集成设计
@@ -178,7 +186,9 @@ UI 层按页面域继续拆分：
 ./gradlew assembleDebug --no-daemon
 ```
 
-产物位于 `app/build/outputs/apk/debug/`。需要 Android SDK（本地平台 android-37）环境。
+产物位于 `app/build/outputs/apk/debug/`。需要 Android SDK（本地平台 `android-37.0`）环境。
+
+CI 使用 JDK 17；还需 engine 的 Android 36 平台、Build Tools 37.0.0、NDK 28.0.13004108 与 CMake 3.22.1。Windows 使用 `./gradlew.bat`。JVM 回归运行 `./gradlew testDebugUnitTest --no-daemon`，完整检查命令与设备验收边界见 [AGENTS.md](AGENTS.md#构建)。普通 Gradle 构建使用已提交的运行库，不自动重编所有原生引擎。
 
 ## 目录结构
 
@@ -188,19 +198,23 @@ app/
 │   ├── core/      功能抽象层：扫描、启动、引擎模块、封面、存档、补丁、拆封包、配置、授权、更新
 │   ├── ui/        界面 UI 交互层：主界面、游戏页、设置页、弹窗、公共组件
 │   └── theme/     Compose / Miuix 主题、色调、深浅色适配
-├── src/main/assets/
-│   ├── engine/        App 专属 Web 引擎注入脚本
-│   └── nativeplugins/ Gradle 构建期生成的 Native 插件 zip
-└── src/main/nativeplugins/ 插件 manifest 与 app-only 插件源头
+├── src/main/assets/rtp/    App 自有 RTP 资源
+├── src/main/nativeplugins/ 插件 manifest 与 app-only 插件源头
+├── build/generated/assets/ 构建生成的 engine/ 共享脚本与 nativeplugins/ 插件 zip
+├── schemas/                Room schema（随代码提交）
+└── src/{test,androidTest,releaseProbe}/ JVM、设备与 release probe 测试
 
 engine/
 ├── src/main/java/          底层引擎宿主、桥接代码与运行时入口
-├── src/main/cpp/           Native/JNI、SDL、引擎运行时代码
+├── src/main/cpp/           本地编译的 Native/JNI 与图形桥
 ├── src/main/assets/        底层引擎资源与共享引擎脚本源头
 ├── src/main/nativeplugins/ 共享 Native 插件 so 源头
+├── src/main/jniLibs/       预编译原生运行库（arm64-v8a）
+├── src/test/              JVM 回归与 Node Web 桥 harness
 └── rust/                   XP3 解封包 Rust 源码（xp3 解析与 KSD mode-2 隐性解码；许可证见 LICENSE.usefulunpack）
 
-docs/   设计文档、逆向分析、功能计划与优化方案
+buildSrc/、tools/、.github/workflows/  构建校验、工具与 CI
+docs/、.archify/                     专题方案、审查记录与可视化
 ```
 
 ## 许可证
