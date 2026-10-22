@@ -55,7 +55,7 @@ object ExternalEmulatorRegistry {
             activityName = WinlatorContract.ACTIVITY_NAME,
             mime = "*/*",
             grantWrite = false,
-            installUrl = "https://github.com/Weiss-UltimateSavior/winlator-cn",
+            installUrl = "https://github.com/Weiss-UltimateSavior/RinneMobile/releases/download/test/Winlator-CN.apk",
             launchStyle = EmulatorLaunchStyle.WINLATOR_EXTERNAL,
         ),
     )
