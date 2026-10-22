@@ -145,6 +145,8 @@ fun PerGameSettingsScreen(game: ScanGame) {
     var winlatorTz by remember { mutableStateOf(PerGameSettingsStore.getStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_TZ)) }
     var winlatorBox64Preset by remember { mutableStateOf(PerGameSettingsStore.getStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_BOX64_PRESET)) }
     var winlatorSave by remember { mutableStateOf(PerGameSettingsStore.getBool(ctx, gid, PerGameSettingsStore.F_WINLATOR_SAVE)) }
+    var winlatorMode by remember { mutableStateOf(PerGameSettingsStore.getWinlatorMode(ctx, gid)) }
+    var winlatorModeTouched by remember { mutableStateOf(false) }
     var artPatchRunning by remember(gid) { mutableStateOf(false) }
     var artPatchResult by remember(gid) { mutableStateOf<EngineLauncher.ArtemisManualPatchResult?>(null) }
     var renpyOverride by remember(gid) {
@@ -530,6 +532,9 @@ fun PerGameSettingsScreen(game: ScanGame) {
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_TZ, winlatorTz)
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_BOX64_PRESET, winlatorBox64Preset)
         PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_WINLATOR_SAVE, winlatorSave)
+        if (winlatorModeTouched) {
+            PerGameSettingsStore.setWinlatorMode(ctx, gid, winlatorMode)
+        }
         val onsObj = JSONObject()
         putIfNotNull(onsObj, "scopedsavedir", onsScoped)
         putIfNotNull(onsObj, "strechfull", onsStretch)
@@ -1258,6 +1263,45 @@ fun PerGameSettingsScreen(game: ScanGame) {
                 }
 
                 if (game.engine in WINLATOR_LAUNCH_ENGINES) item {
+                    SectionCard(stringResource(R.string.engine_settings_winlator_mode_title)) {
+                        OverlayDropdownPreference(
+                            title = stringResource(R.string.engine_settings_winlator_mode_title),
+                            items = listOf(
+                                stringResource(R.string.engine_settings_winlator_mode_global),
+                                stringResource(R.string.engine_settings_winlator_mode_container),
+                                stringResource(R.string.engine_settings_winlator_mode_custom),
+                            ),
+                            selectedIndex = when (winlatorMode) {
+                                PerGameSettingsStore.WINLATOR_MODE_CONTAINER -> 1
+                                PerGameSettingsStore.WINLATOR_MODE_CUSTOM -> 2
+                                else -> 0
+                            },
+                            onSelectedIndexChange = {
+                                winlatorMode = when (it) {
+                                    0 -> PerGameSettingsStore.WINLATOR_MODE_GLOBAL
+                                    1 -> PerGameSettingsStore.WINLATOR_MODE_CONTAINER
+                                    else -> PerGameSettingsStore.WINLATOR_MODE_CUSTOM
+                                }
+                                winlatorModeTouched = true
+                            },
+                        )
+                        if (winlatorMode == PerGameSettingsStore.WINLATOR_MODE_GLOBAL) {
+                            ArrowPreference(
+                                title = stringResource(R.string.engine_settings_winlator_global_entry),
+                                summary = stringResource(R.string.engine_settings_winlator_global_entry_summary),
+                                onClick = {
+                                    ctx.startActivity(
+                                        EngineSettingsActivity.createIntent(ctx, EngineSettingsKind.WINLATOR),
+                                    )
+                                },
+                            )
+                        }
+                    }
+                }
+
+                if (game.engine in WINLATOR_LAUNCH_ENGINES &&
+                    winlatorMode != PerGameSettingsStore.WINLATOR_MODE_GLOBAL
+                ) item {
                     SectionCard("Winlator") {
                         OverrideText(
                             label = stringResource(R.string.engine_settings_winlator_container_id_title),

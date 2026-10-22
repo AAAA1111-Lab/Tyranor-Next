@@ -132,6 +132,11 @@ object PerGameSettingsStore {
     const val F_XSYS4_MSGSKIP_DELAY = "xsys4_msgskip_delay"
 
     // Winlator 外置启动（null=跟随全局；字符串 "" = 显式不下发该参数）
+    const val F_WINLATOR_CUSTOM = "winlator_custom"
+    const val F_WINLATOR_MODE = "winlator_mode"
+    const val WINLATOR_MODE_GLOBAL = "global"
+    const val WINLATOR_MODE_CONTAINER = "container"
+    const val WINLATOR_MODE_CUSTOM = "custom"
     const val F_WINLATOR_CONTAINER_ID = "winlator_container_id"
     const val F_WINLATOR_CONTAINER_NAME = "winlator_container_name"
     const val F_WINLATOR_GRAPHICS_DRIVER = "winlator_graphics_driver"
@@ -298,6 +303,48 @@ object PerGameSettingsStore {
             recompile = boolOrNull(F_RENPY_RECOMPILE),
         )
         return override.takeIf { it != RenPyOverride() }
+    }
+
+    private val WINLATOR_OVERRIDE_FIELDS = listOf(
+        F_WINLATOR_GRAPHICS_DRIVER,
+        F_WINLATOR_DXWRAPPER,
+        F_WINLATOR_SCREEN_SIZE,
+        F_WINLATOR_LC_ALL,
+        F_WINLATOR_TZ,
+        F_WINLATOR_BOX64_PRESET,
+    )
+
+    /**
+     * 单游戏运行模式：global（默认）/ container / custom。
+     * 旧数据严格按 1.61 的 null / "" / 值语义迁移。
+     */
+    fun getWinlatorMode(context: Context, gameId: String): String {
+        val json = load(context, gameId)
+        val mode = json.optString(F_WINLATOR_MODE, "")
+        if (mode == WINLATOR_MODE_GLOBAL || mode == WINLATOR_MODE_CONTAINER || mode == WINLATOR_MODE_CUSTOM) {
+            return mode
+        }
+        val presentParams = WINLATOR_OVERRIDE_FIELDS.filter { json.has(it) }
+        val hasNonEmptyParam = presentParams.any { json.optString(it).isNotEmpty() }
+        if (hasNonEmptyParam) return WINLATOR_MODE_CUSTOM
+        if (json.has(F_WINLATOR_CONTAINER_ID) || json.has(F_WINLATOR_CONTAINER_NAME)) {
+            return WINLATOR_MODE_CUSTOM
+        }
+        if (presentParams.isNotEmpty()) {
+            return if (presentParams.size == WINLATOR_OVERRIDE_FIELDS.size) {
+                WINLATOR_MODE_CONTAINER
+            } else {
+                WINLATOR_MODE_CUSTOM
+            }
+        }
+        if (json.has(F_WINLATOR_CUSTOM)) {
+            return if (json.optBoolean(F_WINLATOR_CUSTOM, false)) WINLATOR_MODE_CUSTOM else WINLATOR_MODE_CONTAINER
+        }
+        return WINLATOR_MODE_GLOBAL
+    }
+
+    fun setWinlatorMode(context: Context, gameId: String, mode: String) {
+        setStr(context, gameId, F_WINLATOR_MODE, mode)
     }
 
     /**
