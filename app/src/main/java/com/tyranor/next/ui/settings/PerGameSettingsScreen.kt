@@ -1300,7 +1300,27 @@ fun PerGameSettingsScreen(game: ScanGame) {
                 }
 
                 if (game.engine in WINLATOR_LAUNCH_ENGINES &&
-                    winlatorMode != PerGameSettingsStore.WINLATOR_MODE_GLOBAL
+                    winlatorMode == PerGameSettingsStore.WINLATOR_MODE_CONTAINER
+                ) item {
+                    SectionCard("Winlator") {
+                        OverrideText(
+                            label = stringResource(R.string.engine_settings_winlator_container_id_title),
+                            globalValue = if (globalWinlator.containerId > 0) globalWinlator.containerId.toString() else "",
+                            override = winlatorContainerId,
+                            hint = stringResource(R.string.engine_settings_winlator_container_id_summary),
+                            sanitize = { it.filter { ch -> ch.isDigit() }.take(6) },
+                        ) { winlatorContainerId = it }
+                        OverrideText(
+                            label = stringResource(R.string.engine_settings_winlator_container_name_title),
+                            globalValue = globalWinlator.containerName,
+                            override = winlatorContainerName,
+                            hint = stringResource(R.string.engine_settings_winlator_container_name_summary),
+                        ) { winlatorContainerName = it }
+                    }
+                }
+
+                if (game.engine in WINLATOR_LAUNCH_ENGINES &&
+                    winlatorMode == PerGameSettingsStore.WINLATOR_MODE_CUSTOM
                 ) item {
                     SectionCard("Winlator") {
                         OverrideText(
