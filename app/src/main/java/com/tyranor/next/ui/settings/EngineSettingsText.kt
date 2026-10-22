@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import com.tyranor.next.R
+import com.tyranor.next.core.engine.external.WinlatorContract
 import com.tyranor.next.core.settings.EngineSettingsStore
 import com.tyranor.next.core.settings.GraphicsFilterCatalog
 import com.tyranor.next.core.settings.GraphicsFilterCategory
@@ -326,15 +327,23 @@ internal fun winlatorLcAllOptions(): List<Pair<String, String>> =
     listOf("" to stringResource(R.string.engine_settings_winlator_follow_container)) +
         EngineSettingsStore.WINLATOR_LOCALES.map { it to it }
 
+/** 提供固定时区选项，空串表示沿用容器时区。 */
 @Composable
 internal fun winlatorTimezoneOptions(): List<Pair<String, String>> =
     listOf("" to stringResource(R.string.engine_settings_winlator_follow_container)) +
         EngineSettingsStore.WINLATOR_TIMEZONES.map { it to it }
 
+/** 全局与单游戏共用的图形加速选项，区分容器渲染器与显式 OpenGL/GDI 预设。 */
 @Composable
 internal fun winlatorDxWrapperOptions(): List<Pair<String, String>> =
-    EngineSettingsStore.WINLATOR_DXWRAPPERS.map { v ->
-        v to v.ifBlank { stringResource(R.string.engine_settings_winlator_follow_container) }
+    EngineSettingsStore.WINLATOR_DXWRAPPERS.map { value ->
+        value to when (value) {
+            "" -> stringResource(R.string.engine_settings_winlator_follow_container)
+            "wined3d" -> stringResource(R.string.engine_settings_winlator_wined3d_container)
+            WinlatorContract.DXWRAPPER_WINED3D_GL -> stringResource(R.string.engine_settings_winlator_wined3d_gl)
+            WinlatorContract.DXWRAPPER_WINED3D_GDI -> stringResource(R.string.engine_settings_winlator_wined3d_gdi)
+            else -> value
+        }
     }
 
 @Composable
@@ -370,6 +379,7 @@ internal fun winlatorScreenSizeLabel(size: String): String = when (size) {
 internal fun winlatorGraphicsDriverOptionsMap(): Map<String, String> =
     winlatorGraphicsDriverOptions().toMap()
 
+/** 单游戏覆盖界面复用全局图形加速选项的存储值与本地化标签。 */
 @Composable
 internal fun winlatorDxWrapperOptionsMap(): Map<String, String> = winlatorDxWrapperOptions().toMap()
 

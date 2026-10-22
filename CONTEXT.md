@@ -1,11 +1,11 @@
 # Tyranor Next — 领域上下文
 
-基于 Tyranor 模拟器逆向重写、面向 Android 的多引擎视觉小说（Galgame）聚合启动器：识别并启动 KiriKiri / ONScripter / Tyrano / Artemis / Siglus / YU-RIS / CatSystem2 / PC（手动添加）/ RPG Maker / Ren'Py 等多类引擎编排的游戏，提供游戏库管理、封面获取、存档镜像、引擎参数调节。本上下文定义该领域内约定成俗的核心术语。
+Tyranor Next 是面向 Android 的多引擎视觉小说（Galgame）聚合启动器。本上下文定义游戏库、运行环境及应用侧工具使用的项目术语。
 
 ## 引擎与运行时
 
 **引擎（EngineType）**:
-游戏所属的运行时家族，扫描时按目录特征（脚本/资源文件）判定：KIRIKIRI、ONS、TYRANO、RPG Maker（RGSS 系列）、RPG_MV、RPG_MZ、VN、WebOther、ARTEMIS、SIGLUS、REALLIVE、AVG32、XSYS35、XSYS4、UK2、FVP、ETHORNELL、RENPY、YURIS、CATSYSTEM2、PC、ANDROID_APP、UNKNOWN；类型已接入不等于其游戏兼容性已验收。
+游戏库用于区分游戏运行时家族与外部启动类别的分类。
 _Avoid_: 游戏类型、格式
 
 **内置引擎**:
@@ -25,19 +25,19 @@ Siglus 之外由 game_launcher 运行库承载的三个软件渲染引擎（Real
 _Avoid_: 软渲染引擎、game_fb 引擎
 
 **外置 APK 引擎模块（External Engine Module）**:
-以独立 APK 形式分发、需用户安装/下载的引擎运行时（Ren'Py 8.5/7.7.1、RPG Maker XP/VX/VX Ace/mkxp-z），由注册表（ExternalEngineModuleRegistry）按引擎 + 版本解析目标模块，启动时通过 Intent 协议拉起。
+以独立 Android 应用形式分发、由用户另行安装的引擎运行时，用于承载 Ren'Py 与 RPG Maker RGSS 等游戏。
 _Avoid_: 插件、引擎 DLC
 
 **PC 游戏（手动添加）**:
-不属于已识别引擎家族、由用户在游戏页顶栏「添加游戏 → 添加电脑游戏」手动入库的 Windows 程序：选择目录 + 指定启动 exe（存 `launchFile`，可随时切换），启动经外置 Winlator；不参与扫描、不纳入存档管理与引擎配置。
+用户手动加入游戏库、经外置 Winlator 运行的 Windows 程序，不限定为已识别的视觉小说引擎家族。其运行参数属于 Winlator 设置域。
 _Avoid_: 未知引擎、Winlator 游戏
 
 **安卓游戏（手动添加）**:
-不属于已识别引擎家族、由用户在游戏页顶栏「添加游戏 → 添加安卓游戏」从已安装可启动应用列表手动入库的 Android 应用：库内主键 `uri = androidapp://<包名>`，包名存 `launchTarget`，启动时按包名直接跳转该应用；不参与扫描、不纳入存档管理与引擎配置。
+用户从已安装应用中手动加入游戏库的 Android 游戏记录，属于外部应用入口。
 _Avoid_: 应用快捷方式、外置模拟器游戏
 
 **外置模拟器跳转（External Emulator Jump）**:
-把游戏交给用户自行安装的独立模拟器/模拟器型运行时（PPSSPP、Eden、Winlator）运行；主 App 只做识别、安装探测与显式组件 Intent 跳转，不接管其存档与设置。YU-RIS 为「目录 + 主 exe」形态，经 Winlator 外置启动协议（`dir_path` + 相对 `exe_path`，自动空闲盘符临时挂载）拉起。
+由用户另行安装的独立模拟器或兼容运行环境承接游戏的启动方式，包括 PPSSPP、Eden 与 Winlator。
 _Avoid_: 外置模块（指 APK 引擎模块）、内置引擎
 
 **引擎网页壳（Tyranor Web 运行环境）**:
@@ -326,7 +326,7 @@ _Avoid_: extras 约定、Intent 协议
 _Avoid_: 错误字符串、返回值文案
 
 **页面宿主（AppScreenActivity / AppScreenScaffold）**:
-二级页面统一宿主：收敛主题包裹（ProvideAppLocale → TyranorNextTheme → Surface）、边到边与透明系统栏、退出转场；页面正文经 setAppScreenContent 提供。
+二级页面共用的界面宿主，统一页面的语言、主题、背景、系统栏与退出行为。
 _Avoid_: BaseActivity、Scaffold 壳
 
 **FIFO 持久化命令队列**:

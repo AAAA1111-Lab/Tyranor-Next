@@ -1,9 +1,11 @@
 package com.tyranor.next.core.engine.external
 
+import org.json.JSONObject
+
 /**
  * Winlator（winlator-cn）外置启动协议常量（唯一字面量来源）。
  *
- * 协议来源：winlator-cn `docs/external-launch-guide.md` 与 `ExternalLaunchActivity`。
+ * 协议来源：winlator-cn `docs/external-launch.md` 与 `ExternalLaunchActivity`。
  * 入口为导出的 `com.winlator.ExternalLaunchActivity`，安装包名与 Java 包名同为 `com.winlator`
  * （与 `/Users/weiss/github- engine/winlator-cn` 的 applicationId 一致）；`exe_path` 支持相对
  * `dir_path` 的文件名，未映射的 `dir_path` 由 Winlator 从 `W:` 递减分配空闲盘符**临时挂载**
@@ -55,6 +57,11 @@ object WinlatorContract {
 
     /** overrides 中由本 App 下发的键。 */
     const val OVERRIDE_BOX64_PRESET = "box64Preset"
+    const val OVERRIDE_DXWRAPPER_CONFIG = "dxwrapperConfig"
+
+    /** App-only presets; both map to the existing `wined3d` protocol identifier. */
+    const val DXWRAPPER_WINED3D_GL = "wined3d_gl"
+    const val DXWRAPPER_WINED3D_GDI = "wined3d_gdi"
 
     /**
      * 引擎设置解析出的下发参数；空值（0/空串/false）一律不下发。
@@ -74,18 +81,31 @@ object WinlatorContract {
     /**
      * 设置项 → Intent extras 的纯函数映射（不含 `dir_path`/`exe_path`/`confirm`/`launch_id`）。
      * 值为 Int/Boolean 时按原类型传入，其余为 String；用于单测覆盖下发规则。
+     * 显式 GL/GDI 预设映射为 WineD3D，并整项替换接收端渲染配置；旧 WineD3D 保留容器渲染器。
+     * 渲染配置与 Box64 预设共用一个 overrides 对象，save 为 true 时由接收端持久化覆盖值。
      */
     fun extras(options: LaunchOptions): Map<String, Any> = buildMap {
         if (options.containerId > 0) put(EXTRA_CONTAINER_ID, options.containerId)
         options.containerName.trim().takeIf { it.isNotEmpty() }?.let { put(EXTRA_CONTAINER_NAME, it) }
         options.graphicsDriver.trim().takeIf { it.isNotEmpty() }?.let { put(EXTRA_GRAPHICS_DRIVER, it) }
-        options.dxwrapper.trim().takeIf { it.isNotEmpty() }?.let { put(EXTRA_DXWRAPPER, it) }
+        val overrides = JSONObject()
+        when (val wrapper = options.dxwrapper.trim()) {
+            DXWRAPPER_WINED3D_GL, DXWRAPPER_WINED3D_GDI -> {
+                put(EXTRA_DXWRAPPER, "wined3d")
+                val renderer = if (wrapper == DXWRAPPER_WINED3D_GDI) "gdi" else "gl"
+                // WineD3D uses the first config slot; this replaces the whole container config.
+                overrides.put(OVERRIDE_DXWRAPPER_CONFIG, "renderer=$renderer")
+            }
+            "" -> Unit
+            else -> put(EXTRA_DXWRAPPER, wrapper)
+        }
         options.screenSize.trim().takeIf { it.isNotEmpty() }?.let { put(EXTRA_SCREEN_SIZE, it) }
         options.lcAll.trim().takeIf { it.isNotEmpty() }?.let { put(EXTRA_LC_ALL, it) }
         options.tz.trim().takeIf { it.isNotEmpty() }?.let { put(EXTRA_TZ, it) }
         options.box64Preset.trim().takeIf { it.isNotEmpty() }?.let {
-            put(EXTRA_OVERRIDES, """{"$OVERRIDE_BOX64_PRESET":"$it"}""")
+            overrides.put(OVERRIDE_BOX64_PRESET, it)
         }
+        if (overrides.length() > 0) put(EXTRA_OVERRIDES, overrides.toString())
         if (options.save) put(EXTRA_SAVE, true)
     }
 }

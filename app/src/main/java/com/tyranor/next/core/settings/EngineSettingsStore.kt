@@ -3,6 +3,7 @@ package com.tyranor.next.core.settings
 import android.content.Context
 import com.core.engine.EnginePrefs
 import com.core.engine.LaunchContract
+import com.tyranor.next.core.engine.external.WinlatorContract
 import org.json.JSONObject
 
 /**
@@ -354,7 +355,11 @@ object EngineSettingsStore {
         "vortek,gladio",
     )
 
-    val WINLATOR_DXWRAPPERS: Set<String> = linkedSetOf("", "dxvk", "wined3d")
+    val WINLATOR_DXWRAPPERS: Set<String> = linkedSetOf(
+        "", "dxvk", "wined3d",
+        WinlatorContract.DXWRAPPER_WINED3D_GL,
+        WinlatorContract.DXWRAPPER_WINED3D_GDI,
+    )
 
     val WINLATOR_BOX64_PRESETS: Set<String> = linkedSetOf(
         "",
@@ -900,6 +905,7 @@ object EngineSettingsStore {
         return t.takeIf { it in WINLATOR_GRAPHICS_DRIVERS } ?: ""
     }
 
+    /** 接受既有 wrapper 和 App 内部 GL/GDI 预设；未知值回退为空串，不下发覆盖。 */
     fun normalizeWinlatorDxWrapper(v: String?): String =
         v?.trim()?.lowercase()?.takeIf { it in WINLATOR_DXWRAPPERS } ?: ""
 
