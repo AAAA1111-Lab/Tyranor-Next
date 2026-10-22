@@ -414,6 +414,12 @@
     <string name="engine_settings_winlator_follow_container">Follow container config</string>
     <string name="engine_settings_winlator_container_id_title">Container ID</string>
     <string name="engine_settings_winlator_container_id_summary">0 or empty = auto (last used / only / first container)</string>
+    <string name="engine_settings_winlator_mode_title">Run mode</string>
+    <string name="engine_settings_winlator_mode_global">Follow global</string>
+    <string name="engine_settings_winlator_mode_container">Follow container</string>
+    <string name="engine_settings_winlator_mode_custom">Custom</string>
+    <string name="engine_settings_winlator_global_entry">View or edit Winlator global settings</string>
+    <string name="engine_settings_winlator_global_entry_summary">Open Winlator external launch in engine settings</string>
     <string name="engine_settings_winlator_container_name_title">Container name</string>
     <string name="engine_settings_winlator_container_name_summary">Empty = auto; container ID takes precedence over the name</string>
     <string name="engine_settings_winlator_graphics_driver_title">Graphics driver</string>

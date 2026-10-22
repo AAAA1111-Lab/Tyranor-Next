@@ -414,6 +414,12 @@
     <string name="engine_settings_winlator_follow_container">コンテナ設定に従う</string>
     <string name="engine_settings_winlator_container_id_title">コンテナ ID</string>
     <string name="engine_settings_winlator_container_id_summary">0 または空欄 = 自動（最近使用 / 唯一 / 最初のコンテナ）</string>
+    <string name="engine_settings_winlator_mode_title">実行モード</string>
+    <string name="engine_settings_winlator_mode_global">全体設定に従う</string>
+    <string name="engine_settings_winlator_mode_container">コンテナ設定に従う</string>
+    <string name="engine_settings_winlator_mode_custom">カスタム</string>
+    <string name="engine_settings_winlator_global_entry">Winlator の全体設定を表示・変更</string>
+    <string name="engine_settings_winlator_global_entry_summary">エンジン設定の Winlator 外部起動を開く</string>
     <string name="engine_settings_winlator_container_name_title">コンテナ名</string>
     <string name="engine_settings_winlator_container_name_summary">空欄 = 自動。コンテナ ID がコンテナ名より優先されます</string>
     <string name="engine_settings_winlator_graphics_driver_title">グラフィックドライバ</string>

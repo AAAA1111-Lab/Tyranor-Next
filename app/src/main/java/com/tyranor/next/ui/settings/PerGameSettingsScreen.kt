@@ -531,7 +531,9 @@ fun PerGameSettingsScreen(game: ScanGame) {
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_LC_ALL, winlatorLcAll)
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_TZ, winlatorTz)
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_BOX64_PRESET, winlatorBox64Preset)
-        PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_WINLATOR_SAVE, winlatorSave)
+        if (winlatorMode == PerGameSettingsStore.WINLATOR_MODE_CUSTOM) {
+            PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_WINLATOR_SAVE, winlatorSave)
+        }
         if (winlatorModeTouched) {
             PerGameSettingsStore.setWinlatorMode(ctx, gid, winlatorMode)
         }
@@ -1309,12 +1311,17 @@ fun PerGameSettingsScreen(game: ScanGame) {
                             override = winlatorContainerId,
                             hint = stringResource(R.string.engine_settings_winlator_container_id_summary),
                             sanitize = { it.filter { ch -> ch.isDigit() }.take(6) },
+                            // 容器模式不读全局容器值：留空即交给 Winlator 的回退链，不能显示成「跟随全局」。
+                            nullSummary = stringResource(R.string.engine_settings_winlator_mode_container),
+                            clearLabel = stringResource(R.string.engine_settings_winlator_mode_container),
                         ) { winlatorContainerId = it }
                         OverrideText(
                             label = stringResource(R.string.engine_settings_winlator_container_name_title),
                             globalValue = globalWinlator.containerName,
                             override = winlatorContainerName,
                             hint = stringResource(R.string.engine_settings_winlator_container_name_summary),
+                            nullSummary = stringResource(R.string.engine_settings_winlator_mode_container),
+                            clearLabel = stringResource(R.string.engine_settings_winlator_mode_container),
                         ) { winlatorContainerName = it }
                     }
                 }
@@ -1658,12 +1665,14 @@ private fun OverrideText(
     sanitize: ((String) -> String)? = null,
     allowEmpty: Boolean = true,
     validate: (String) -> Boolean = { true },
+    nullSummary: String? = null,
+    clearLabel: String? = null,
     onSet: (String?) -> Unit,
 ) {
     var showDialog by remember { mutableStateOf(false) }
     val emptyLabel = stringResource(R.string.engine_settings_winlator_follow_container)
     val summary = if (override == null) {
-        stringResource(R.string.engine_settings_follow_global_with_value, globalValue.ifBlank { emptyLabel })
+        nullSummary ?: stringResource(R.string.engine_settings_follow_global_with_value, globalValue.ifBlank { emptyLabel })
     } else {
         override.ifBlank { emptyLabel }
     }
@@ -1710,7 +1719,7 @@ private fun OverrideText(
             dismissButton = {
                 Row {
                     DialogTextButton(
-                        text = stringResource(R.string.engine_settings_follow_global),
+                        text = clearLabel ?: stringResource(R.string.engine_settings_follow_global),
                         onClick = { onSet(null); showDialog = false },
                     )
                     DialogTextButton(
