@@ -419,7 +419,7 @@
     <string name="engine_settings_winlator_mode_container">跟随容器</string>
     <string name="engine_settings_winlator_mode_custom">自定义</string>
     <string name="engine_settings_winlator_global_entry">查看/修改 Winlator 全局设置</string>
-    <string name="engine_settings_winlator_global_entry_summary">打开引擎设置中的 Winlator外置启动</string>
+    <string name="engine_settings_winlator_global_entry_summary">打开引擎设置中的 Winlator 外置启动</string>
     <string name="engine_settings_winlator_container_name_title">容器名</string>
     <string name="engine_settings_winlator_container_name_summary">留空 = 自动；容器 ID 优先于容器名</string>
     <string name="engine_settings_winlator_graphics_driver_title">图形驱动</string>
