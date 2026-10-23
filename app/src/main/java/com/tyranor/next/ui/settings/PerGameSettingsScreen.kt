@@ -22,6 +22,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -389,7 +390,7 @@ fun PerGameSettingsScreen(game: ScanGame) {
     val globalXs4Joypad = EngineSettingsStore.getXs4Joypad(ctx)
     val globalXs4Msgskip = EngineSettingsStore.getXs4MsgskipDelay(ctx)
     // 从「Winlator 全局设置」返回时重新读取：否则自定义模式的「跟随全局」摘要会停在进入前的旧值。
-    var globalWinlatorRevision by remember { mutableStateOf(0) }
+    var globalWinlatorRevision by remember { mutableIntStateOf(0) }
     val globalWinlator = remember(globalWinlatorRevision) { EngineSettingsStore.loadWinlator(ctx) }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
