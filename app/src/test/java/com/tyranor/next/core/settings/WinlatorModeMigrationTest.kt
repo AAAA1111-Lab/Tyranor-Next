@@ -74,4 +74,12 @@ class WinlatorModeMigrationTest {
         val json = buildClearedParams(PerGameSettingsStore.F_WINLATOR_SAVE to true)
         assertEquals(PerGameSettingsStore.WINLATOR_MODE_CONTAINER, infer(json))
     }
+
+    @Test
+    fun clearedParametersWithContainerFieldStillFollowContainer() {
+        // 六个参数全空是「跟随容器」的强信号：容器 ID/名称只作为容器模式的覆盖值，
+        // 不能把记录判成自定义，否则 save 会继承全局值、失去 1.61 的清空语义。
+        val json = buildClearedParams(PerGameSettingsStore.F_WINLATOR_CONTAINER_ID to "3")
+        assertEquals(PerGameSettingsStore.WINLATOR_MODE_CONTAINER, infer(json))
+    }
 }

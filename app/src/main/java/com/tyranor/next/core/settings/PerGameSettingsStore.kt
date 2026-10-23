@@ -328,15 +328,17 @@ object PerGameSettingsStore {
         val presentParams = WINLATOR_OVERRIDE_FIELDS.filter { json.has(it) }
         val hasNonEmptyParam = presentParams.any { json.optString(it).isNotEmpty() }
         if (hasNonEmptyParam) return WINLATOR_MODE_CUSTOM
-        if (json.has(F_WINLATOR_CONTAINER_ID) || json.has(F_WINLATOR_CONTAINER_NAME)) {
-            return WINLATOR_MODE_CUSTOM
-        }
+        // 六个参数字段全空是「跟随容器」的强信号，必须优先于单独出现的容器字段判断：
+        // 这类记录在 1.61 里本来就走容器基线，若判成 custom 会把 save 继承成全局值。
         if (presentParams.isNotEmpty()) {
             return if (presentParams.size == WINLATOR_OVERRIDE_FIELDS.size) {
                 WINLATOR_MODE_CONTAINER
             } else {
                 WINLATOR_MODE_CUSTOM
             }
+        }
+        if (json.has(F_WINLATOR_CONTAINER_ID) || json.has(F_WINLATOR_CONTAINER_NAME)) {
+            return WINLATOR_MODE_CUSTOM
         }
         // save 是真实的逐游戏覆盖（仅「自定义」模式写入）：只有它一条的旧记录不能回落到全局，
         // 否则会丢掉玩家原有的「写回容器配置」。六个参数字段全空 = 跟随容器的语义已在上方先行返回。
