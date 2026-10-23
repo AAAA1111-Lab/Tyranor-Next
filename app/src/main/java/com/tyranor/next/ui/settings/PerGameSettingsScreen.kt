@@ -400,6 +400,12 @@ fun PerGameSettingsScreen(game: ScanGame) {
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
+    // 只覆盖容器名时 mergeWinlator 会把生效 ID 置 0，摘要必须按生效值显示，否则和实际启动不一致。
+    val winlatorEffectiveContainerIdLabel = when {
+        winlatorContainerId == null && !winlatorContainerName.isNullOrBlank() -> "0"
+        globalWinlator.containerId > 0 -> globalWinlator.containerId.toString()
+        else -> ""
+    }
     val globalPpssppVersion = EngineSettingsStore.getPpssppVersion(ctx)
     val globalWebShellPort = EngineSettingsStore.getWebShellPort(ctx)
     val ppssppVersionMap = ppssppVersionOptionsMap()
@@ -1324,7 +1330,7 @@ fun PerGameSettingsScreen(game: ScanGame) {
                     SectionCard("Winlator") {
                         OverrideText(
                             label = stringResource(R.string.engine_settings_winlator_container_id_title),
-                            globalValue = if (globalWinlator.containerId > 0) globalWinlator.containerId.toString() else "",
+                            globalValue = winlatorEffectiveContainerIdLabel,
                             override = winlatorContainerId,
                             hint = stringResource(R.string.engine_settings_winlator_container_id_summary),
                             sanitize = { it.filter { ch -> ch.isDigit() }.take(6) },
@@ -1345,7 +1351,7 @@ fun PerGameSettingsScreen(game: ScanGame) {
                     SectionCard("Winlator") {
                         OverrideText(
                             label = stringResource(R.string.engine_settings_winlator_container_id_title),
-                            globalValue = if (globalWinlator.containerId > 0) globalWinlator.containerId.toString() else "",
+                            globalValue = winlatorEffectiveContainerIdLabel,
                             override = winlatorContainerId,
                             hint = stringResource(R.string.engine_settings_winlator_container_id_summary),
                             sanitize = { it.filter { ch -> ch.isDigit() }.take(6) },
