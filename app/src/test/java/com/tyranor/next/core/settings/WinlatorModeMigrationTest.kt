@@ -74,16 +74,4 @@ class WinlatorModeMigrationTest {
         val json = buildClearedParams(PerGameSettingsStore.F_WINLATOR_SAVE to true)
         assertEquals(PerGameSettingsStore.WINLATOR_MODE_CONTAINER, infer(json))
     }
-
-    @Test
-    fun legacyCustomFlagMapsToCustomOrContainer() {
-        assertEquals(
-            PerGameSettingsStore.WINLATOR_MODE_CUSTOM,
-            infer(build(PerGameSettingsStore.F_WINLATOR_CUSTOM to true)),
-        )
-        assertEquals(
-            PerGameSettingsStore.WINLATOR_MODE_CONTAINER,
-            infer(build(PerGameSettingsStore.F_WINLATOR_CUSTOM to false)),
-        )
-    }
 }

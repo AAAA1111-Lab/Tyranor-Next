@@ -259,24 +259,33 @@ object EngineSettingsResolver {
                 PerGameSettingsStore.toRenPyOverride(override),
             ),
             winlator = run {
+                val global = EngineSettingsStore.loadWinlator(app)
                 val winlatorOverride = PerGameSettingsStore.toWinlatorOverride(override)
-                when (PerGameSettingsStore.getWinlatorMode(app, game.uri)) {
-                    PerGameSettingsStore.WINLATOR_MODE_GLOBAL ->
-                        EngineSettingsStore.loadWinlator(app)
-
-                    PerGameSettingsStore.WINLATOR_MODE_CUSTOM ->
+                // 模式推断复用本函数已加载的覆盖 JSON，避免 getWinlatorMode 再走一次阻塞读。
+                when (PerGameSettingsStore.inferWinlatorMode(override)) {
+                    PerGameSettingsStore.WINLATOR_MODE_CONTAINER ->
+                        // 1.61 语义：容器模式以全局设置为基线，只清空六个参数与 save；
+                        // 容器 ID / 名称先继承全局，再由逐游戏值覆盖。
                         EffectiveEngineSettings.mergeWinlator(
-                            EngineSettingsStore.loadWinlator(app),
-                            winlatorOverride,
+                            global,
+                            WinlatorOverride(
+                                containerId = winlatorOverride?.containerId,
+                                containerName = winlatorOverride?.containerName,
+                                graphicsDriver = "",
+                                dxwrapper = "",
+                                screenSize = "",
+                                lcAll = "",
+                                tz = "",
+                                box64Preset = "",
+                                save = false,
+                            ),
                         )
 
-                    else -> EffectiveEngineSettings.mergeWinlator(
-                        EngineSettingsStore.Winlator(),
-                        WinlatorOverride(
-                            containerId = winlatorOverride?.containerId,
-                            containerName = winlatorOverride?.containerName,
-                        ),
-                    )
+                    PerGameSettingsStore.WINLATOR_MODE_CUSTOM ->
+                        EffectiveEngineSettings.mergeWinlator(global, winlatorOverride)
+
+                    // 显式 GLOBAL 与任何未知值都按全局处理，不静默落入容器语义。
+                    else -> global
                 }
             },
         )

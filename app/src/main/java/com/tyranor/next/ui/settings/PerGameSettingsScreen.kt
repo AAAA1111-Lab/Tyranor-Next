@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,6 +33,9 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.tyranor.next.R
 import androidx.compose.ui.graphics.Color as ComposeColor
 import com.tyranor.next.core.engine.EngineType
@@ -63,6 +67,7 @@ import com.tyranor.next.ui.common.DialogTextButton
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.foundation.LocalIndication
 import com.tyranor.next.ui.common.AppNavItem
+import com.tyranor.next.ui.game.startActivityWithPageTransition
 import com.tyranor.next.ui.common.AppSearchField
 import com.tyranor.next.ui.common.AppTopBar
 import com.tyranor.next.ui.common.TopBarIcon
@@ -383,7 +388,17 @@ fun PerGameSettingsScreen(game: ScanGame) {
     val globalXs4FontMincho = EngineSettingsStore.getXs4FontMinchoPath(ctx)
     val globalXs4Joypad = EngineSettingsStore.getXs4Joypad(ctx)
     val globalXs4Msgskip = EngineSettingsStore.getXs4MsgskipDelay(ctx)
-    val globalWinlator = remember { EngineSettingsStore.loadWinlator(ctx) }
+    // 从「Winlator 全局设置」返回时重新读取：否则自定义模式的「跟随全局」摘要会停在进入前的旧值。
+    var globalWinlatorRevision by remember { mutableStateOf(0) }
+    val globalWinlator = remember(globalWinlatorRevision) { EngineSettingsStore.loadWinlator(ctx) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) globalWinlatorRevision++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     val globalPpssppVersion = EngineSettingsStore.getPpssppVersion(ctx)
     val globalWebShellPort = EngineSettingsStore.getWebShellPort(ctx)
     val ppssppVersionMap = ppssppVersionOptionsMap()
@@ -1292,7 +1307,8 @@ fun PerGameSettingsScreen(game: ScanGame) {
                                 title = stringResource(R.string.engine_settings_winlator_global_entry),
                                 summary = stringResource(R.string.engine_settings_winlator_global_entry_summary),
                                 onClick = {
-                                    ctx.startActivity(
+                                    startActivityWithPageTransition(
+                                        ctx,
                                         EngineSettingsActivity.createIntent(ctx, EngineSettingsKind.WINLATOR),
                                     )
                                 },
