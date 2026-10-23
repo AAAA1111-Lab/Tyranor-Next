@@ -1328,17 +1328,13 @@ fun PerGameSettingsScreen(game: ScanGame) {
                             override = winlatorContainerId,
                             hint = stringResource(R.string.engine_settings_winlator_container_id_summary),
                             sanitize = { it.filter { ch -> ch.isDigit() }.take(6) },
-                            // 容器模式不读全局容器值：留空即交给 Winlator 的回退链，不能显示成「跟随全局」。
-                            nullSummary = stringResource(R.string.engine_settings_winlator_mode_container),
-                            clearLabel = stringResource(R.string.engine_settings_winlator_mode_container),
+                            // 容器模式下这两项留空 = 继承全局容器（解析器以全局为基线），沿用默认摘要即可。
                         ) { winlatorContainerId = it }
                         OverrideText(
                             label = stringResource(R.string.engine_settings_winlator_container_name_title),
                             globalValue = globalWinlator.containerName,
                             override = winlatorContainerName,
                             hint = stringResource(R.string.engine_settings_winlator_container_name_summary),
-                            nullSummary = stringResource(R.string.engine_settings_winlator_mode_container),
-                            clearLabel = stringResource(R.string.engine_settings_winlator_mode_container),
                         ) { winlatorContainerName = it }
                     }
                 }
@@ -1682,14 +1678,12 @@ private fun OverrideText(
     sanitize: ((String) -> String)? = null,
     allowEmpty: Boolean = true,
     validate: (String) -> Boolean = { true },
-    nullSummary: String? = null,
-    clearLabel: String? = null,
     onSet: (String?) -> Unit,
 ) {
     var showDialog by remember { mutableStateOf(false) }
     val emptyLabel = stringResource(R.string.engine_settings_winlator_follow_container)
     val summary = if (override == null) {
-        nullSummary ?: stringResource(R.string.engine_settings_follow_global_with_value, globalValue.ifBlank { emptyLabel })
+        stringResource(R.string.engine_settings_follow_global_with_value, globalValue.ifBlank { emptyLabel })
     } else {
         override.ifBlank { emptyLabel }
     }
@@ -1736,7 +1730,7 @@ private fun OverrideText(
             dismissButton = {
                 Row {
                     DialogTextButton(
-                        text = clearLabel ?: stringResource(R.string.engine_settings_follow_global),
+                        text = stringResource(R.string.engine_settings_follow_global),
                         onClick = { onSet(null); showDialog = false },
                     )
                     DialogTextButton(

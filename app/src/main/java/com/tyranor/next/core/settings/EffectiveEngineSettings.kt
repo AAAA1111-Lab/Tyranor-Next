@@ -199,10 +199,17 @@ object EffectiveEngineSettings {
         override: WinlatorOverride?,
     ): EngineSettingsStore.Winlator {
         if (override == null) return global
+        // 只覆盖容器名时不能再继承全局 ID：协议规定 container_id 优先于 container_name，
+        // 继承下来的 ID 会让逐游戏的名称覆盖失效。
+        val nameOnlyOverride = override.containerId == null && !override.containerName.isNullOrBlank()
         return global.copy(
-            containerId = override.containerId?.let {
-                it.trim().filter(Char::isDigit).toIntOrNull()?.coerceAtLeast(0) ?: 0
-            } ?: global.containerId,
+            containerId = when {
+                override.containerId != null ->
+                    override.containerId.trim().filter(Char::isDigit).toIntOrNull()?.coerceAtLeast(0) ?: 0
+
+                nameOnlyOverride -> 0
+                else -> global.containerId
+            },
             containerName = override.containerName?.trim() ?: global.containerName,
             graphicsDriver = override.graphicsDriver?.let {
                 EngineSettingsStore.normalizeWinlatorGraphicsDriver(it)
