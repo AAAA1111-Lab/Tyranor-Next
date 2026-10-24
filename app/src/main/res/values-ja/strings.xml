@@ -421,6 +421,8 @@
     <string name="engine_settings_winlator_global_entry">Winlator の全体設定を表示・変更</string>
     <string name="engine_settings_winlator_global_entry_summary">エンジン設定の Winlator 外部起動を開く</string>
     <string name="engine_settings_winlator_container_id_auto_by_name">自動（コンテナ名が優先）</string>
+    <string name="engine_settings_winlator_auto">自動</string>
+    <string name="engine_settings_winlator_container_id_value">コンテナ %1$d</string>
     <string name="engine_settings_winlator_container_name_title">コンテナ名</string>
     <string name="engine_settings_winlator_container_name_summary">空欄 = 自動。コンテナ ID が優先され、名前のみ指定時は継承した ID をクリアします</string>
     <string name="engine_settings_winlator_graphics_driver_title">グラフィックドライバ</string>
