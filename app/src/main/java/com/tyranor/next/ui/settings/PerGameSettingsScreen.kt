@@ -401,14 +401,11 @@ fun PerGameSettingsScreen(game: ScanGame) {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     // 只覆盖容器名时 mergeWinlator 会把生效 ID 置 0，摘要必须按生效值显示，否则和实际启动不一致。
-    val winlatorAutoLabel = stringResource(R.string.engine_settings_winlator_auto)
     val winlatorAutoByContainerNameLabel =
         stringResource(R.string.engine_settings_winlator_container_id_auto_by_name)
     val winlatorEffectiveContainerIdLabel = when {
         winlatorContainerId == null && !winlatorContainerName.isNullOrBlank() -> winlatorAutoByContainerNameLabel
-        globalWinlator.containerId > 0 ->
-            stringResource(R.string.engine_settings_winlator_container_id_value, globalWinlator.containerId)
-
+        globalWinlator.containerId > 0 -> globalWinlator.containerId.toString()
         else -> ""
     }
     val globalPpssppVersion = EngineSettingsStore.getPpssppVersion(ctx)
@@ -1336,7 +1333,6 @@ fun PerGameSettingsScreen(game: ScanGame) {
                         OverrideText(
                             label = stringResource(R.string.engine_settings_winlator_container_id_title),
                             globalValue = winlatorEffectiveContainerIdLabel,
-                            emptyLabel = winlatorAutoLabel,
                             override = winlatorContainerId,
                             hint = stringResource(R.string.engine_settings_winlator_container_id_summary),
                             sanitize = { it.filter { ch -> ch.isDigit() }.take(6) },
@@ -1345,7 +1341,6 @@ fun PerGameSettingsScreen(game: ScanGame) {
                         OverrideText(
                             label = stringResource(R.string.engine_settings_winlator_container_name_title),
                             globalValue = globalWinlator.containerName,
-                            emptyLabel = winlatorAutoLabel,
                             override = winlatorContainerName,
                             hint = stringResource(R.string.engine_settings_winlator_container_name_summary),
                         ) { winlatorContainerName = it }
@@ -1359,7 +1354,6 @@ fun PerGameSettingsScreen(game: ScanGame) {
                         OverrideText(
                             label = stringResource(R.string.engine_settings_winlator_container_id_title),
                             globalValue = winlatorEffectiveContainerIdLabel,
-                            emptyLabel = winlatorAutoLabel,
                             override = winlatorContainerId,
                             hint = stringResource(R.string.engine_settings_winlator_container_id_summary),
                             sanitize = { it.filter { ch -> ch.isDigit() }.take(6) },
@@ -1367,7 +1361,6 @@ fun PerGameSettingsScreen(game: ScanGame) {
                         OverrideText(
                             label = stringResource(R.string.engine_settings_winlator_container_name_title),
                             globalValue = globalWinlator.containerName,
-                            emptyLabel = winlatorAutoLabel,
                             override = winlatorContainerName,
                             hint = stringResource(R.string.engine_settings_winlator_container_name_summary),
                         ) { winlatorContainerName = it }
@@ -1693,15 +1686,14 @@ private fun OverrideText(
     sanitize: ((String) -> String)? = null,
     allowEmpty: Boolean = true,
     validate: (String) -> Boolean = { true },
-    emptyLabel: String? = null,
     onSet: (String?) -> Unit,
 ) {
     var showDialog by remember { mutableStateOf(false) }
-    val resolvedEmptyLabel = emptyLabel ?: stringResource(R.string.engine_settings_winlator_follow_container)
+    val emptyLabel = stringResource(R.string.engine_settings_winlator_follow_container)
     val summary = if (override == null) {
-        stringResource(R.string.engine_settings_follow_global_with_value, globalValue.ifBlank { resolvedEmptyLabel })
+        stringResource(R.string.engine_settings_follow_global_with_value, globalValue.ifBlank { emptyLabel })
     } else {
-        override.ifBlank { resolvedEmptyLabel }
+        override.ifBlank { emptyLabel }
     }
     ArrowPreference(
         title = label,
