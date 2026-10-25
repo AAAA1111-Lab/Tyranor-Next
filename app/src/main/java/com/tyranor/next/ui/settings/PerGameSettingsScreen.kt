@@ -234,9 +234,12 @@ fun PerGameSettingsScreen(game: ScanGame) {
         }
     }
     // System35 / System4 生效存档路径展示：resolveSaveLocation 内含游戏目录解析与三级设置合并
-    // （磁盘 + DB 读），挂起在 IO 线程取结果，避免组合期阻塞
+    // （磁盘 + DB 读），挂起在 IO 线程取结果，避免组合期阻塞。
+    // KRKR 亦需加载：SD 卡镜像强制接管存档路径时，独立存档开关要置灰并显示引导。
     LaunchedEffect(gid) {
-        if (game.engine != EngineType.XSYS35 && game.engine != EngineType.XSYS4) return@LaunchedEffect
+        if (game.engine != EngineType.XSYS35 && game.engine != EngineType.XSYS4 && game.engine != EngineType.KIRIKIRI) {
+            return@LaunchedEffect
+        }
         saveLocation = withContext(Dispatchers.IO) {
             GameSaveManager(ctx).resolveSaveLocation(game)
         }
@@ -630,9 +633,24 @@ fun PerGameSettingsScreen(game: ScanGame) {
             ) {
                 when (game.engine) {
 	                    EngineType.KIRIKIRI -> {
+                        // SD 卡镜像强制接管存档路径：独立存档开关不生效，置灰并显示引导
+                        val krMirrorForced = saveLocation?.mirrorForced == true
                         item {
                             SectionCard("KRKR") {
-                                OverrideSwitch(stringResource(R.string.engine_settings_scoped_save_dir), globalKrScoped, krScoped) { krScoped = it }
+                                OverrideSwitch(
+                                    stringResource(R.string.engine_settings_scoped_save_dir),
+                                    globalKrScoped,
+                                    krScoped,
+                                    enabled = !krMirrorForced,
+                                ) { krScoped = it }
+                                if (krMirrorForced) {
+                                    Text(
+                                        stringResource(R.string.krkr_mirror_save_forced_note),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                                    )
+                                }
                                 OverrideSwitch(
                                     stringResource(R.string.engine_settings_skip_startup_dialogs),
                                     globalKrSkipStartupDialogs,

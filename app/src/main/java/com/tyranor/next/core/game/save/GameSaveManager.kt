@@ -35,6 +35,8 @@ class GameSaveManager(private val context: Context) {
         val directory: File?,
         val description: String,
         val available: Boolean,
+        /** 存档路径被 SD 镜像强制接管（与独立存档开关无关），UI 据此置灰开关并显示引导。 */
+        val mirrorForced: Boolean = false,
     )
 
     fun resolveSaveLocation(game: ScanGame): SaveLocation {
@@ -80,6 +82,7 @@ class GameSaveManager(private val context: Context) {
                         File(bridge.KrSafMirror.mirrorRootFor(appContext, game.uri, root, game.title), "savedata"),
                         text(R.string.save_location_krkr_sd_mirror),
                         true,
+                        mirrorForced = true,
                     )
                 }
                 if (settings.krScopedSaveDir) {
