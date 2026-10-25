@@ -1,5 +1,6 @@
 package com.tyranor.next.ui.settings
 
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -236,12 +237,23 @@ fun PerGameSettingsScreen(game: ScanGame) {
     // System35 / System4 生效存档路径展示：resolveSaveLocation 内含游戏目录解析与三级设置合并
     // （磁盘 + DB 读），挂起在 IO 线程取结果，避免组合期阻塞。
     // KRKR 亦需加载：SD 卡镜像强制接管存档路径时，独立存档开关要置灰并显示引导。
+    // 镜像判定未就绪（null）前开关保持禁用，避免首帧把 SD 游戏误判为机内存储。
+    var saveLocationReady by remember(gid) { mutableStateOf(false) }
     LaunchedEffect(gid) {
         if (game.engine != EngineType.XSYS35 && game.engine != EngineType.XSYS4 && game.engine != EngineType.KIRIKIRI) {
+            saveLocationReady = true
             return@LaunchedEffect
         }
-        saveLocation = withContext(Dispatchers.IO) {
-            GameSaveManager(ctx).resolveSaveLocation(game)
+        try {
+            saveLocation = withContext(Dispatchers.IO) {
+                GameSaveManager(ctx).resolveSaveLocation(game)
+            }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (t: Throwable) {
+            Log.w("PerGameSettings", "resolve save location failed gid=$gid", t)
+        } finally {
+            saveLocationReady = true
         }
     }
     var rpgmOverride by remember(gid) {
@@ -633,7 +645,8 @@ fun PerGameSettingsScreen(game: ScanGame) {
             ) {
                 when (game.engine) {
 	                    EngineType.KIRIKIRI -> {
-                        // SD 卡镜像强制接管存档路径：独立存档开关不生效，置灰并显示引导
+                        // SD 卡镜像强制接管存档路径：独立存档开关不生效，置灰并显示引导；
+                        // 镜像判定加载完成前保持禁用，避免首帧误判为机内存储
                         val krMirrorForced = saveLocation?.mirrorForced == true
                         item {
                             SectionCard("KRKR") {
@@ -641,7 +654,7 @@ fun PerGameSettingsScreen(game: ScanGame) {
                                     stringResource(R.string.engine_settings_scoped_save_dir),
                                     globalKrScoped,
                                     krScoped,
-                                    enabled = !krMirrorForced,
+                                    enabled = saveLocationReady && !krMirrorForced,
                                 ) { krScoped = it }
                                 if (krMirrorForced) {
                                     Text(

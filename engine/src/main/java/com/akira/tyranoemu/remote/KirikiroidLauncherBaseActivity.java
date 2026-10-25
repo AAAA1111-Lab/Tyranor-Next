@@ -524,6 +524,14 @@ public abstract class KirikiroidLauncherBaseActivity extends KR2Activity {
         NativeBridge.configurePatchOverlay(patchOverlayTarget, patchOverlayPath);
         NativeBridge.configureSteamConfigOverlay(steamConfigOverlayTarget, steamConfigOverlayPath);
 
+        // Mirror-only prefix (base for relative-path rewriting) must be refreshed on every
+        // launch, including the early-exit path below: gMirrorPrefix is a process-level
+        // static in krkr_bridge_v2.so, so a second KR activity in the same process (another
+        // kernel variant, "launch kr2 native") would otherwise inherit the previous game's
+        // mirror prefix and misroute internal-storage relative paths.
+        String mirrorRootForPrefix = normalizeKrPath(intent.getStringExtra(LaunchContract.SAF_MIRROR_ROOT));
+        NativeBridge.setMirrorPrefix(mirrorRootForPrefix.toLowerCase(Locale.ROOT));
+
         if (!scopedSaveDir && !safFileFallback && !patchOverlay && !steamConfigOverlay) {
             Log.i(TAG, "native interceptor skipped: save redirect, SAF fallback and read-only overlay disabled");
             return;
@@ -563,12 +571,6 @@ public abstract class KirikiroidLauncherBaseActivity extends KR2Activity {
         if (prefix != null) {
             try {
                 NativeBridge.interceptor(prefix);
-                // SD 镜像启动时同步设置镜像专属前缀（相对路径改写的基准）；
-                // 内置存储启动不设置，避免相对路径被错拼到存储卷根下
-                String mirrorRootForPrefix = normalizeKrPath(intent.getStringExtra(LaunchContract.SAF_MIRROR_ROOT));
-                if (!mirrorRootForPrefix.isEmpty()) {
-                    NativeBridge.setMirrorPrefix(mirrorRootForPrefix.toLowerCase(Locale.ROOT));
-                }
                 int relocateStatus = NativeBridge.relocate();
                 boolean relocated = relocateStatus != 0;
                 recordBridgeDiagnostic("relocate=" + relocateStatus + " prefix=" + prefix

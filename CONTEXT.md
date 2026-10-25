@@ -214,8 +214,8 @@ _Avoid_: 图片加载器（通用概念不入表）
 _Avoid_: 存档路径
 
 **SD 强制镜像存档（Mirror-Forced Save）**:
-可移动存储上的 Kirikiri 游戏，存档路径被强制接管到应用专属镜像目录（KrSafMirror 镜像根下的 savedata）的规则：与独立存档开关无关（EngineLauncher 以 `effectiveScoped = scoped || safMirror != null` 下发），游戏目录不生成 savedata；镜像构建跳过源 `savedata` 子树，源存档只能经存档管理导入。UI 依 `SaveLocation.mirrorForced` 置灰无关开关并显示引导。
-_Avoid_: SD 卡存档互通、自动迁移
+可移动存储上的 Kirikiri 游戏，存档路径被强制接管到应用专属镜像目录（KrSafMirror 镜像根下的 savedata）的规则：与独立存档开关无关（EngineLauncher 以 `effectiveScoped = scoped || safMirror != null` 下发），游戏目录不生成 savedata；镜像构建跳过源 `savedata` 子树，源存档只能经存档管理导入。UI 依 `SaveLocation.mirrorForced` 置灰无关开关并显示引导。**与「存档镜像（Save Mirror，ZIP 备份）」无关**——此处"镜像"指 SAF 文件镜像目录，非 zip 备份能力；用户可见文案以「SAF 镜像目录」语境呈现。
+_Avoid_: SD 卡存档互通、自动迁移、与存档镜像（ZIP）混用"镜像"一词
 
 **存档镜像（Save Mirror）**:
 将游戏存档目录导出 / 导入为 zip 的备份能力（exportToZip / importFromZip），含文件数与体积上限保护。

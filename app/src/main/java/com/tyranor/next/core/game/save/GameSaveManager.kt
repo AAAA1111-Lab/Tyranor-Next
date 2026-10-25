@@ -544,7 +544,9 @@ class GameSaveManager(private val context: Context) {
             if (exclude(child.name)) return@forEach
             when {
                 child.isDirectory -> collectFiles(child, out, exclude)
-                child.isFile -> out.add(child)
+                // 0 字节文件是旧版镜像的 savedata 占位残骸（无内容、导出为空壳），
+                // 不计入存档列表；真实存档（含引擎写入的 savecheck 等）均有内容
+                child.isFile && child.length() > 0L -> out.add(child)
             }
         }
     }

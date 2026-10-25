@@ -98,9 +98,9 @@ JavaVM* gVm = nullptr;
 std::mutex gMutex;
 GameApi gGame;
 std::string gPathPrefix;
-// SAF 镜像专属前缀：仅 SD 镜像启动时设置（gPathPrefix 在内置存储 scoped/overlay 场景
-// 会是存储卷前缀，不能用于相对路径改写，否则相对路径会被错拼到卷根下）。
-// 原子标志供高频文件钩子做无锁快路径判断
+// Mirror-only prefix: set for SD mirror launches only. gPathPrefix is a storage-volume
+// prefix in internal-storage scoped/overlay scenarios; using it for relative-path rewriting
+// would misjoin paths under the volume root. The atomic flag gives hot hooks a lock-free fast path.
 std::string gMirrorPrefix;
 std::atomic<bool> gMirrorActive{false};
 OpenFn gOriginalOpen = nullptr;
@@ -406,14 +406,15 @@ bool pathMatchesPrefix(const char* path) {
             && std::strncmp(normalized, gPathPrefix.c_str() + 1, gPathPrefix.size() - 1) == 0;
 }
 
-// krkr 的插件/脚本层以相对路径读写游戏文件（引擎 CWD = 游戏根 = 镜像根）。
-// 相对路径不匹配镜像前缀时会绕开 Java 桥、直接命中镜像里的 0 字节占位文件——
-// 插件签名(.dll.sig)与 DLL 内容读到全零，引擎判插件无效（issue #129 的
-// “SD 卡 Krkr 游戏启动失败、机内存储正常”）。把相对路径补全为 CWD（回落镜像
-// 前缀）下的绝对路径后再走统一路由；仅镜像启动时生效，机内存储走原快路径。
+// The krkr plugin/script layer opens game files with paths relative to the game root
+// (engine CWD). Relative paths never matched the absolute mirror prefix, bypassed the
+// Java bridge and hit the 0-byte placeholders directly: plugin signatures and DLLs read
+// as all zeros and the engine dropped the plugins (issue #129: SD-card games fail while
+// the same copies boot from internal storage). Resolve relative paths against the CWD
+// (falling back to "." if getcwd fails) before the usual routing. Fast path: non-mirror
+// launches skip all rewriting and return the raw path without taking the lock.
 std::string resolveEnginePath(const char* path) {
     if (path == nullptr) return {};
-    // 快路径：非镜像启动（gMirrorPrefix 为空）不做任何改写，无锁直返原文
     if (!gMirrorActive.load(std::memory_order_acquire)) {
         return std::string(path);
     }
@@ -421,17 +422,17 @@ std::string resolveEnginePath(const char* path) {
     const bool hadPath = !p.empty();
     if (std::strncmp(p.c_str(), "file://", 7) == 0) p.erase(0, 7);
     while (std::strncmp(p.c_str(), "./", 2) == 0) p.erase(0, 2);
-    // CWD 即改写基准：引擎启动时 CWD=镜像根；若运行中 chdir，相对路径按真实 CWD
-    // 解析（比固定前缀更正确）。getcwd 失败回落 "."（等价 CWD 语义），不回读
-    // gMirrorPrefix——该字符串由 setMirrorPrefix 在锁内改写，这里无锁不能跨线程读
+    // The CWD is the rewrite base: CWD equals the mirror root at startup, and if the
+    // engine chdirs later, relative paths resolve against the real CWD. getcwd failure
+    // falls back to "." instead of reading gMirrorPrefix outside its lock.
     char cwdBuf[PATH_MAX];
     const std::string base = getcwd(cwdBuf, sizeof(cwdBuf)) != nullptr
             ? std::string(cwdBuf) : std::string(".");
     if (p.empty()) {
-        // "./" 清理后为空：返回基准目录（或 "."）保持“当前目录”语义，
-        // 避免把空路径传给 libc；真正空输入原样返回
+        // "./" reduced to empty: return the base directory to keep the current-directory
+        // semantics and avoid handing an empty path to libc; empty input passes through
         if (!hadPath) return p;
-        return base.empty() ? std::string(".") : base;
+        return base;
     }
     if (p[0] == '/') return p;
     if (base.empty()) return p;
@@ -562,9 +563,12 @@ std::string callJavaScopedSaveRedirect(const char* path) {
     return callJavaPathMethod(path, "redirectScopedSave");
 }
 
-// 镜像占位文件的真实尺寸（SAF 索引记录），未覆盖时返回 -1。
+// Cached JNI lookup for the hot metadataSize call: FindClass/GetStaticMethodID once,
+// the class is kept as a global ref (this library lives for the process lifetime).
 jlong callJavaMetadataSize(const char* path) {
     if (gVm == nullptr || path == nullptr) return -1;
+    static jclass cachedClass = nullptr;
+    static jmethodID cachedMethod = nullptr;
     JNIEnv* env = nullptr;
     bool attached = false;
     if (gVm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
@@ -573,17 +577,23 @@ jlong callJavaMetadataSize(const char* path) {
     }
 
     jlong size = -1;
-    jclass clazz = env->FindClass("bridge/NativeBridge");
-    if (clazz != nullptr) {
-        jmethodID method = env->GetStaticMethodID(clazz, "metadataSize", "(Ljava/lang/String;)J");
-        if (method != nullptr) {
-            jstring javaPath = env->NewStringUTF(path);
-            if (javaPath != nullptr) {
-                size = env->CallStaticLongMethod(clazz, method, javaPath);
-                env->DeleteLocalRef(javaPath);
+    if (cachedClass == nullptr || cachedMethod == nullptr) {
+        jclass local = env->FindClass("bridge/NativeBridge");
+        if (local != nullptr) {
+            jmethodID method = env->GetStaticMethodID(local, "metadataSize", "(Ljava/lang/String;)J");
+            if (method != nullptr) {
+                cachedClass = static_cast<jclass>(env->NewGlobalRef(local));
+                cachedMethod = method;
             }
+            env->DeleteLocalRef(local);
         }
-        env->DeleteLocalRef(clazz);
+    }
+    if (cachedClass != nullptr && cachedMethod != nullptr) {
+        jstring javaPath = env->NewStringUTF(path);
+        if (javaPath != nullptr) {
+            size = env->CallStaticLongMethod(cachedClass, cachedMethod, javaPath);
+            env->DeleteLocalRef(javaPath);
+        }
     }
     if (env->ExceptionCheck()) {
         env->ExceptionClear();
@@ -593,20 +603,21 @@ jlong callJavaMetadataSize(const char* path) {
     return size;
 }
 
-// SAF 镜像占位文件在磁盘上是 0 字节；引擎若按 stat 尺寸分配缓冲或匹配插件 DLL，
-// 会把真实文件当成空文件（插件加载失败/存档被判损坏）。stat 成功后用索引尺寸覆盖。
+// Mirror placeholders are 0 bytes on disk; engines that allocate buffers by stat size or
+// match plugin DLLs would treat them as empty (plugin load failures, broken saves).
+// Override st_size with the indexed size after a successful stat.
 template<typename StatStruct>
 void applyMirrorSizeOverride(const char* path, StatStruct* info) {
     if (info == nullptr) return;
-    // 快路径：非镜像启动（机内存储）没有索引可查，直接跳过 JNI
+    // Fast path: non-mirror launches have no index to query, skip the JNI entirely.
     if (!gMirrorActive.load(std::memory_order_acquire)) return;
-    // stat 是引擎高频调用：只有 0 字节常规文件才可能是占位，先过滤再发起 JNI 查询
+    // stat is a hot call: only 0-byte regular files can be placeholders, filter first.
     if (info->st_size != 0 || !S_ISREG(info->st_mode)) return;
     const jlong size = callJavaMetadataSize(path);
     if (size < 0) return;
     info->st_size = static_cast<decltype(info->st_size)>(size);
     info->st_blocks = static_cast<decltype(info->st_blocks)>((size + 511) / 512);
-    // 诊断探针：只打前 32 次覆盖，确认钩子链路后不再刷屏
+    // Diagnostic probe: log the first 32 overrides to verify the hook chain, then stay quiet.
     static std::atomic<int> overrideLogCount{0};
     const int seen = overrideLogCount.fetch_add(1);
     if (seen < 32) {
@@ -697,11 +708,11 @@ FILE* hookedFopen64(const char* path, const char* mode) {
     return hookFopenCommon(gOriginalFopen64, path, mode);
 }
 
-// freopen 语义：无论成败原流都会被关闭。镜像路由与 fopen 相同的优先级：
-// scoped 存档重定向 → Java open(SAF 真实内容) → open 重定向回退 → 原实现。
-// path 为 nullptr 时按 freopen(NULL, mode, stream) 的“仅改模式”语义原样转发。
-// 64 位变体与 32 位共用同一实现（共用 FreopenFn 签名与 gOriginalFreopen 回退）。
-// freopen 公共实现：original 由调用侧注入（freopen/freopen64 各自的 GOT 原始符号）。
+// freopen semantics: the original stream is closed whether the reopen succeeds or not.
+// Mirror routing mirrors fopen's priority: scoped save redirect → Java open (SAF content)
+// → open redirect fallback → original implementation. path == nullptr keeps the
+// freopen(NULL, mode, stream) mode-change-only semantics. The 64-bit variant shares this
+// implementation (both variants are hooked; each carries its own GOT original).
 FILE* hookedFreopenCommon(const char* path, const char* mode, FILE* stream, FreopenFn original);
 
 FILE* hookedFreopen(const char* path, const char* mode, FILE* stream) {
@@ -712,11 +723,12 @@ FILE* hookedFreopen64(const char* path, const char* mode, FILE* stream) {
     return hookedFreopenCommon(path, mode, stream, gOriginalFreopen64);
 }
 
-// freopen 公共实现：original 由调用侧注入（freopen/freopen64 各自的 GOT 原始符号）。
+// Common freopen implementation; `original` is the caller's GOT-original symbol
+// (freopen/freopen64 respectively).
 FILE* hookedFreopenCommon(const char* path, const char* mode, FILE* stream, FreopenFn original) {
     if (stream == nullptr) return nullptr;
     if (path == nullptr) {
-        // freopen(NULL, mode, stream)：“仅改模式、不换文件”的保留语义
+        // freopen(NULL, mode, stream): change the mode only, keep the file
         if (original == nullptr) {
             fclose(stream);
             return nullptr;
@@ -744,16 +756,17 @@ FILE* hookedFreopenCommon(const char* path, const char* mode, FILE* stream, Freo
     if (flags >= 0) {
         const int fd = callJavaOpen(p, flags);
         if (fd >= 0) {
-            // FILE* 身份保持方案（dup2 把 SAF fd 顶到原流的 fd 上）只在访问模式一致时可用：
-            // dup2 不会更新 FILE 的读写标志，mode 与流原模式不同时返回的 FILE* 会带旧模式，
-            // 读/写将失败。先用 fcntl(F_GETFL) 比对底层 fd 的访问模式。
+            // The dup2 scheme (punching the SAF fd over the stream's fd) is only valid
+            // when the access mode matches: dup2 does not update the FILE's read/write
+            // flags, so a mode mismatch would return a FILE* with stale flags. Compare
+            // the underlying fd access mode via fcntl(F_GETFL) first.
             const int target = fileno(stream);
             const int wantAccess = flags & O_ACCMODE;
             const int haveAccess = target >= 0 ? fcntl(target, F_GETFL) : -1;
             const bool accessMatches = haveAccess >= 0 && (haveAccess & O_ACCMODE) == wantAccess;
             if (accessMatches) {
-                // dup2 前先 fflush：把原流缓冲里的未落盘写冲到旧文件，避免静默丢失；
-                // dup2 成功后 clearerr 清掉旧流上的 EOF/错误标志
+                // fflush before dup2 flushes pending writes to the old file so they are
+                // not silently lost; clearerr afterwards drops stale EOF/error flags
                 if (fflush(stream) == 0 && dup2(fd, target) >= 0) {
                     close(fd);
                     clearerr(stream);
@@ -761,12 +774,17 @@ FILE* hookedFreopenCommon(const char* path, const char* mode, FILE* stream, Freo
                     return stream;
                 }
                 close(fd);
-                if (original == nullptr) return nullptr;
+                if (original == nullptr) {
+                    fclose(stream);
+                    return nullptr;
+                }
                 return original(p, mode, stream);
             }
-            // 模式不一致：不得落回占位路径（读到全零，回到本修复要解决的问题）。
-            // 经 /proc/self/fd/<fd> 用新 mode 重建 FILE——bionic 对 SAF/FUSE 打开的
-            // fd 支持 procfs reopen；失败（provider pipe 等场景）才回落占位路径
+            // Access mode mismatch: never fall back to the placeholder path (it reads
+            // all zeros, reintroducing the bug this fixes). Rebuild the FILE through
+            // /proc/self/fd/<fd> with the new mode — bionic supports procfs reopen for
+            // SAF/FUSE-backed fds. On failure (provider pipes etc.) return nullptr; the
+            // failed freopen already closed the original stream per C semantics.
             char fdPath[64];
             std::snprintf(fdPath, sizeof(fdPath), "/proc/self/fd/%d", fd);
             if (original != nullptr) {
@@ -774,10 +792,12 @@ FILE* hookedFreopenCommon(const char* path, const char* mode, FILE* stream, Freo
                 close(fd);
                 if (rebuilt != nullptr) return rebuilt;
                 __android_log_print(ANDROID_LOG_WARN, kTag,
-                                    "freopen procfs reopen failed, falling back to mirror path errno=%d", errno);
-                return original(p, mode, stream);
+                                    "freopen procfs reopen failed errno=%d", errno);
+            } else {
+                close(fd);
+                fclose(stream);
             }
-            close(fd);
+            return nullptr;
         }
     }
     const std::string redirected =
@@ -806,7 +826,7 @@ int hookedStat(const char* rawPath, struct stat* info) {
     if (!pathMatchesPrefix(path)) return gOriginalStat(path, info);
     const std::string redirected = callJavaReadMetadataRedirect(path);
     const int result = gOriginalStat(redirected.empty() ? path : redirected.c_str(), info);
-    if (result == 0 && redirected.empty()) applyMirrorSizeOverride(path, info);
+    if (result == 0 && (redirected.empty() || redirected == path)) applyMirrorSizeOverride(path, info);
     return result;
 }
 
@@ -817,7 +837,7 @@ int hookedLstat(const char* rawPath, struct stat* info) {
     if (!pathMatchesPrefix(path)) return gOriginalLstat(path, info);
     const std::string redirected = callJavaReadMetadataRedirect(path);
     const int result = gOriginalLstat(redirected.empty() ? path : redirected.c_str(), info);
-    if (result == 0 && redirected.empty()) applyMirrorSizeOverride(path, info);
+    if (result == 0 && (redirected.empty() || redirected == path)) applyMirrorSizeOverride(path, info);
     return result;
 }
 
@@ -828,7 +848,7 @@ int hookedStat64(const char* rawPath, struct stat64* info) {
     if (!pathMatchesPrefix(path)) return gOriginalStat64(path, info);
     const std::string redirected = callJavaReadMetadataRedirect(path);
     const int result = gOriginalStat64(redirected.empty() ? path : redirected.c_str(), info);
-    if (result == 0 && redirected.empty()) applyMirrorSizeOverride(path, info);
+    if (result == 0 && (redirected.empty() || redirected == path)) applyMirrorSizeOverride(path, info);
     return result;
 }
 
@@ -839,7 +859,7 @@ int hookedLstat64(const char* rawPath, struct stat64* info) {
     if (!pathMatchesPrefix(path)) return gOriginalLstat64(path, info);
     const std::string redirected = callJavaReadMetadataRedirect(path);
     const int result = gOriginalLstat64(redirected.empty() ? path : redirected.c_str(), info);
-    if (result == 0 && redirected.empty()) applyMirrorSizeOverride(path, info);
+    if (result == 0 && (redirected.empty() || redirected == path)) applyMirrorSizeOverride(path, info);
     return result;
 }
 
@@ -1055,9 +1075,9 @@ Java_bridge_NativeBridge_interceptor(JNIEnv* env, jclass, jstring prefix) {
     __android_log_print(ANDROID_LOG_INFO, kTag, "SAF open prefix=%s", gPathPrefix.c_str());
 }
 
-// SAF 镜像专属前缀：仅在 SD 镜像启动时由 Java 侧设置，供相对路径改写使用；
-// 与 gPathPrefix（scoped/overlay 卷前缀）分离，避免影响内置存储游戏的相对路径。
-// 非镜像启动必须传空串清空（Java 侧无条件调用），快路径随之关闭
+// stat is a hot call: only 0-byte regular files can be placeholders, filter before the JNI.
+// Diagnostic probe: log the first 32 overrides to verify the hook chain, then stay quiet.
+// Mirror-only prefix: set by the Java side for SD mirror launches, used for relative-path
 extern "C" JNIEXPORT void JNICALL
 Java_bridge_NativeBridge_setMirrorPrefix(JNIEnv* env, jclass, jstring prefix) {
     const std::string value = takeString(env, prefix);
@@ -1093,7 +1113,7 @@ Java_bridge_NativeBridge_relocate(JNIEnv*, jclass) {
             || hookGotSymbol(library, "fopen64", reinterpret_cast<void*>(hookedFopen64), &gOriginalFopen64);
     const bool freopenHooked = gOriginalFreopen != nullptr
             || hookGotSymbol(library, "freopen", reinterpret_cast<void*>(hookedFreopen), &gOriginalFreopen);
-    // libgame 当前仅导入 freopen（无 freopen64，readelf 实证）；成对补挂以防后续内核变体
+    // rewriting; kept separate from gPathPrefix (scoped/overlay volume prefix). Non-mirror
     const bool freopen64Hooked = gOriginalFreopen64 != nullptr
             || hookGotSymbol(library, "freopen64", reinterpret_cast<void*>(hookedFreopen64), &gOriginalFreopen64);
     const bool statHooked = gOriginalStat != nullptr

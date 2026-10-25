@@ -85,6 +85,8 @@
 来源：[GameSaveManager](app/src/main/java/com/tyranor/next/core/game/save/GameSaveManager.kt)、`core/game/save/`。
 
 - 按引擎和生效设置解析目录，为支持的引擎提供存档镜像导出、导入与删除。独立存档、Kirikiri 镜像等各有规则，不统一硬编码为 `<游戏根>/save`。
+- **Kirikiri SD 卡（可移动存储）强制镜像存档**：SAF 授权下应用无法写游戏目录，SD 卡 Kirikiri 游戏的存档路径被强制接管到应用专属镜像目录 `<数据根>/games/<游戏>-<key>/savedata`，与「独立存档目录」开关无关；游戏目录不生成 savedata，手动放入的存档不被引擎读取。镜像构建跳过源 `savedata` 子树（不产生 0 字节占位），存档管理的列表/导出忽略 0 字节文件；设置页与存档管理页对该形态显示引导并置灰无关开关。
+- **Kirikiri SAF 镜像读取协议**：镜像以「0 字节占位 + 索引（v2 记录真实尺寸）」运行。读意图打开（只读；无截断/追加的读写）经索引路由到 SAF 真实内容；写意图（`O_WRONLY`/`O_TRUNC`/`O_APPEND`）保持本地占位，避免写穿/截断 SD 源文件。`O_RDWR` 的 SAF 打开失败时先以只读重试再回落占位。`stat`/`lstat` 钩子用索引尺寸覆盖占位文件的 `st_size`，SAF 侧被写入后按需刷新。
 - ZIP 导入检查路径安全，最多 **20,000 个条目（含目录）**、展开内容 **1 GiB**；MV/MZ 可剥除最多 **3 层**单目录包装。适用的会话/操作门禁阻止运行中冲突。
 - **YU-RIS 为外置跳转中的存档例外**：统一管理其游戏根 `save/`。PSP、Switch、CatSystem2、PC、安卓游戏、Ren'Py、RPG Maker RGSS、VN 与 WebOther 当前不提供该统一文件存档接口；外置启动不意味着所有引擎都不能管理存档。
 - MV/MZ 标准格式与 Tyranor 格式仅作文件名映射，不重新编码内容；MV 支持哈希名及历史键名，MZ 使用 `fileN.bin` 等 ASCII 键名。

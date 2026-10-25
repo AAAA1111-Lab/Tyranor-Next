@@ -1391,7 +1391,7 @@ object EngineLauncher {
         val forceFont = settings.krForceDefaultFont
         val safMirrorIndexForOverlay = safMirror?.indexFile
         val patchOverlay = prepareKrPatchOverlay(context, engineRoot, settings.krPatchOverlayMode, safIndex = safMirrorIndexForOverlay)
-        val steamConfigOverlay = prepareKrSteamConfigOverlay(context, engineRoot, settings.krPatchOverlayMode)
+        val steamConfigOverlay = prepareKrSteamConfigOverlay(context, engineRoot, settings.krPatchOverlayMode, safIndex = safMirrorIndexForOverlay)
         return Intent(context, activity).apply {
             // KR2 引擎把 path 视为“启动条目”，gamedir = path 的父目录。
             putExtra(LaunchContract.PATH, launchEntry)
@@ -1871,6 +1871,8 @@ object EngineLauncher {
         val hadUserContent: Boolean,
         val cleanedManagedBlock: Boolean,
         val hadManagedMarker: Boolean,
+        /** 镜像占位的 patch.tjs 经 SAF 读取失败：真实内容不可判定，必须跳过 overlay 合成。 */
+        val mirrorReadFailed: Boolean = false,
     )
 
     private data class KrPatchOverlay(
@@ -1898,6 +1900,10 @@ object EngineLauncher {
         val root = File(engineRoot)
         if (!root.isDirectory || engineRoot.startsWith("content://")) return null
         val cleanup = cleanupTyranorManagedKrPatchScript(context, root, safIndex)
+        if (cleanup?.mirrorReadFailed == true) {
+            Log.i(TAG, "KRKR patch overlay skipped: mirror patch.tjs unreadable via SAF root=$engineRoot")
+            return null
+        }
         if (mode == EngineSettingsStore.KR_PATCH_OVERLAY_OFF) return null
 
         val hasSteamPlugin = rootContainsFbfSteamPlugin(root)
@@ -1948,8 +1954,15 @@ object EngineLauncher {
     /**
      * 部分 Windows Steam 版 KRKR 移植包会带 ds.ini，并用 Language=xxx 决定 UI 语言。
      * 不直接修改用户游戏目录，只在 app 私有目录生成 schinese 版本并由 NativeBridge 只读映射。
+     * SD 镜像下 ds.ini 是 0 字节占位：经 SAF 索引读真实内容做基底；读不到真实内容时
+     * 不生成 overlay（最小配置会顶掉真实 ds.ini 的其余配置，比没有更糟）。
      */
-    private fun prepareKrSteamConfigOverlay(context: Context, engineRoot: String, mode: String): KrSteamConfigOverlay? {
+    private fun prepareKrSteamConfigOverlay(
+        context: Context,
+        engineRoot: String,
+        mode: String,
+        safIndex: File?,
+    ): KrSteamConfigOverlay? {
         val root = File(engineRoot)
         if (!root.isDirectory || engineRoot.startsWith("content://") || !rootContainsFbfSteamPlugin(root)) return null
         if (mode == EngineSettingsStore.KR_PATCH_OVERLAY_OFF) return null
@@ -1957,7 +1970,16 @@ object EngineLauncher {
         val config = File(root, "ds.ini")
         if (!config.isFile) return null
         return runCatching {
-            val bytes = config.readBytes()
+            val safBytes = if (config.length() == 0L && safIndex != null) {
+                readMirrorFileBytesViaSafIndex(context, safIndex, config.absolutePath, 1024 * 1024, "ds.ini")
+            } else {
+                null
+            }
+            if (config.length() == 0L && safBytes == null) {
+                Log.w(TAG, "KRKR ds.ini placeholder unreadable via SAF index, skipping steam config overlay root=$engineRoot")
+                return null
+            }
+            val bytes = safBytes ?: config.readBytes()
             val charset = detectKrPatchCharset(bytes)
             val text = bytes.toString(charset)
             val languageRegex = Regex("(?im)^(\\s*Language\\s*=\\s*)[^\\r\\n]*")
@@ -2001,6 +2023,21 @@ object EngineLauncher {
             } else {
                 null
             }
+            // Mirror placeholder + SAF read failure (index miss / >4MB / IO error): the real
+            // patch bytes are unreadable here. Flag it so no overlay is synthesized (the
+            // engine reads the real patch.tjs via SAF at runtime); synthesizing the basic
+            // overlay would shadow it and reintroduce the #129 plugin-loss path.
+            if (patch.length() == 0L && safIndex != null && safBytes == null) {
+                Log.w(TAG, "KRKR patch.tjs mirror read failed, skipping overlay synthesis root=${root.absolutePath}")
+                return KrPatchCleanupResult(
+                    patchFile = patch,
+                    bytes = ByteArray(0),
+                    hadUserContent = false,
+                    cleanedManagedBlock = false,
+                    hadManagedMarker = false,
+                    mirrorReadFailed = true,
+                )
+            }
             val original = safBytes ?: patch.readBytes()
             val blocks = listOf(
                 krLegacyPatchScript(fontScale = 1.0f),
@@ -2037,14 +2074,20 @@ object EngineLauncher {
         }.getOrNull()
     }
 
-    /** 经 KrSafMirror 索引读取镜像占位 patch.tjs 的真实内容（SAF Uri）；上限 4MB 防异常包（实测补丁包可达 MB 级）。 */
-    private fun readKrPatchBytesViaSafIndex(context: Context, root: File, patch: File, safIndex: File): ByteArray? {
+    /** 经 KrSafMirror 索引读取镜像占位文件的 SAF 真实内容；[maxBytes] 防异常包。失败/无条目/空内容返回 null。 */
+    private fun readMirrorFileBytesViaSafIndex(
+        context: Context,
+        safIndex: File,
+        mirrorPath: String,
+        maxBytes: Int,
+        what: String,
+    ): ByteArray? {
         return runCatching {
-            val key = patch.absolutePath.lowercase()
+            val key = mirrorPath.lowercase()
             val index = bridge.KrSafMirror.loadIndex(safIndex.absolutePath)
             val entry = index[key]
             if (entry == null) {
-                Log.w(TAG, "KRKR patch.tjs SAF index miss key=$key index=${index.size}")
+                Log.w(TAG, "KRKR $what SAF index miss key=$key index=${index.size}")
                 return null
             }
             val bytes = context.contentResolver.openInputStream(entry.uri)?.use { input ->
@@ -2053,8 +2096,8 @@ object EngineLauncher {
                 while (true) {
                     val n = input.read(chunk)
                     if (n < 0) break
-                    if (buffer.size() + n > 4 * 1024 * 1024) {
-                        Log.w(TAG, "KRKR patch.tjs SAF read exceeds 4MB root=${root.absolutePath}")
+                    if (buffer.size() + n > maxBytes) {
+                        Log.w(TAG, "KRKR $what SAF read exceeds ${maxBytes}B path=$mirrorPath")
                         return null
                     }
                     buffer.write(chunk, 0, n)
@@ -2062,12 +2105,18 @@ object EngineLauncher {
                 buffer.toByteArray()
             }
             if (bytes != null && bytes.isNotEmpty()) {
-                Log.i(TAG, "KRKR patch.tjs read via SAF index root=${root.absolutePath} bytes=${bytes.size}")
+                Log.i(TAG, "KRKR $what read via SAF index path=$mirrorPath bytes=${bytes.size}")
             }
             bytes?.takeIf { it.isNotEmpty() }
         }.onFailure { error ->
-            Log.w(TAG, "KRKR patch.tjs SAF read failed root=${root.absolutePath}", error)
+            Log.w(TAG, "KRKR $what SAF read failed path=$mirrorPath", error)
         }.getOrNull()
+    }
+
+    private fun readKrPatchBytesViaSafIndex(context: Context, root: File, patch: File, safIndex: File): ByteArray? {
+        val bytes = readMirrorFileBytesViaSafIndex(context, safIndex, patch.absolutePath, 4 * 1024 * 1024, "patch.tjs")
+        if (bytes != null) Log.i(TAG, "KRKR patch.tjs read via SAF index root=${root.absolutePath} bytes=${bytes.size}")
+        return bytes
     }
 
     private fun rootContainsFbfSteamPlugin(root: File): Boolean {

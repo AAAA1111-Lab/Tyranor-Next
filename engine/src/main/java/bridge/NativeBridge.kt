@@ -18,6 +18,13 @@ object NativeBridge {
     /** 镜像条目尺寸标记：SAF 侧已被写模式打开，索引尺寸过期，stat 时按需刷新。 */
     private const val SIZE_DIRTY = -2L
 
+    /**
+     * SAF 读取失败的键：stat 尺寸覆盖被抑制（stat=0 与回退占位内容一致），
+     * 直到该键的镜像打开再次成功。并发集合：stat 钩子任意线程调用。
+     */
+    private val SAF_READ_FAILED: MutableSet<String> =
+        java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap())
+
     @Volatile
     private var SAF_DOCUMENTS: Map<String, KrSafMirror.MirrorEntry> = emptyMap()
     @Volatile
@@ -120,21 +127,40 @@ object NativeBridge {
             return -1
         }
         val mirror = SAF_DOCUMENTS[target.lowercase(Locale.ROOT)]
-        // 占位文件仍是 0 字节时（未被引擎本地覆写），所有打开模式都路由到 SAF 文档：
-        // 引擎常用 O_RDWR 打开插件 DLL 与既有存档（krkr 的 CreateFile 习惯），
+        // 占位文件仍是 0 字节时（未被引擎本地覆写），读意图打开（只读；无截断/追加的读写）
+        // 路由到 SAF 文档：引擎常用 O_RDWR 打开插件 DLL 与既有存档（krkr 的 CreateFile 习惯），
         // 只读路由会让这些打开落到本地 0 字节占位上、读到全零——插件匹配失败、
-        // 用户放入游戏目录的存档被判为损坏。SAF 打开失败再回落本地占位（保持旧覆盖语义）。
-        if (mirror != null && File(target).length() == 0L) {
-            // SAF 打开可能抛 FileNotFoundException/SecurityException：捕获后回落本地，
-            // 否则异常传出 open()、JNI 侧只会清异常返回 -1，本地回落与日志都被跳过
+        // 用户放入游戏目录的存档被判为损坏。写意图（O_WRONLY / O_TRUNC / O_APPEND）保持
+        // 本地占位：写穿/截断 SD 源文件的风险大于收益，且与镜像的覆盖语义一致。
+        // SAF 打开失败捕获后回落本地，否则异常传出 open()、JNI 侧只会清异常返回 -1。
+        val accessMode = mode and OsConstants.O_ACCMODE
+        val readIntent = isReadOnlyOpen(mode) ||
+            (accessMode == OsConstants.O_RDWR && (mode and (OsConstants.O_TRUNC or OsConstants.O_APPEND)) == 0)
+        if (mirror != null && readIntent && File(target).length() == 0L) {
             val mirrorFd = runCatching { openDocumentUri(mirror.uri, mode) }
                 .onFailure { Log.w("NativeBridge", "open mirror SAF failed path=$path", it) }
                 .getOrDefault(-1)
             if (mirrorFd >= 0) {
                 // 非只读打开会改写 SAF 侧内容：索引尺寸即刻过期，标记脏，供 metadataSize 按需刷新
                 if (!isReadOnlyOpen(mode)) markMirrorEntryDirty(target.lowercase(Locale.ROOT))
+                SAF_READ_FAILED.remove(target.lowercase(Locale.ROOT))
                 return mirrorFd
             }
+            if (!isReadOnlyOpen(mode)) {
+                // 写授权不可用（只读树授权/写保护 SD/provider 限制）时以只读重试：
+                // 插件 DLL 等读取不需要写权限，否则回落 0 字节占位、#129 故障重现
+                val roFd = runCatching { openDocumentUri(mirror.uri, OsConstants.O_RDONLY) }
+                    .onFailure { Log.w("NativeBridge", "open mirror SAF read-only retry failed path=$path", it) }
+                    .getOrDefault(-1)
+                if (roFd >= 0) {
+                    Log.i("NativeBridge", "open mirror SAF rw->ro retry ok path=$path")
+                    SAF_READ_FAILED.remove(target.lowercase(Locale.ROOT))
+                    return roFd
+                }
+            }
+            // SAF 读取失败回落 0 字节占位：清除该条目的尺寸覆盖，保证 stat(0) 与
+            // 可读内容(0) 一致——否则引擎按 stat 分配缓冲会拿到未填充数据（stat=N、read=0）
+            SAF_READ_FAILED.add(target.lowercase(Locale.ROOT))
         }
         return try {
             openDirectFile(path, target, mode, diagnosticPrefix = if (redirected != null) "redirect" else null)
@@ -205,13 +231,16 @@ object NativeBridge {
         val normalized = KrPathUtils.canonicalizeKrStoragePath(KrPathUtils.normalizeFilePath(path))
             ?: return -1L
         val key = normalized.lowercase(Locale.ROOT)
+        // SAF read previously failed for this key: keep stat consistent with the
+        // 0-byte fallback content (no override) until a later open succeeds
+        if (SAF_READ_FAILED.contains(key)) return -1L
         val entry = SAF_DOCUMENTS[key] ?: return -1L
         if (entry.size == SIZE_DIRTY) return refreshDirtyMirrorSize(key, entry)
         if (entry.size < 0L) return -1L
         return if (File(normalized).length() == 0L) entry.size else -1L
     }
 
-    /** 把条目标记为脏（尺寸过期）；索引键不存在时忽略。与 [open]/[refreshDirtyMirrorSize] 共用对象锁串行化。 */
+    /** 把条目标记为脏（尺寸过期）；索引键不存在时忽略。与 [open]/[publishEntrySize] 共用对象锁串行化。 */
     @Synchronized
     private fun markMirrorEntryDirty(key: String) {
         val entry = SAF_DOCUMENTS[key] ?: return
@@ -219,8 +248,10 @@ object NativeBridge {
         SAF_DOCUMENTS = SAF_DOCUMENTS.toMutableMap().apply { put(key, KrSafMirror.MirrorEntry(entry.uri, SIZE_DIRTY)) }
     }
 
-    /** 查询脏条目文档的当前尺寸并回填缓存；查询失败返回 -1（保持脏标记，下次再试）。 */
-    @Synchronized
+    /**
+     * 查询脏条目文档的当前尺寸并回填缓存；查询失败返回 -1（保持脏标记，下次再试）。
+     * Binder 查询在对象锁外执行（慢 provider 不得阻塞并发 open），仅回填持锁。
+     */
     private fun refreshDirtyMirrorSize(key: String, entry: KrSafMirror.MirrorEntry): Long {
         val size = runCatching {
             KrPathUtils.currentActivity()?.contentResolver
@@ -228,12 +259,20 @@ object NativeBridge {
                 ?.use { cursor -> if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0) else -1L }
         }.getOrNull() ?: -1L
         if (size >= 0) {
-            SAF_DOCUMENTS = SAF_DOCUMENTS.toMutableMap().apply {
-                put(key, KrSafMirror.MirrorEntry(entry.uri, size))
-            }
+            publishEntrySize(key, entry.uri, size)
             return size
         }
         return -1L
+    }
+
+    /** 回填已刷新的尺寸；仅当条目仍处于脏状态时写入，避免覆盖更新的脏标记。 */
+    @Synchronized
+    private fun publishEntrySize(key: String, uri: Uri, size: Long) {
+        val current = SAF_DOCUMENTS[key] ?: return
+        if (current.uri != uri || current.size != SIZE_DIRTY) return
+        SAF_DOCUMENTS = SAF_DOCUMENTS.toMutableMap().apply {
+            put(key, KrSafMirror.MirrorEntry(uri, size))
+        }
     }
 
     private fun recordOpenDiagnostic(value: String) {
@@ -536,9 +575,9 @@ object NativeBridge {
             // RDWR|TRUNC 必须保持可读，映射为读写截断；仅 WRONLY 截断用 "wt"
             return if (accessMode == OsConstants.O_RDWR) "rwt" else "wt"
         }
-        if (accessMode == OsConstants.O_WRONLY) return "w"
-        if (accessMode == OsConstants.O_RDWR) return "rw"
-        throw IllegalArgumentException("Bad mode: $mode")
+        // 无 O_TRUNC 的 O_WRONLY 映射 "rw"：PFD 的 "w" 隐含 O_CREAT|O_TRUNC，
+        // 会截断源文件，与 native O_WRONLY（不截断）语义不符
+        return "rw"
     }
 
     private fun getFd(raf: RandomAccessFile): Int {

@@ -17,15 +17,24 @@ import java.util.Locale
  * Builds the local shadow tree used by Kirikiroid2 for SAF-only game folders.
  *
  * Directories and empty placeholder files satisfy libc stat/access/opendir calls. Actual file
- * contents are supplied by [NativeBridge.open] from the indexed SAF Uri. Non-empty local files
- * are deliberately retained and take precedence, matching Tyranor's original overlay behavior.
+ * contents are supplied by [NativeBridge.open] from the indexed SAF Uri for read-intent opens
+ * (read-only, and read-write without truncation/append); write-intent opens stay on the local
+ * placeholder so SD source files are never truncated or clobbered. The source `savedata`
+ * subtree is skipped: saves live in the app-private mirror directory by design. Non-empty
+ * local files are retained and take precedence, matching Tyranor's original overlay behavior.
  */
 object KrSafMirror {
     private const val TAG = "KrSafMirror"
     private const val INDEX_VERSION_V1 = "krkr-saf-index-v1"
     private const val INDEX_VERSION = "krkr-saf-index-v2"
 
-    /** 索引条目：镜像占位文件对应的 SAF 文档与其真实尺寸。尺寸未知（v1 索引）时为 -1。 */
+    /** Depth cap for the recursive mirror walk (game trees are shallow; guards odd structures). */
+    private const val MIRROR_MAX_DEPTH = 6
+
+    /**
+     * 索引条目：镜像占位文件对应的 SAF 文档与其真实尺寸。尺寸未知（v1 索引）时为 -1；
+     * -2（[NativeBridge.SIZE_DIRTY]）表示 SAF 侧已被写模式打开、尺寸待刷新。
+     */
     data class MirrorEntry(val uri: Uri, val size: Long)
 
     /**
@@ -62,7 +71,8 @@ object KrSafMirror {
     )
 
     /**
-     * 构建镜像目录树并写索引。流程：解析 SAF 源目录 → 递归建 0 字节占位 → 触发目录媒体扫描
+     * 构建镜像目录树并写索引。流程：解析 SAF 源目录 → 递归建 0 字节占位（跳过源
+     * `savedata` 子树：存档按设计只走应用私有目录，源存档经存档管理导入）
      * → 三重补全缺失条目（MediaStore / File 直列 / .sig 反推探测）→ 原子写索引 v2。
      * 失败以 [PrepareException] 按阶段抛出，由 app 层映射文案。
      */
@@ -82,17 +92,13 @@ object KrSafMirror {
         }
 
         val entries = ArrayList<Triple<String, String, Long>>()
-        // SAF 子文档列表在部分 ROM 上由媒体库背书：未经扫描的新拷贝文件（换机导入、
-        // PC 直拷、解压后未触发媒体扫描）对列表不可见（实测三星 One UI：文件系统已有、
-        // 应用 FUSE 直路径也无权访问、children 查询缺失，重启不恢复；一旦媒体库补行
-        // 立即可见）。先以应用身份触发目录扫描再镜像，三重补全仅作兜底。
-        scanViaMediaStore(context.applicationContext, logicalPath.trimEnd('/'))
-        mirrorDirectory(context.applicationContext, resolved, mirrorRoot, entries)
+        // Case-collapsed key set shared by mirroring and the merge passes: mirroring
+        // dedupes root-tree entries, the merges skip anything already known
+        val known = HashSet<String>()
+        mirrorDirectory(context.applicationContext, resolved, mirrorRoot, entries, known, atRoot = true)
         val sourceRoot = logicalPath.trimEnd('/')
-        val known = HashSet<String>(entries.size * 2)
-        for ((path, _, _) in entries) known.add(path)
         var merged = mergeMissingFromMediaStore(context.applicationContext, resolved.treeUri, sourceRoot, mirrorRoot, entries, known)
-        merged += mergeMissingFromDirectListing(context.applicationContext, resolved.treeUri, sourceRoot, mirrorRoot, entries, known)
+        merged += mergeMissingFromDirectListing(resolved.treeUri, sourceRoot, mirrorRoot, entries, known)
         merged += probeSigSiblingDlls(context.applicationContext, resolved.treeUri, entries, known)
 
         val indexDir = File(context.noBackupFilesDir, "krkr_saf_index")
@@ -177,34 +183,20 @@ object KrSafMirror {
             }
             val decodedUri = decode(uri)
             if (path.isNotBlank() && decodedUri.isNotBlank()) {
-                result[path] = MirrorEntryHolder(decodedUri, size, buildUri(decodedUri))
+                result[path] = MirrorEntryHolder(size, buildUri(decodedUri))
             }
         }
         return result
     }
 
-    /** 解析中间产物：Uri 的原始字符串与构造结果并列，泛型承载 android/net 或测试恒等实现。 */
-    internal data class MirrorEntryHolder<T>(val uriString: String, val size: Long, val uri: T)
+    /** Parse intermediate: the built uri plus its size; generic over android/net or test identity. */
+    internal data class MirrorEntryHolder<T>(val size: Long, val uri: T)
 
     private data class ResolvedDocument(val treeUri: Uri, val documentId: String)
 
-    /**
-     * 以应用身份触发 [path]（游戏目录）的媒体扫描并有限等待完成。
-     * 扫描会为目录树下的新文件补建媒体库行——SAF children 列表据此恢复可见。
-     * 失败/超时静默放行：镜像仍按当前可见集合构建，兜底合并继续生效。
-     */
-    private fun scanViaMediaStore(context: Context, path: String) {
-        if (!path.startsWith("/storage/")) return
-        val startedAt = System.currentTimeMillis()
-        try {
-            val latch = java.util.concurrent.CountDownLatch(1)
-            MediaScannerConnection.scanFile(context, arrayOf(path), null) { _, _ -> latch.countDown() }
-            latch.await(5, java.util.concurrent.TimeUnit.SECONDS)
-            Log.i(TAG, "media scan requested for $path cost=${System.currentTimeMillis() - startedAt}ms")
-        } catch (t: Throwable) {
-            Log.w(TAG, "media scan failed for $path", t)
-        }
-    }
+    // 目录级 scanFile 已移除：实测 MediaScannerConnection 对目录路径不递归建行
+    //（本机 ROM 25-67ms 即回调但 children 无变化），真正生效的是
+    // probeSigSiblingDlls 的逐文件扫描（按文件路径建行即时可见）。
 
     /**
      * 用 MediaStore 文件表补全 SAF 子文档列表缺失的条目，返回补全数量。
@@ -269,7 +261,6 @@ object KrSafMirror {
      * 缺失的文件（尺寸取自 File）。应用无权访问（Scoped Storage 拒绝）时静默跳过。
      */
     private fun mergeMissingFromDirectListing(
-        context: Context,
         treeUri: Uri,
         sourceRoot: String,
         mirrorRoot: File,
@@ -299,6 +290,15 @@ object KrSafMirror {
         return merged
     }
 
+    /** 大小写不敏感地去掉 `.sig` 后缀（文档 ID 保留原始大小写，removeSuffix 会漏掉 `X.DLL.SIG`）。 */
+    internal fun stripSigSuffix(name: String): String {
+        return if (name.length >= 4 && name.regionMatches(name.length - 4, ".sig", 0, 4, ignoreCase = true)) {
+            name.dropLast(4)
+        } else {
+            name
+        }
+    }
+
     /**
      * 末道兜底：已索引的 `X.dll.sig` 证明源目录存在插件 `X.dll`。对缺失的同名 DLL：
      * 先以应用身份逐文件触发媒体扫描（scanFile 对目录不递归，必须按文件路径扫描；
@@ -314,12 +314,12 @@ object KrSafMirror {
         val candidates = ArrayList<Pair<String, String>>() // (mirrorKey, sourcePath)
         val sigEntries = entries.filter { it.first.endsWith(".dll.sig") }.toList()
         for ((mirrorKeyPath, sigUriString, _) in sigEntries) {
-            val dllMirrorKey = mirrorKeyPath.removeSuffix(".sig")
-            if (known.contains(dllMirrorKey)) continue
+            val dllMirrorKey = stripSigSuffix(mirrorKeyPath)
+            if (dllMirrorKey == mirrorKeyPath || known.contains(dllMirrorKey)) continue
             val sigDocId = runCatching {
                 DocumentsContract.getDocumentId(Uri.parse(sigUriString))
             }.getOrNull() ?: continue
-            val dllSourcePath = documentIdToStoragePath(sigDocId.removeSuffix(".sig")) ?: continue
+            val dllSourcePath = documentIdToStoragePath(stripSigSuffix(sigDocId)) ?: continue
             candidates += dllMirrorKey to dllSourcePath
         }
         if (candidates.isEmpty()) return 0
@@ -420,41 +420,58 @@ object KrSafMirror {
     }
 
     /**
-     * 递归镜像 SAF 目录树。每个目录只做一次 DocumentsContract 子文档查询，
-     * 同一投影取回 displayName/mime/size，避免逐文件 length() 的多次 Binder 往返。
-     * 占位文件仍保持 0 字节：真实内容由 NativeBridge 按 SAF Uri 供给，
-     * 真实尺寸记录进索引供 stat 钩子覆盖（0 字节占位会让引擎的插件匹配/存档探测失败）。
+     * Recursively mirror the SAF directory tree. One DocumentsContract children query per
+     * directory (displayName/mime/size in the same projection, avoiding per-file length()
+     * Binder round-trips). Placeholders stay 0 bytes: real content is supplied by
+     * NativeBridge from the indexed SAF Uri, and the real size is recorded for the stat
+     * hook override. [atRoot] skips the source `savedata` subtree: saves live in the
+     * app-private mirror directory by design. A failed children query logs a warning and
+     * returns the partial result (the three merge passes fill the gaps) instead of failing
+     * the whole launch; [seenKeys] dedupes case-collapsed paths so two documents that only
+     * differ in case cannot produce conflicting index entries.
      */
     private fun mirrorDirectory(
         context: Context,
         source: ResolvedDocument,
         destination: File,
         entries: MutableList<Triple<String, String, Long>>,
+        seenKeys: MutableSet<String>,
+        depth: Int = 0,
+        atRoot: Boolean = false,
     ) {
+        if (depth > MIRROR_MAX_DEPTH) return
         val destRoot = runCatching { destination.canonicalPath }.getOrNull() ?: destination.absolutePath
         val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
             source.treeUri,
             source.documentId,
         )
-        context.contentResolver.query(
-            childrenUri,
-            arrayOf(
-                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-                DocumentsContract.Document.COLUMN_MIME_TYPE,
-                DocumentsContract.Document.COLUMN_SIZE,
-            ),
-            null,
-            null,
-            null,
-        )?.use { cursor ->
-            while (cursor.moveToNext()) {
-                val documentId = cursor.getString(0) ?: continue
-                val name = cursor.getString(1)?.takeIf { it.isNotBlank() } ?: continue
-                val isDirectory = cursor.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR
-                val size = if (cursor.isNull(3)) -1L else cursor.getLong(3)
-                // Provider 给的条目名不安全时跳过（与 zip 的 Zip Slip 同类防护）
+        val cursor = runCatching {
+            context.contentResolver.query(
+                childrenUri,
+                arrayOf(
+                    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                    DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                    DocumentsContract.Document.COLUMN_MIME_TYPE,
+                    DocumentsContract.Document.COLUMN_SIZE,
+                ),
+                null,
+                null,
+                null,
+            )
+        }.onFailure { error ->
+            // Baseline DocumentFile.listFiles() tolerated provider exceptions and kept the
+            // partial listing; preserve that behavior instead of failing the launch.
+            Log.w(TAG, "mirror children query failed dir=${destination.name}", error)
+        }.getOrNull() ?: return
+        cursor.use {
+            while (it.moveToNext()) {
+                val documentId = it.getString(0) ?: continue
+                val name = it.getString(1)?.takeIf { n -> n.isNotBlank() } ?: continue
+                val isDirectory = it.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR
+                val size = if (it.isNull(3)) -1L else it.getLong(3)
+                // Skip unsafe provider-supplied names (same protection as zip-slip guards)
                 val local = safeMirrorChild(destination, destRoot, name.lowercase(Locale.ROOT)) ?: continue
+                if (atRoot && isDirectory && local.name.equals("savedata", ignoreCase = true)) continue
                 if (isDirectory) {
                     if (!local.isDirectory && !local.mkdirs()) {
                         throw PrepareException(Stage.CHILD_DIR, local.name)
@@ -464,13 +481,22 @@ object KrSafMirror {
                         ResolvedDocument(source.treeUri, documentId),
                         local,
                         entries,
+                        seenKeys,
+                        depth + 1,
                     )
                 } else {
+                    val key = local.absolutePath.lowercase(Locale.ROOT)
+                    // Same-key documents that only differ in case would write conflicting
+                    // index entries (size/content from different documents); keep the first
+                    if (!seenKeys.add(key)) {
+                        Log.w(TAG, "duplicate mirror entry skipped: $key")
+                        continue
+                    }
                     if (!local.exists() && !local.createNewFile()) {
                         throw PrepareException(Stage.CHILD_FILE, local.name)
                     }
                     entries += Triple(
-                        local.absolutePath.lowercase(Locale.ROOT),
+                        key,
                         DocumentsContract.buildDocumentUriUsingTree(source.treeUri, documentId).toString(),
                         size,
                     )
@@ -581,17 +607,24 @@ object KrSafMirror {
                 documentId.regionMatches(0, treeId, 0, treeId.length, ignoreCase = true) &&
                 documentId[treeId.length] == '/')
 
+    /** Serializes entries into the index text (header + one tab-separated line per entry). */
+    internal fun buildIndexText(entries: List<Triple<String, String, Long>>): String {
+        return buildString {
+            appendLine(INDEX_VERSION)
+            for ((path, uri, size) in entries) {
+                append(encode(path)).append('\t')
+                    .append(encode(uri)).append('\t')
+                    .append(size.toString()).append('\n')
+            }
+        }
+    }
+
     private fun writeIndex(file: File, entries: List<Triple<String, String, Long>>) {
         val atomic = AtomicFile(file)
         val stream = atomic.startWrite()
         try {
             val writer = OutputStreamWriter(stream, Charsets.UTF_8).buffered()
-            writer.appendLine(INDEX_VERSION)
-            for ((path, uri, size) in entries) {
-                writer.append(encode(path)).append('\t')
-                    .append(encode(uri)).append('\t')
-                    .append(size.toString()).append('\n')
-            }
+            writer.append(buildIndexText(entries))
             writer.flush()
             atomic.finishWrite(stream)
         } catch (t: Throwable) {
