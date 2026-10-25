@@ -1389,7 +1389,8 @@ object EngineLauncher {
         val effectiveScoped = scoped || safMirror != null
         val defaultFont = settings.krDefaultFont
         val forceFont = settings.krForceDefaultFont
-        val patchOverlay = prepareKrPatchOverlay(context, engineRoot, settings.krPatchOverlayMode)
+        val safMirrorIndexForOverlay = safMirror?.indexFile
+        val patchOverlay = prepareKrPatchOverlay(context, engineRoot, settings.krPatchOverlayMode, safIndex = safMirrorIndexForOverlay)
         val steamConfigOverlay = prepareKrSteamConfigOverlay(context, engineRoot, settings.krPatchOverlayMode)
         return Intent(context, activity).apply {
             // KR2 引擎把 path 视为“启动条目”，gamedir = path 的父目录。
@@ -1888,11 +1889,15 @@ object EngineLauncher {
      *
      * 不再直接向用户游戏目录写入兼容脚本；只在 app 私有目录生成合成 patch.tjs，
      * 再由 KRKR 文件 hook 在读取游戏 patch.tjs 时做只读重定向。
+     *
+     * SD 卡镜像游戏的本体 patch.tjs 在镜像里是 0 字节占位：用户 patch 检测必须经
+     * SAF 索引读真实内容，否则会把游戏自带的 patch.tjs（含插件引导）误判为不存在、
+     * 用基础 overlay 顶掉，游戏插件链失效（issue #129 的 GamepadPort 崩溃）。
      */
-    private fun prepareKrPatchOverlay(context: Context, engineRoot: String, mode: String): KrPatchOverlay? {
+    private fun prepareKrPatchOverlay(context: Context, engineRoot: String, mode: String, safIndex: File?): KrPatchOverlay? {
         val root = File(engineRoot)
         if (!root.isDirectory || engineRoot.startsWith("content://")) return null
-        val cleanup = cleanupTyranorManagedKrPatchScript(root)
+        val cleanup = cleanupTyranorManagedKrPatchScript(context, root, safIndex)
         if (mode == EngineSettingsStore.KR_PATCH_OVERLAY_OFF) return null
 
         val hasSteamPlugin = rootContainsFbfSteamPlugin(root)
@@ -1985,11 +1990,18 @@ object EngineLauncher {
      * PR 44b6be2 曾在启动时向游戏目录 patch.tjs 自动追加 Tyranor Next 兼容脚本。
      * 这里只清理历史版本写入的精确托管块，并返回清理后的原始 patch 内容供 overlay 合成。
      */
-    private fun cleanupTyranorManagedKrPatchScript(root: File): KrPatchCleanupResult? {
+    private fun cleanupTyranorManagedKrPatchScript(context: Context, root: File, safIndex: File?): KrPatchCleanupResult? {
         val patch = File(root, "patch.tjs")
         if (!patch.isFile) return null
         return runCatching {
-            val original = patch.readBytes()
+            // 镜像占位为 0 字节时经 SAF 索引取真实内容做判定/合并基底；
+            // SAF 内容绝不回写——占位文件必须保持 0 字节（NativeBridge 以此路由到 SAF）
+            val safBytes = if (patch.length() == 0L && safIndex != null) {
+                readKrPatchBytesViaSafIndex(context, root, patch, safIndex)
+            } else {
+                null
+            }
+            val original = safBytes ?: patch.readBytes()
             val blocks = listOf(
                 krLegacyPatchScript(fontScale = 1.0f),
                 krFbfSteamStubScript(),
@@ -1999,7 +2011,7 @@ object EngineLauncher {
                 cleaned = removeAllByteSequences(cleaned, block.toByteArray(Charsets.UTF_8))
                 cleaned = removeAllByteSequences(cleaned, block.toByteArray(Charsets.UTF_16LE))
             }
-            if (!cleaned.contentEquals(original)) {
+            if (safBytes == null && !cleaned.contentEquals(original)) {
                 patch.writeBytes(cleaned)
                 Log.i(TAG, "KRKR managed patch.tjs block cleaned root=${root.absolutePath} bytes=${original.size - cleaned.size}")
             } else if (
@@ -2022,6 +2034,39 @@ object EngineLauncher {
             )
         }.onFailure { error ->
             Log.w(TAG, "KRKR managed patch.tjs cleanup failed root=${root.absolutePath}", error)
+        }.getOrNull()
+    }
+
+    /** 经 KrSafMirror 索引读取镜像占位 patch.tjs 的真实内容（SAF Uri）；上限 4MB 防异常包（实测补丁包可达 MB 级）。 */
+    private fun readKrPatchBytesViaSafIndex(context: Context, root: File, patch: File, safIndex: File): ByteArray? {
+        return runCatching {
+            val key = patch.absolutePath.lowercase()
+            val index = bridge.KrSafMirror.loadIndex(safIndex.absolutePath)
+            val entry = index[key]
+            if (entry == null) {
+                Log.w(TAG, "KRKR patch.tjs SAF index miss key=$key index=${index.size}")
+                return null
+            }
+            val bytes = context.contentResolver.openInputStream(entry.uri)?.use { input ->
+                val buffer = java.io.ByteArrayOutputStream()
+                val chunk = ByteArray(8192)
+                while (true) {
+                    val n = input.read(chunk)
+                    if (n < 0) break
+                    if (buffer.size() + n > 4 * 1024 * 1024) {
+                        Log.w(TAG, "KRKR patch.tjs SAF read exceeds 4MB root=${root.absolutePath}")
+                        return null
+                    }
+                    buffer.write(chunk, 0, n)
+                }
+                buffer.toByteArray()
+            }
+            if (bytes != null && bytes.isNotEmpty()) {
+                Log.i(TAG, "KRKR patch.tjs read via SAF index root=${root.absolutePath} bytes=${bytes.size}")
+            }
+            bytes?.takeIf { it.isNotEmpty() }
+        }.onFailure { error ->
+            Log.w(TAG, "KRKR patch.tjs SAF read failed root=${root.absolutePath}", error)
         }.getOrNull()
     }
 

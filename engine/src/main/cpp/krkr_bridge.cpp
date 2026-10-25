@@ -75,6 +75,7 @@ using Update = void (*)(void*, float);
 using UiFormCount = int (*)(void*);
 using OpenFn = int (*)(const char*, int, ...);
 using FopenFn = FILE* (*)(const char*, const char*);
+using FreopenFn = FILE* (*)(const char*, const char*, FILE*);
 using StatFn = int (*)(const char*, struct stat*);
 using Stat64Fn = int (*)(const char*, struct stat64*);
 using AccessFn = int (*)(const char*, int);
@@ -96,10 +97,14 @@ JavaVM* gVm = nullptr;
 std::mutex gMutex;
 GameApi gGame;
 std::string gPathPrefix;
+// SAF 镜像专属前缀：仅 SD 镜像启动时设置（gPathPrefix 在内置存储 scoped/overlay 场景
+// 会是存储卷前缀，不能用于相对路径改写，否则相对路径会被错拼到卷根下）
+std::string gMirrorPrefix;
 OpenFn gOriginalOpen = nullptr;
 OpenFn gOriginalOpen64 = nullptr;
 FopenFn gOriginalFopen = nullptr;
 FopenFn gOriginalFopen64 = nullptr;
+FreopenFn gOriginalFreopen = nullptr;
 StatFn gOriginalStat = nullptr;
 StatFn gOriginalLstat = nullptr;
 Stat64Fn gOriginalStat64 = nullptr;
@@ -397,6 +402,30 @@ bool pathMatchesPrefix(const char* path) {
             && std::strncmp(normalized, gPathPrefix.c_str() + 1, gPathPrefix.size() - 1) == 0;
 }
 
+// krkr 的插件/脚本层以相对路径读写游戏文件（引擎 CWD = 游戏根 = 镜像根）。
+// 相对路径不匹配镜像前缀时会绕开 Java 桥、直接命中镜像里的 0 字节占位文件——
+// 插件签名(.dll.sig)与 DLL 内容读到全零，引擎判插件无效（issue #129 的
+// “SD 卡 Krkr 游戏启动失败、机内存储正常”）。把相对路径补全为镜像前缀下的
+// 绝对路径后再走统一路由；CWD 即镜像根，语义不变。
+std::string resolveEnginePath(const char* path) {
+    if (path == nullptr) return {};
+    std::string p(path);
+    const bool hadPath = !p.empty();
+    if (std::strncmp(p.c_str(), "file://", 7) == 0) p.erase(0, 7);
+    while (std::strncmp(p.c_str(), "./", 2) == 0) p.erase(0, 2);
+    std::lock_guard<std::mutex> lock(gMutex);
+    const std::string& base = gMirrorPrefix;
+    if (p.empty()) {
+        // "./" 清理后为空：返回镜像根（或 "."）保持“当前目录”语义，避免把空路径传给 libc。
+        // 非镜像启动（gMirrorPrefix 为空）返回 "."，与基线的 CWD 语义一致
+        if (!hadPath) return p;
+        return base.empty() ? std::string(".") : base;
+    }
+    if (p[0] == '/') return p;
+    if (base.empty()) return p;
+    return base + "/" + p;
+}
+
 int callOriginal(OpenFn original, const char* path, int flags, mode_t mode) {
     if (original == nullptr) return -1;
     if ((flags & O_CREAT) != 0) return original(path, flags, mode);
@@ -521,9 +550,62 @@ std::string callJavaScopedSaveRedirect(const char* path) {
     return callJavaPathMethod(path, "redirectScopedSave");
 }
 
-int hookOpenCommon(OpenFn original, const char* path, int flags, va_list arguments) {
+// 镜像占位文件的真实尺寸（SAF 索引记录），未覆盖时返回 -1。
+jlong callJavaMetadataSize(const char* path) {
+    if (gVm == nullptr || path == nullptr) return -1;
+    JNIEnv* env = nullptr;
+    bool attached = false;
+    if (gVm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        if (gVm->AttachCurrentThread(&env, nullptr) != JNI_OK) return -1;
+        attached = true;
+    }
+
+    jlong size = -1;
+    jclass clazz = env->FindClass("bridge/NativeBridge");
+    if (clazz != nullptr) {
+        jmethodID method = env->GetStaticMethodID(clazz, "metadataSize", "(Ljava/lang/String;)J");
+        if (method != nullptr) {
+            jstring javaPath = env->NewStringUTF(path);
+            if (javaPath != nullptr) {
+                size = env->CallStaticLongMethod(clazz, method, javaPath);
+                env->DeleteLocalRef(javaPath);
+            }
+        }
+        env->DeleteLocalRef(clazz);
+    }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        size = -1;
+    }
+    if (attached) gVm->DetachCurrentThread();
+    return size;
+}
+
+// SAF 镜像占位文件在磁盘上是 0 字节；引擎若按 stat 尺寸分配缓冲或匹配插件 DLL，
+// 会把真实文件当成空文件（插件加载失败/存档被判损坏）。stat 成功后用索引尺寸覆盖。
+template<typename StatStruct>
+void applyMirrorSizeOverride(const char* path, StatStruct* info) {
+    if (info == nullptr) return;
+    // stat 是引擎高频调用：只有 0 字节常规文件才可能是占位，先过滤再发起 JNI 查询
+    if (info->st_size != 0 || !S_ISREG(info->st_mode)) return;
+    const jlong size = callJavaMetadataSize(path);
+    if (size < 0) return;
+    info->st_size = static_cast<decltype(info->st_size)>(size);
+    info->st_blocks = static_cast<decltype(info->st_blocks)>((size + 511) / 512);
+    // 诊断探针：只打前 32 次覆盖，确认钩子链路后不再刷屏
+    static std::atomic<int> overrideLogCount{0};
+    const int seen = overrideLogCount.fetch_add(1);
+    if (seen < 32) {
+        __android_log_print(ANDROID_LOG_INFO, kTag, "stat size override %lld <- %s",
+                            static_cast<long long>(size), path);
+    }
+}
+
+int hookOpenCommon(OpenFn original, const char* rawPath, int flags, va_list arguments) {
     mode_t mode = 0;
     if ((flags & O_CREAT) != 0) mode = static_cast<mode_t>(va_arg(arguments, int));
+    const std::string resolved = resolveEnginePath(rawPath);
+    const char* path = resolved.c_str();
     if (!pathMatchesPrefix(path)) return callOriginal(original, path, flags, mode);
 
     const std::string scopedSave = callJavaScopedSaveRedirect(path);
@@ -569,7 +651,9 @@ int fopenModeToFlags(const char* mode) {
     }
 }
 
-FILE* hookFopenCommon(FopenFn original, const char* path, const char* mode) {
+FILE* hookFopenCommon(FopenFn original, const char* rawPath, const char* mode) {
+    const std::string resolved = resolveEnginePath(rawPath);
+    const char* path = resolved.c_str();
     if (!pathMatchesPrefix(path)) return original == nullptr ? nullptr : original(path, mode);
     const std::string scopedSave = callJavaScopedSaveRedirect(path);
     if (!scopedSave.empty()) {
@@ -599,51 +683,154 @@ FILE* hookedFopen64(const char* path, const char* mode) {
     return hookFopenCommon(gOriginalFopen64, path, mode);
 }
 
+// freopen 语义：无论成败原流都会被关闭。镜像路由与 fopen 相同的优先级：
+// scoped 存档重定向 → Java open(SAF 真实内容) → open 重定向回退 → 原实现。
+// path 为 nullptr 时按 freopen(NULL, mode, stream) 的“仅改模式”语义原样转发。
+FILE* hookedFreopen(const char* path, const char* mode, FILE* stream) {
+    if (stream == nullptr) return nullptr;
+    if (path == nullptr) {
+        if (gOriginalFreopen == nullptr) {
+            fclose(stream);
+            return nullptr;
+        }
+        return gOriginalFreopen(nullptr, mode, stream);
+    }
+    const std::string resolved = resolveEnginePath(path);
+    const char* p = resolved.c_str();
+    if (!pathMatchesPrefix(p)) {
+        if (gOriginalFreopen == nullptr) {
+            fclose(stream);
+            return nullptr;
+        }
+        return gOriginalFreopen(p, mode, stream);
+    }
+    const std::string scopedSave = callJavaScopedSaveRedirect(p);
+    if (!scopedSave.empty()) {
+        if (gOriginalFreopen == nullptr) {
+            fclose(stream);
+            return nullptr;
+        }
+        return gOriginalFreopen(scopedSave.c_str(), mode, stream);
+    }
+    const int flags = fopenModeToFlags(mode);
+    if (flags >= 0) {
+        const int fd = callJavaOpen(p, flags);
+        if (fd >= 0) {
+            // FILE* 身份保持方案（dup2 把 SAF fd 顶到原流的 fd 上）只在访问模式一致时可用：
+            // dup2 不会更新 FILE 的读写标志，mode 与流原模式不同时返回的 FILE* 会带旧模式，
+            // 读/写将失败。先用 fcntl(F_GETFL) 比对底层 fd 的访问模式。
+            const int target = fileno(stream);
+            const int wantAccess = flags & O_ACCMODE;
+            const int haveAccess = target >= 0 ? fcntl(target, F_GETFL) : -1;
+            const bool accessMatches = haveAccess >= 0 && (haveAccess & O_ACCMODE) == wantAccess;
+            if (accessMatches) {
+                // dup2 前先 fflush：把原流缓冲里的未落盘写冲到旧文件，避免静默丢失；
+                // dup2 成功后 clearerr 清掉旧流上的 EOF/错误标志
+                if (fflush(stream) == 0 && dup2(fd, target) >= 0) {
+                    close(fd);
+                    clearerr(stream);
+                    if ((flags & O_APPEND) == 0) rewind(stream);
+                    return stream;
+                }
+                close(fd);
+                if (gOriginalFreopen == nullptr) return nullptr;
+                return gOriginalFreopen(p, mode, stream);
+            }
+            // 模式不一致：不得落回占位路径（读到全零，回到本修复要解决的问题）。
+            // 经 /proc/self/fd/<fd> 用新 mode 重建 FILE——bionic 对 SAF/FUSE 打开的
+            // fd 支持 procfs reopen；失败（provider pipe 等场景）才回落占位路径
+            char fdPath[64];
+            std::snprintf(fdPath, sizeof(fdPath), "/proc/self/fd/%d", fd);
+            if (gOriginalFreopen != nullptr) {
+                FILE* rebuilt = gOriginalFreopen(fdPath, mode, stream);
+                close(fd);
+                if (rebuilt != nullptr) return rebuilt;
+                __android_log_print(ANDROID_LOG_WARN, kTag,
+                                    "freopen procfs reopen failed, falling back to mirror path errno=%d", errno);
+                return gOriginalFreopen(p, mode, stream);
+            }
+            close(fd);
+        }
+    }
+    const std::string redirected =
+            flags >= 0 ? callJavaOpenRedirect(p, flags) : callJavaRedirect(p);
+    if (gOriginalFreopen == nullptr) {
+        fclose(stream);
+        return nullptr;
+    }
+    return gOriginalFreopen(
+            redirected.empty() ? p : redirected.c_str(), mode, stream);
+}
+
 template<typename Fn, typename... Args>
-int hookSinglePath(Fn original, const char* path, Args... args) {
+int hookSinglePath(Fn original, const char* rawPath, Args... args) {
     if (original == nullptr) return -1;
+    const std::string resolved = resolveEnginePath(rawPath);
+    const char* path = resolved.c_str();
     if (!pathMatchesPrefix(path)) return original(path, args...);
     const std::string redirected = callJavaRedirect(path);
     return original(redirected.empty() ? path : redirected.c_str(), args...);
 }
 
-int hookedStat(const char* path, struct stat* info) {
+int hookedStat(const char* rawPath, struct stat* info) {
     if (gOriginalStat == nullptr) return -1;
+    const std::string resolved = resolveEnginePath(rawPath);
+    const char* path = resolved.c_str();
     if (!pathMatchesPrefix(path)) return gOriginalStat(path, info);
     const std::string redirected = callJavaReadMetadataRedirect(path);
-    return gOriginalStat(redirected.empty() ? path : redirected.c_str(), info);
+    const int result = gOriginalStat(redirected.empty() ? path : redirected.c_str(), info);
+    if (result == 0 && redirected.empty()) applyMirrorSizeOverride(path, info);
+    return result;
 }
 
-int hookedLstat(const char* path, struct stat* info) {
+int hookedLstat(const char* rawPath, struct stat* info) {
     if (gOriginalLstat == nullptr) return -1;
+    const std::string resolved = resolveEnginePath(rawPath);
+    const char* path = resolved.c_str();
     if (!pathMatchesPrefix(path)) return gOriginalLstat(path, info);
     const std::string redirected = callJavaReadMetadataRedirect(path);
-    return gOriginalLstat(redirected.empty() ? path : redirected.c_str(), info);
+    const int result = gOriginalLstat(redirected.empty() ? path : redirected.c_str(), info);
+    if (result == 0 && redirected.empty()) applyMirrorSizeOverride(path, info);
+    return result;
 }
 
-int hookedStat64(const char* path, struct stat64* info) {
+int hookedStat64(const char* rawPath, struct stat64* info) {
     if (gOriginalStat64 == nullptr) return -1;
+    const std::string resolved = resolveEnginePath(rawPath);
+    const char* path = resolved.c_str();
     if (!pathMatchesPrefix(path)) return gOriginalStat64(path, info);
     const std::string redirected = callJavaReadMetadataRedirect(path);
-    return gOriginalStat64(redirected.empty() ? path : redirected.c_str(), info);
+    const int result = gOriginalStat64(redirected.empty() ? path : redirected.c_str(), info);
+    if (result == 0 && redirected.empty()) applyMirrorSizeOverride(path, info);
+    return result;
 }
 
-int hookedLstat64(const char* path, struct stat64* info) {
+int hookedLstat64(const char* rawPath, struct stat64* info) {
     if (gOriginalLstat64 == nullptr) return -1;
+    const std::string resolved = resolveEnginePath(rawPath);
+    const char* path = resolved.c_str();
     if (!pathMatchesPrefix(path)) return gOriginalLstat64(path, info);
     const std::string redirected = callJavaReadMetadataRedirect(path);
-    return gOriginalLstat64(redirected.empty() ? path : redirected.c_str(), info);
+    const int result = gOriginalLstat64(redirected.empty() ? path : redirected.c_str(), info);
+    if (result == 0 && redirected.empty()) applyMirrorSizeOverride(path, info);
+    return result;
 }
 
-int hookedAccess(const char* path, int mode) {
+int hookedAccess(const char* rawPath, int mode) {
     if (gOriginalAccess == nullptr) return -1;
+    const std::string resolved = resolveEnginePath(rawPath);
+    const char* path = resolved.c_str();
     if (!pathMatchesPrefix(path)) return gOriginalAccess(path, mode);
     const std::string redirected = callJavaReadMetadataRedirect(path);
     return gOriginalAccess(redirected.empty() ? path : redirected.c_str(), mode);
 }
 
-int hookedRename(const char* from, const char* to) {
+int hookedRename(const char* rawFrom, const char* rawTo) {
     if (gOriginalRename == nullptr) return -1;
+    const std::string resolvedFrom = resolveEnginePath(rawFrom);
+    const std::string resolvedTo = resolveEnginePath(rawTo);
+    const char* from = resolvedFrom.c_str();
+    const char* to = resolvedTo.c_str();
     const std::string redirectedFrom = pathMatchesPrefix(from) ? callJavaRedirect(from) : std::string();
     const std::string redirectedTo = pathMatchesPrefix(to) ? callJavaRedirect(to) : std::string();
     return gOriginalRename(
@@ -667,8 +854,10 @@ int hookedRmdir(const char* path) {
     return hookSinglePath(gOriginalRmdir, path);
 }
 
-DIR* hookedOpendir(const char* path) {
+DIR* hookedOpendir(const char* rawPath) {
     if (gOriginalOpendir == nullptr) return nullptr;
+    const std::string resolved = resolveEnginePath(rawPath);
+    const char* path = resolved.c_str();
     if (!pathMatchesPrefix(path)) return gOriginalOpendir(path);
     const std::string redirected = callJavaRedirect(path);
     return gOriginalOpendir(redirected.empty() ? path : redirected.c_str());
@@ -839,6 +1028,17 @@ Java_bridge_NativeBridge_interceptor(JNIEnv* env, jclass, jstring prefix) {
     __android_log_print(ANDROID_LOG_INFO, kTag, "SAF open prefix=%s", gPathPrefix.c_str());
 }
 
+// SAF 镜像专属前缀：仅在 SD 镜像启动时由 Java 侧设置，供相对路径改写使用；
+// 与 gPathPrefix（scoped/overlay 卷前缀）分离，避免影响内置存储游戏的相对路径
+extern "C" JNIEXPORT void JNICALL
+Java_bridge_NativeBridge_setMirrorPrefix(JNIEnv* env, jclass, jstring prefix) {
+    const std::string value = takeString(env, prefix);
+    std::lock_guard<std::mutex> lock(gMutex);
+    gMirrorPrefix = value;
+    __android_log_print(ANDROID_LOG_INFO, kTag, "SAF mirror prefix=%s",
+                        gMirrorPrefix.empty() ? "(unset)" : gMirrorPrefix.c_str());
+}
+
 extern "C" JNIEXPORT jint JNICALL
 Java_bridge_NativeBridge_relocate(JNIEnv*, jclass) {
     std::string library;
@@ -860,6 +1060,8 @@ Java_bridge_NativeBridge_relocate(JNIEnv*, jclass) {
             || hookGotSymbol(library, "fopen", reinterpret_cast<void*>(hookedFopen), &gOriginalFopen);
     const bool fopen64Hooked = gOriginalFopen64 != nullptr
             || hookGotSymbol(library, "fopen64", reinterpret_cast<void*>(hookedFopen64), &gOriginalFopen64);
+    const bool freopenHooked = gOriginalFreopen != nullptr
+            || hookGotSymbol(library, "freopen", reinterpret_cast<void*>(hookedFreopen), &gOriginalFreopen);
     const bool statHooked = gOriginalStat != nullptr
             || hookGotSymbol(library, "stat", reinterpret_cast<void*>(hookedStat), &gOriginalStat);
     const bool lstatHooked = gOriginalLstat != nullptr
@@ -944,6 +1146,8 @@ extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
              reinterpret_cast<void*>(Java_bridge_NativeBridge_isLaunchSceneReady)},
             {const_cast<char*>("interceptor"), const_cast<char*>("(Ljava/lang/String;)V"),
              reinterpret_cast<void*>(Java_bridge_NativeBridge_interceptor)},
+            {const_cast<char*>("setMirrorPrefix"), const_cast<char*>("(Ljava/lang/String;)V"),
+             reinterpret_cast<void*>(Java_bridge_NativeBridge_setMirrorPrefix)},
             {const_cast<char*>("relocate"), const_cast<char*>("()I"),
              reinterpret_cast<void*>(Java_bridge_NativeBridge_relocate)},
             {const_cast<char*>("write"), const_cast<char*>("(Ljava/lang/String;[B)Z"),

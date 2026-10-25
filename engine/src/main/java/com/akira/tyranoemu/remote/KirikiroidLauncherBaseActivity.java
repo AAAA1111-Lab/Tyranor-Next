@@ -563,6 +563,12 @@ public abstract class KirikiroidLauncherBaseActivity extends KR2Activity {
         if (prefix != null) {
             try {
                 NativeBridge.interceptor(prefix);
+                // SD 镜像启动时同步设置镜像专属前缀（相对路径改写的基准）；
+                // 内置存储启动不设置，避免相对路径被错拼到存储卷根下
+                String mirrorRootForPrefix = normalizeKrPath(intent.getStringExtra(LaunchContract.SAF_MIRROR_ROOT));
+                if (!mirrorRootForPrefix.isEmpty()) {
+                    NativeBridge.setMirrorPrefix(mirrorRootForPrefix.toLowerCase(Locale.ROOT));
+                }
                 int relocateStatus = NativeBridge.relocate();
                 boolean relocated = relocateStatus != 0;
                 recordBridgeDiagnostic("relocate=" + relocateStatus + " prefix=" + prefix

@@ -15,8 +15,11 @@ import java.io.RandomAccessFile
 import java.util.Locale
 
 object NativeBridge {
+    /** 镜像条目尺寸标记：SAF 侧已被写模式打开，索引尺寸过期，stat 时按需刷新。 */
+    private const val SIZE_DIRTY = -2L
+
     @Volatile
-    private var SAF_DOCUMENTS: Map<String, Uri> = emptyMap()
+    private var SAF_DOCUMENTS: Map<String, KrSafMirror.MirrorEntry> = emptyMap()
     @Volatile
     private var krkrGameReadyListener: Runnable? = null
     @Volatile
@@ -32,6 +35,7 @@ object NativeBridge {
     @JvmStatic external fun isLaunchSceneReady(so: String?): Boolean
     @JvmStatic external fun launch(so: String?, path: String?, useMaps: Boolean): Boolean
     @JvmStatic external fun interceptor(prefix: String?): Unit
+    @JvmStatic external fun setMirrorPrefix(prefix: String?): Unit
     @JvmStatic external fun relocate(): Int
     @JvmStatic external fun write(path: String?, data: ByteArray?): Boolean
 
@@ -47,6 +51,7 @@ object NativeBridge {
         krkrGameReadyListener = listener
     }
 
+    /** 装载 SAF 镜像索引（path→文档 Uri+真实尺寸），供 [open] 路由与 [metadataSize] 查询。 */
     @JvmStatic
     fun configureSafMirror(indexPath: String?) {
         SAF_DOCUMENTS = try {
@@ -55,7 +60,8 @@ object NativeBridge {
             Log.e("NativeBridge", "load SAF mirror index failed path=$indexPath", t)
             emptyMap()
         }
-        Log.i("NativeBridge", "SAF mirror index entries=${SAF_DOCUMENTS.size}")
+        val sized = SAF_DOCUMENTS.values.count { it.size >= 0 }
+        Log.i("NativeBridge", "SAF mirror index entries=${SAF_DOCUMENTS.size} sized=$sized")
     }
 
     @JvmStatic
@@ -90,6 +96,11 @@ object NativeBridge {
         Log.i("NativeBridge", "KRKR Steam config overlay configured target=$target overlay=$overlay")
     }
 
+    /**
+     * 引擎侧文件打开入口（native 钩子上调）。优先级：只读 overlay → scoped 存档重定向 →
+     * SAF 镜像文档（占位仍为 0 字节时，任意模式；异常捕获后回落）→ 本地直开/SAF 兜底。
+     * 返回可用的 fd，失败返回 -1。
+     */
     @Synchronized
     @JvmStatic
     fun open(path: String?, mode: Int): Int {
@@ -108,11 +119,22 @@ object NativeBridge {
             Log.e("NativeBridge", "bad open mode=$mode path=$path", t)
             return -1
         }
-        val mirrorUri = SAF_DOCUMENTS[target.lowercase(Locale.ROOT)]
-        val readOnly = (mode and OsConstants.O_ACCMODE) == OsConstants.O_RDONLY
-        if (readOnly && mirrorUri != null && File(target).length() == 0L) {
-            val mirrorFd = openDocumentUri(mirrorUri, mode)
-            if (mirrorFd >= 0) return mirrorFd
+        val mirror = SAF_DOCUMENTS[target.lowercase(Locale.ROOT)]
+        // 占位文件仍是 0 字节时（未被引擎本地覆写），所有打开模式都路由到 SAF 文档：
+        // 引擎常用 O_RDWR 打开插件 DLL 与既有存档（krkr 的 CreateFile 习惯），
+        // 只读路由会让这些打开落到本地 0 字节占位上、读到全零——插件匹配失败、
+        // 用户放入游戏目录的存档被判为损坏。SAF 打开失败再回落本地占位（保持旧覆盖语义）。
+        if (mirror != null && File(target).length() == 0L) {
+            // SAF 打开可能抛 FileNotFoundException/SecurityException：捕获后回落本地，
+            // 否则异常传出 open()、JNI 侧只会清异常返回 -1，本地回落与日志都被跳过
+            val mirrorFd = runCatching { openDocumentUri(mirror.uri, mode) }
+                .onFailure { Log.w("NativeBridge", "open mirror SAF failed path=$path", it) }
+                .getOrDefault(-1)
+            if (mirrorFd >= 0) {
+                // 非只读打开会改写 SAF 侧内容：索引尺寸即刻过期，标记脏，供 metadataSize 按需刷新
+                if (!isReadOnlyOpen(mode)) markMirrorEntryDirty(target.lowercase(Locale.ROOT))
+                return mirrorFd
+            }
         }
         return try {
             openDirectFile(path, target, mode, diagnosticPrefix = if (redirected != null) "redirect" else null)
@@ -130,6 +152,7 @@ object NativeBridge {
         }
     }
 
+    /** 仅做路径规范化/重定向（不开文件）：scoped 存档重定向优先，其次规范化差异。 */
     @JvmStatic
     fun redirect(path: String?): String? {
         val raw = KrPathUtils.normalizeFilePath(path)
@@ -139,6 +162,7 @@ object NativeBridge {
         return null
     }
 
+    /** [redirect] 的带模式版本：只读时叠加只读 overlay 重定向，供 fopen/open 回退路径选择。 */
     @JvmStatic
     fun redirectOpen(path: String?, mode: Int): String? {
         val raw = KrPathUtils.normalizeFilePath(path)
@@ -151,6 +175,7 @@ object NativeBridge {
         return null
     }
 
+    /** 元数据读取（stat/access）前的重定向：只读 overlay 与 scoped 存档重定向。 */
     @JvmStatic
     fun redirectReadMetadata(path: String?): String? {
         val raw = KrPathUtils.normalizeFilePath(path)
@@ -161,10 +186,54 @@ object NativeBridge {
         return null
     }
 
+    /** scoped 存档目录重定向：命中 SCOPED_SAVE_DIR 配置的路径改写到独立存档根。 */
     @JvmStatic
     fun redirectScopedSave(path: String?): String? {
         val normalized = KrPathUtils.canonicalizeKrStoragePath(KrPathUtils.normalizeFilePath(path))
         return KrPathUtils.redirectScopedSavePath(normalized)
+    }
+
+    /**
+     * 镜像占位文件的 stat 尺寸覆盖：本地占位为 0 字节、SAF 侧记录了真实尺寸时返回该尺寸，
+     * 否则返回 -1（不覆盖——引擎已本地覆写的文件 stat 本来就正确）。
+     * 脏条目（SAF 侧被引擎写入后尺寸过期）先按 ID 查询文档当前尺寸并回填缓存。
+     * 供 native stat/lstat 钩子把 st_size 纠正为真实值：引擎按 stat 尺寸分配缓冲/匹配插件时，
+     * 0 字节会让插件 DLL 与既有存档被当成空文件（issue #129 的 SD 卡 Krkr 启动失败/存档不可读）。
+     */
+    @JvmStatic
+    fun metadataSize(path: String?): Long {
+        val normalized = KrPathUtils.canonicalizeKrStoragePath(KrPathUtils.normalizeFilePath(path))
+            ?: return -1L
+        val key = normalized.lowercase(Locale.ROOT)
+        val entry = SAF_DOCUMENTS[key] ?: return -1L
+        if (entry.size == SIZE_DIRTY) return refreshDirtyMirrorSize(key, entry)
+        if (entry.size < 0L) return -1L
+        return if (File(normalized).length() == 0L) entry.size else -1L
+    }
+
+    /** 把条目标记为脏（尺寸过期）；索引键不存在时忽略。与 [open]/[refreshDirtyMirrorSize] 共用对象锁串行化。 */
+    @Synchronized
+    private fun markMirrorEntryDirty(key: String) {
+        val entry = SAF_DOCUMENTS[key] ?: return
+        if (entry.size == SIZE_DIRTY) return
+        SAF_DOCUMENTS = SAF_DOCUMENTS.toMutableMap().apply { put(key, KrSafMirror.MirrorEntry(entry.uri, SIZE_DIRTY)) }
+    }
+
+    /** 查询脏条目文档的当前尺寸并回填缓存；查询失败返回 -1（保持脏标记，下次再试）。 */
+    @Synchronized
+    private fun refreshDirtyMirrorSize(key: String, entry: KrSafMirror.MirrorEntry): Long {
+        val size = runCatching {
+            KrPathUtils.currentActivity()?.contentResolver
+                ?.query(entry.uri, arrayOf(android.provider.OpenableColumns.SIZE), null, null, null)
+                ?.use { cursor -> if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0) else -1L }
+        }.getOrNull() ?: -1L
+        if (size >= 0) {
+            SAF_DOCUMENTS = SAF_DOCUMENTS.toMutableMap().apply {
+                put(key, KrSafMirror.MirrorEntry(entry.uri, size))
+            }
+            return size
+        }
+        return -1L
     }
 
     private fun recordOpenDiagnostic(value: String) {
@@ -245,6 +314,11 @@ object NativeBridge {
         val activity = KrPathUtils.currentActivity() ?: return -1
         val pfdMode = toPfdMode(mode)
         val pfd = activity.contentResolver.openFileDescriptor(uri, pfdMode) ?: return -1
+        // PFD 无读写追加模式：RDWR|APPEND 以 "rw" 打开后在此定位到末尾实现追加语义
+        // （Os.lseek 需要 FileDescriptor，须在 detachFd 前执行）
+        if (pfdMode == "rw" && (mode and OsConstants.O_APPEND) != 0) {
+            runCatching { android.system.Os.lseek(pfd.fileDescriptor, 0, OsConstants.SEEK_END) }
+        }
         val fd = pfd.detachFd()
         Log.i("NativeBridge", "open SAF $fd $pfdMode -> $uri")
         return fd
@@ -453,8 +527,15 @@ object NativeBridge {
     private fun toPfdMode(mode: Int): String {
         val accessMode = mode and OsConstants.O_ACCMODE
         if (accessMode == OsConstants.O_RDONLY) return "r"
-        if ((mode and OsConstants.O_APPEND) == OsConstants.O_APPEND) return "wa"
-        if ((mode and OsConstants.O_TRUNC) == OsConstants.O_TRUNC) return "wt"
+        if ((mode and OsConstants.O_APPEND) == OsConstants.O_APPEND) {
+            // PFD 不支持 "rwa"（parseMode 只认 r/w/wt/wa/rw/rwt）：RDWR|APPEND 用 "rw"
+            // 打开后由 openDocumentUri 按 O_APPEND lseek 到末尾定位追加语义
+            return if (accessMode == OsConstants.O_RDWR) "rw" else "wa"
+        }
+        if ((mode and OsConstants.O_TRUNC) == OsConstants.O_TRUNC) {
+            // RDWR|TRUNC 必须保持可读，映射为读写截断；仅 WRONLY 截断用 "wt"
+            return if (accessMode == OsConstants.O_RDWR) "rwt" else "wt"
+        }
         if (accessMode == OsConstants.O_WRONLY) return "w"
         if (accessMode == OsConstants.O_RDWR) return "rw"
         throw IllegalArgumentException("Bad mode: $mode")
