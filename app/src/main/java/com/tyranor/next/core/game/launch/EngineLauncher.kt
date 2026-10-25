@@ -297,7 +297,7 @@ object EngineLauncher {
             }
             // 需要目录解析的外置引擎同样要「所有文件访问」权限才能读取游戏目录（SAF 授权对外置 APK 无效）
             if (module.requiresGameDirectoryPath && path != null) {
-                requestAllFilesAccessIfNeeded(context, path)?.let { return it }
+                requestAllFilesAccessIfNeeded(context, game, path)?.let { return it }
             }
             // 与内置引擎路径一致：真正拉起外置引擎前确认未取消，避免取消后仍执行启动副作用
             currentCoroutineContext().ensureActive()
@@ -321,7 +321,7 @@ object EngineLauncher {
         if (path == null) {
             return LaunchResult.Failure.GameDirUnresolved
         }
-        requestAllFilesAccessIfNeeded(context, path)?.let { return it }
+        requestAllFilesAccessIfNeeded(context, game, path)?.let { return it }
         if (game.engine == EngineType.ETHORNELL) {
             prepareEthornell(context, game, path, settings)?.let { return it }
         }
@@ -363,7 +363,7 @@ object EngineLauncher {
         ) {
             try {
                 withContext(Dispatchers.IO) {
-                    KrSafMirror.prepare(context.applicationContext, game.uri, path, game.title)
+                    KrSafMirror.prepare(context.applicationContext, game.uri, path)
                 }
             } catch (ce: CancellationException) {
                 throw ce // 取消不是启动失败，原样传播给调用方
@@ -375,10 +375,10 @@ object EngineLauncher {
                 // UI 回落到「未知路径」），因为此时连失败发生在哪一步都无法断言
                 val failure = t as? KrSafMirror.PrepareException
                 return LaunchResult.Failure.KrkrMirrorPrepareFailed(
-                    stage = if (failure?.stage == KrSafMirror.Stage.SOURCE_UNRESOLVED) {
-                        MirrorPrepareStage.SOURCE_UNRESOLVED
-                    } else {
-                        MirrorPrepareStage.CREATE_FAILED
+                    stage = when (failure?.stage) {
+                        KrSafMirror.Stage.SOURCE_UNRESOLVED -> MirrorPrepareStage.SOURCE_UNRESOLVED
+                        KrSafMirror.Stage.EMPTY_MIRROR -> MirrorPrepareStage.EMPTY_MIRROR
+                        else -> MirrorPrepareStage.CREATE_FAILED
                     },
                     name = failure?.name,
                 )
@@ -777,9 +777,12 @@ object EngineLauncher {
      * Native engines receive a real /storage path, so SAF tree grants are not enough on Android 11+.
      * Match RinneMobile's requirement: ask the user to enable "Manage all files" before launching.
      */
-    private fun requestAllFilesAccessIfNeeded(context: Context, path: String): LaunchResult.Failure? {
+    private fun requestAllFilesAccessIfNeeded(context: Context, game: ScanGame, path: String): LaunchResult.Failure? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
         if (Environment.isExternalStorageManager()) return null
+        // A persisted SAF tree grant is sufficient for the mirror itself. Direct
+        // directory/MediaStore supplementation remains best-effort on restricted ROMs.
+        if (game.engine == EngineType.KIRIKIRI && GamePathUtils.isRemovableStoragePath(path)) return null
         if (!needsAllFilesAccess(path)) return null
 
         val app = context.applicationContext
@@ -980,7 +983,7 @@ object EngineLauncher {
         target: ExternalEmulatorTarget,
     ): LaunchResult {
         val path = resolveGameDirectory(context, game) ?: return LaunchResult.Failure.GameDirUnresolved
-        requestAllFilesAccessIfNeeded(context, path)?.let { return it }
+        requestAllFilesAccessIfNeeded(context, game, path)?.let { return it }
         val exeName = YurisLaunchFiles.resolveExeName(game, path)
             ?: return LaunchResult.Failure.YurisExeMissing
         currentCoroutineContext().ensureActive()
@@ -1388,7 +1391,11 @@ object EngineLauncher {
         val effectiveScoped = scoped || safMirror != null
         val defaultFont = settings.krDefaultFont
         val forceFont = settings.krForceDefaultFont
-        val mirrorOverlayReader = safMirror?.let { createKrMirrorOverlayReader(context, it) }
+        val mirrorOverlayReader = if (settings.krPatchOverlayMode == EngineSettingsStore.KR_PATCH_OVERLAY_OFF) {
+            null
+        } else {
+            safMirror?.let { createKrMirrorOverlayReader(context, it) }
+        }
         val patchOverlay = prepareKrPatchOverlay(context, engineRoot, settings.krPatchOverlayMode, mirrorOverlayReader)
         val steamConfigOverlay = prepareKrSteamConfigOverlay(context, engineRoot, settings.krPatchOverlayMode, mirrorOverlayReader)
         return Intent(context, activity).apply {
@@ -1809,7 +1816,7 @@ object EngineLauncher {
         if (game.engine != EngineType.ARTEMIS) return@withContext ArtemisManualPatchResult.FAILED
         val path = resolveGameDirectory(context, game)
             ?: return@withContext ArtemisManualPatchResult.GAME_DIR_UNRESOLVED
-        requestAllFilesAccessIfNeeded(context, path)?.let {
+        requestAllFilesAccessIfNeeded(context, game, path)?.let {
             return@withContext ArtemisManualPatchResult.PERMISSION_REQUIRED
         }
         if (action(path)) ArtemisManualPatchResult.SUCCESS else ArtemisManualPatchResult.FAILED
@@ -1896,6 +1903,7 @@ object EngineLauncher {
      * 用基础 overlay 顶掉，游戏插件链失效（issue #129 的 GamepadPort 崩溃）。
      */
     private fun prepareKrPatchOverlay(context: Context, engineRoot: String, mode: String, mirrorReader: KrMirrorOverlayReader?): KrPatchOverlay? {
+        if (mode == EngineSettingsStore.KR_PATCH_OVERLAY_OFF) return null
         val root = File(engineRoot)
         if (!root.isDirectory || engineRoot.startsWith("content://")) return null
         val cleanup = cleanupTyranorManagedKrPatchScript(root, mirrorReader)
@@ -1903,8 +1911,6 @@ object EngineLauncher {
             Log.i(TAG, "KRKR patch overlay skipped: mirror patch.tjs unreadable via SAF root=$engineRoot")
             return null
         }
-        if (mode == EngineSettingsStore.KR_PATCH_OVERLAY_OFF) return null
-
         val hasSteamPlugin = rootContainsFbfSteamPlugin(root)
         val force = mode == EngineSettingsStore.KR_PATCH_OVERLAY_FORCE
         val includeBasicPatch = force || cleanup?.hadUserContent != true
@@ -2082,19 +2088,21 @@ object EngineLauncher {
 
     /** Load once per launch; successful empty content stays distinct from unavailable content. */
     private fun createKrMirrorOverlayReader(context: Context, prepared: KrSafMirror.Prepared): KrMirrorOverlayReader {
-        val index = runCatching { KrSafMirror.loadIndex(prepared.indexFile.absolutePath) }
+        val index = runCatching { KrSafMirror.loadIndex(prepared.indexFile.absolutePath, prepared.mirrorRoot) }
             .onFailure { error ->
                 if (error is CancellationException) throw error
                 Log.w(TAG, "KRKR overlay SAF index unavailable", error)
             }
             .getOrDefault(emptyMap())
-        val sources = listOf("patch.tjs", "ds.ini").associateWith { name ->
-            val key = File(prepared.mirrorRoot, name).absolutePath.lowercase(Locale.ROOT)
+        val sources = KrSafMirror.BOOTSTRAP_FILE_NAMES.associateWith { name ->
+            val local = File(prepared.mirrorRoot, name)
+            val key = local.absolutePath.lowercase(Locale.ROOT)
             val entry = index[key]
+            val localOverride = key in prepared.localOverrides
             KrMirrorOverlayReader.Source(
-                uri = entry?.uri?.toString(),
-                size = entry?.size ?: -1L,
-                confirmedAbsent = prepared.bootstrapFiles[name] == KrSafMirror.BootstrapFileState.ABSENT,
+                uri = if (localOverride) Uri.fromFile(local).toString() else entry?.uri?.toString(),
+                size = if (localOverride) local.length() else entry?.size ?: -1L,
+                confirmedAbsent = !localOverride && prepared.bootstrapFiles[name] == KrSafMirror.BootstrapFileState.ABSENT,
             )
         }
         return KrMirrorOverlayReader(sources) { uri -> context.contentResolver.openInputStream(Uri.parse(uri)) }

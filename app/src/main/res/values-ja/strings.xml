@@ -859,4 +859,5 @@
     <string name="ethornell_error_bootstrap">ipl._bp 起動項目を含む対応 system.arc 索引が見つかりません。</string>
     <string name="ethornell_error_font">フォントが無効、または読み取れません。TTF、TTC、OTF、OTC フォントを再度取り込んでください。</string>
     <string name="ethornell_error_userdata">Ethornell 専用ユーザーデータを作成できません。空き容量を確認してください。</string>
+    <string name="launch_empty_krkr_sd_mirror">SD カードのゲームデータを読み取れませんでした。フォルダーへのアクセス権とストレージを確認して再試行してください。</string>
 </resources>

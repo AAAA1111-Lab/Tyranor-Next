@@ -10,20 +10,25 @@ import android.util.AtomicFile
 import android.util.Log
 import androidx.documentfile.provider.DocumentFile
 import java.io.File
-import java.io.FileNotFoundException
 import java.io.IOException
 import java.io.OutputStreamWriter
+import java.io.RandomAccessFile
+import java.nio.channels.FileLockInterruptionException
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Builds the local shadow tree used by Kirikiroid2 for removable-storage game folders.
  *
  * Directories and empty placeholder files satisfy libc stat/access/opendir calls. Actual file
- * contents are supplied by [NativeBridge.open] from the indexed SAF Uri for read-intent opens
- * (read-only, and read-write without truncation/append); write-intent opens stay on the local
- * placeholder so SD source files are never truncated or clobbered. The source `savedata`
+ * contents are supplied by [NativeBridge.open] from the indexed SAF Uri for read-only opens.
+ * Updating an indexed resource first copies it into a durable local override; source documents
+ * are never opened for writing. The source `savedata`
  * subtree is skipped: saves live in the app-private mirror directory by design. Non-empty
  * local files are retained and take precedence, matching Tyranor's original overlay behavior.
  */
@@ -34,6 +39,11 @@ object KrSafMirror {
 
     /** Depth cap for the recursive mirror walk (game trees are shallow; guards odd structures). */
     private const val MIRROR_MAX_DEPTH = 6
+    private const val SIG_SCAN_WAIT_MILLIS = 250L
+    private val preparationLocks = ConcurrentHashMap<String, ReentrantLock>()
+
+    @JvmField
+    val BOOTSTRAP_FILE_NAMES: List<String> = listOf("patch.tjs", "ds.ini")
 
     /**
      * 索引条目：镜像占位文件对应的 SAF 文档与其真实尺寸。尺寸未知（v1 索引）时为 -1。
@@ -60,11 +70,8 @@ object KrSafMirror {
         /** 无法创建 SAF 索引目录。 */
         INDEX_DIR,
 
-        /** 无法创建镜像子目录。 */
-        CHILD_DIR,
-
-        /** 无法创建镜像占位文件。 */
-        CHILD_FILE,
+        /** No source resources could be mirrored; partial-provider failures are logged separately. */
+        EMPTY_MIRROR,
     }
 
     enum class BootstrapFileState { PRESENT, ABSENT, UNAVAILABLE }
@@ -74,7 +81,28 @@ object KrSafMirror {
         val indexFile: File,
         val fileCount: Int,
         val bootstrapFiles: Map<String, BootstrapFileState> = emptyMap(),
+        val localOverrides: Set<String> = emptySet(),
+        val diagnostics: Diagnostics = Diagnostics(),
     )
+
+    data class Diagnostics(
+        val skippedEntries: Int = 0,
+        val queryFailures: Int = 0,
+        val depthLimitedDirectories: Int = 0,
+        val mergeFailures: Int = 0,
+        val scannerTimeouts: Int = 0,
+    )
+
+    private class BuildDiagnostics {
+        var skippedEntries = 0
+        var queryFailures = 0
+        var depthLimitedDirectories = 0
+        var mergeFailures = 0
+        var scannerTimeouts = 0
+
+        fun snapshot() = Diagnostics(skippedEntries, queryFailures, depthLimitedDirectories,
+            mergeFailures, scannerTimeouts)
+    }
 
     /**
      * 构建镜像目录树并写索引。流程：解析 SAF 源目录 → 递归建 0 字节占位（跳过源
@@ -87,34 +115,83 @@ object KrSafMirror {
         context: Context,
         sourceReference: String,
         logicalPath: String,
-        displayName: String,
+    ): Prepared {
+        val indexDirectory = File(context.noBackupFilesDir, "krkr_saf_index")
+        val key = mirrorKey(sourceReference, logicalPath)
+        if (!indexDirectory.isDirectory && !indexDirectory.mkdirs() && !indexDirectory.isDirectory) {
+            throw PrepareException(Stage.INDEX_DIR, indexDirectory.name)
+        }
+        return try {
+            withPreparationLock(indexDirectory, key) {
+                prepareLocked(context, sourceReference, logicalPath, indexDirectory, key)
+            }
+        } catch (error: IOException) {
+            throw PrepareException(Stage.INDEX_DIR, key).also { it.initCause(error) }
+        }
+    }
+
+    /** A process mutex avoids overlapping JVM locks; the file lock also covers other processes. */
+    internal fun <T> withPreparationLock(indexDirectory: File, key: String, action: () -> T): T {
+        val lockFile = File(indexDirectory, "$key.lock")
+        val mutex = preparationLocks.getOrPut(lockFile.absolutePath) { ReentrantLock() }
+        try {
+            mutex.lockInterruptibly()
+        } catch (error: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw CancellationException("Mirror preparation interrupted").also { it.initCause(error) }
+        }
+        try {
+            return RandomAccessFile(lockFile, "rw").use { file ->
+                file.channel.lock().use { action() }
+            }
+        } catch (error: FileLockInterruptionException) {
+            Thread.currentThread().interrupt()
+            throw CancellationException("Mirror preparation interrupted").also { it.initCause(error) }
+        } finally {
+            mutex.unlock()
+        }
+    }
+
+    private fun prepareLocked(
+        context: Context,
+        sourceReference: String,
+        logicalPath: String,
+        indexDir: File,
+        key: String,
     ): Prepared {
         val startedAt = System.currentTimeMillis()
+        val diagnostics = BuildDiagnostics()
         val resolved = resolveDocumentDirectory(context.applicationContext, sourceReference, logicalPath)
             ?: throw PrepareException(Stage.SOURCE_UNRESOLVED, logicalPath)
-        val mirrorRoot = mirrorRootFor(context, sourceReference, logicalPath, displayName)
+        val mirrorRoot = mirrorRootFor(context, sourceReference, logicalPath)
         if (!mirrorRoot.isDirectory && !mirrorRoot.mkdirs()) {
             throw PrepareException(Stage.MIRROR_DIR, mirrorRoot.name)
         }
 
-        val indexDir = File(context.noBackupFilesDir, "krkr_saf_index")
-        val indexFile = File(indexDir, "${mirrorKey(sourceReference, logicalPath)}.idx")
+        val indexFile = File(indexDir, "$key.idx")
+        val localFiles = KrMirrorLocalFiles(mirrorRoot)
         val previousIndex = readIndexFile(indexFile) { it }
         val entries = ArrayList<Triple<String, String, Long>>()
         // Case-collapsed key set shared by mirroring and the merge passes: mirroring
         // dedupes root-tree entries, the merges skip anything already known
         val known = HashSet<String>()
-        mirrorDirectory(context.applicationContext, resolved, mirrorRoot, entries, known, atRoot = true)
+        mirrorDirectory(context.applicationContext, resolved, mirrorRoot, entries, known, diagnostics, atRoot = true)
         val sourceRoot = logicalPath.trimEnd('/')
-        var merged = mergeMissingFromMediaStore(context.applicationContext, resolved.treeUri, sourceRoot, mirrorRoot, entries, known)
-        merged += mergeMissingFromDirectListing(resolved.treeUri, sourceRoot, mirrorRoot, entries, known)
-        merged += probeSigSiblingDlls(context.applicationContext, resolved.treeUri, entries, known)
+        var merged = mergeMissingFromMediaStore(context.applicationContext, resolved.treeUri, sourceRoot, mirrorRoot, entries, known, diagnostics)
+        merged += mergeMissingFromDirectListing(resolved.treeUri, sourceRoot, mirrorRoot, entries, known, diagnostics)
+        merged += probeSigSiblingDlls(context.applicationContext, resolved.treeUri, entries, known, diagnostics)
 
-        val bootstrapFiles = probeBootstrapFiles(context.applicationContext, resolved, mirrorRoot, entries, known)
-        removeStaleSavePlaceholders(mirrorRoot, previousIndex.keys, known)
-        if (!indexDir.isDirectory && !indexDir.mkdirs()) {
-            throw PrepareException(Stage.INDEX_DIR, indexDir.name)
-        }
+        val localOverrides = entries.asSequence().map { it.first }
+            .filter { key -> localFiles.fileForIndexKey(key)?.let(localFiles::isOverridden) == true }.toMutableSet()
+        entries.removeAll { it.first in localOverrides }
+        known.removeAll(localOverrides)
+        val bootstrapFiles = probeBootstrapFiles(context.applicationContext, resolved, mirrorRoot, entries,
+            known, localFiles, localOverrides, diagnostics)
+        removeStaleSavePlaceholders(mirrorRoot, previousIndex.keys, known) { localFiles.isOverridden(it) }
+        val fileCount = entries.size + localOverrides.size
+        val snapshot = diagnostics.snapshot()
+        Log.i(TAG, "mirror diagnostics files=$fileCount $snapshot")
+        if (fileCount == 0) throw PrepareException(Stage.EMPTY_MIRROR, mirrorRoot.name)
         // 索引写入失败会抛 IOException（AtomicFile.failWrite 后原样抛出）：归到 INDEX_DIR，
         // 否则它会落到调用方的 catch-all 分支、报成「未知路径」，用户看不出是写索引失败
         try {
@@ -128,9 +205,9 @@ object KrSafMirror {
         Log.i(
             TAG,
             "mirror prepared root=${mirrorRoot.name} files=${entries.size} sized=$sized " +
-                "mediaMerged=$merged bytes=$totalBytes cost=${System.currentTimeMillis() - startedAt}ms",
+                "mergedFiles=$merged localOverrides=${localOverrides.size} bytes=$totalBytes cost=${System.currentTimeMillis() - startedAt}ms",
         )
-        return Prepared(mirrorRoot, indexFile, entries.size, bootstrapFiles)
+        return Prepared(mirrorRoot, indexFile, fileCount, bootstrapFiles, localOverrides, snapshot)
     }
 
     /** [prepare] 使用的镜像 key；存档管理侧据此定位引擎真实读写的镜像目录，算法必须与 prepare 一致。 */
@@ -144,7 +221,6 @@ object KrSafMirror {
         context: Context,
         sourceReference: String,
         logicalPath: String,
-        @Suppress("UNUSED_PARAMETER") displayName: String,
     ): File {
         val dataRoot = context.filesDir.parentFile ?: context.filesDir
         return findMirrorRoot(File(dataRoot, "games"), mirrorKey(sourceReference, logicalPath))
@@ -166,9 +242,17 @@ object KrSafMirror {
 
     /** Load valid rows even when individual index rows are corrupt. */
     @JvmStatic
-    fun loadIndex(indexPath: String?): Map<String, MirrorEntry> {
+    fun loadIndex(indexPath: String?, mirrorRoot: File? = null): Map<String, MirrorEntry> {
         if (indexPath.isNullOrBlank()) return emptyMap()
-        return readIndexFile(File(indexPath)) { uri -> Uri.parse(uri) }
+        val file = File(indexPath)
+        val localFiles = mirrorRoot?.let { KrMirrorLocalFiles(it) }
+        return readIndexFile(file) { uri -> Uri.parse(uri) }
+            .filterKeys { key ->
+                if (localFiles == null) true else {
+                    val local = localFiles.fileForIndexKey(key)
+                    local != null && !localFiles.isOverridden(local)
+                }
+            }
             .mapValues { (_, holder) -> MirrorEntry(holder.uri, holder.size) }
     }
 
@@ -177,7 +261,8 @@ object KrSafMirror {
         if (!file.isFile) return emptyMap()
         return try {
             file.bufferedReader().useLines { lines -> parseIndexLines(lines.asIterable(), buildUri) }
-        } catch (_: IOException) {
+        } catch (error: IOException) {
+            Log.w(TAG, "mirror index read failed path=${file.path}", error)
             emptyMap()
         }
     }
@@ -214,7 +299,7 @@ object KrSafMirror {
                 }
                 val decodedUri = decode(uri)
                 if (path.isNotBlank() && decodedUri.isNotBlank()) {
-                    result[path] = MirrorEntryHolder(size, buildUri(decodedUri))
+                    result[path] = MirrorEntryHolder(buildUri(decodedUri), size)
                 }
             } catch (_: IllegalArgumentException) {
                 invalidRows++
@@ -225,18 +310,29 @@ object KrSafMirror {
     }
 
     /** Parse intermediate: the built uri plus its size; generic over android/net or test identity. */
-    internal data class MirrorEntryHolder<T>(val size: Long, val uri: T)
+    internal data class MirrorEntryHolder<T>(val uri: T, val size: Long)
 
     internal fun isSourceSavedata(relativePath: String): Boolean =
         relativePath.substringBefore('/').equals("savedata", ignoreCase = true)
 
+    internal fun isSourceEntryExcluded(relativePath: String): Boolean =
+        isSourceSavedata(relativePath) ||
+            relativePath.substringBefore('/').equals(".tyranor-mirror-state", ignoreCase = true)
+
     /** Only remove prior indexed placeholders, never arbitrary zero-byte user save files. */
-    internal fun removeStaleSavePlaceholders(root: File, previousKeys: Set<String>, currentKeys: Set<String>): Int {
+    internal fun removeStaleSavePlaceholders(
+        root: File,
+        previousKeys: Set<String>,
+        currentKeys: Set<String>,
+        isLocalOverride: (File) -> Boolean = { false },
+    ): Int {
         val saveRoot = File(root, "savedata").canonicalFile
+        val localFiles = KrMirrorLocalFiles(root)
         return previousKeys.count { key ->
             if (key in currentKeys) return@count false
-            val file = File(key)
+            val file = localFiles.fileForIndexKey(key) ?: return@count false
             try {
+                if (isLocalOverride(file)) return@count false
                 file.canonicalPath.startsWith(saveRoot.path + File.separator) &&
                     file.isFile && file.length() == 0L && file.delete()
             } catch (_: IOException) {
@@ -268,18 +364,28 @@ object KrSafMirror {
         mirrorRoot: File,
         entries: MutableList<Triple<String, String, Long>>,
         known: MutableSet<String>,
+        localFiles: KrMirrorLocalFiles,
+        localOverrides: MutableSet<String>,
+        diagnostics: BuildDiagnostics,
     ): Map<String, BootstrapFileState> {
-        return listOf("patch.tjs", "ds.ini").associateWith { name ->
+        return BOOTSTRAP_FILE_NAMES.associateWith { name ->
             val local = File(mirrorRoot, name)
             val key = local.absolutePath.lowercase(Locale.ROOT)
+            if (localFiles.isOverridden(local)) {
+                localOverrides.add(key)
+                return@associateWith BootstrapFileState.PRESENT
+            }
             if (key in known) return@associateWith BootstrapFileState.PRESENT
             try {
-                val uri = DocumentsContract.buildDocumentUriUsingTree(source.treeUri, "${source.documentId}/$name")
+                val uri = DocumentsContract.buildDocumentUriUsingTree(source.treeUri, childDocumentId(source.documentId, name))
                 val cursor = queryWithOptionalSize(
                     context, uri,
                     arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID,
                         DocumentsContract.Document.COLUMN_MIME_TYPE, DocumentsContract.Document.COLUMN_SIZE),
-                ) ?: return@associateWith BootstrapFileState.UNAVAILABLE
+                ) ?: run {
+                    diagnostics.queryFailures++
+                    return@associateWith BootstrapFileState.UNAVAILABLE
+                }
                 cursor.use {
                     if (!it.moveToFirst()) return@associateWith BootstrapFileState.ABSENT
                     val mimeColumn = it.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
@@ -295,15 +401,17 @@ object KrSafMirror {
                     known.add(key)
                     BootstrapFileState.PRESENT
                 }
-            } catch (_: FileNotFoundException) {
-                BootstrapFileState.ABSENT
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
+                diagnostics.queryFailures++
                 Log.w(TAG, "bootstrap document probe unavailable: $name", error)
                 BootstrapFileState.UNAVAILABLE
             }
         }
     }
+
+    internal fun childDocumentId(parentDocumentId: String, name: String): String =
+        parentDocumentId + (if (parentDocumentId.endsWith(':') || parentDocumentId.endsWith('/')) "" else "/") + name
 
     // 目录级 scanFile 已移除：实测 MediaScannerConnection 对目录路径不递归建行
     //（本机 ROM 25-67ms 即回调但 children 无变化），真正生效的是
@@ -322,6 +430,7 @@ object KrSafMirror {
         mirrorRoot: File,
         entries: MutableList<Triple<String, String, Long>>,
         known: MutableSet<String>,
+        diagnostics: BuildDiagnostics,
     ): Int {
         var merged = 0
         try {
@@ -357,10 +466,13 @@ object KrSafMirror {
                         continue
                     }
                     val size = if (cursor.isNull(sizeColumn)) -1L else cursor.getLong(sizeColumn)
-                    if (addMergedEntry(treeUri, sourceRoot, data, size, mirrorRoot, entries, known)) merged++
+                    if (addMergedEntry(treeUri, sourceRoot, data, size, mirrorRoot, entries, known, diagnostics)) merged++
                 }
             }
         } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+            diagnostics.queryFailures++
+            diagnostics.mergeFailures++
             Log.w(TAG, "merge media store entries failed root=$sourceRoot", t)
         }
         if (merged > 0) Log.i(TAG, "media store merged $merged missing files for $sourceRoot")
@@ -377,20 +489,32 @@ object KrSafMirror {
         mirrorRoot: File,
         entries: MutableList<Triple<String, String, Long>>,
         known: MutableSet<String>,
+        diagnostics: BuildDiagnostics,
     ): Int {
         val rootDir = File(sourceRoot)
         val canList = runCatching { rootDir.isDirectory && rootDir.canRead() }.getOrDefault(false)
-        if (!canList) return 0
+        if (!canList) {
+            diagnostics.mergeFailures++
+            return 0
+        }
         var merged = 0
         // 深度封顶防异常结构递归；krkr 游戏目录树通常 ≤4 层
         fun walk(dir: File, depth: Int) {
-            if (depth > 6) return
-            val children = runCatching { dir.listFiles() }.getOrNull() ?: return
+            if (depth > MIRROR_MAX_DEPTH) {
+                diagnostics.depthLimitedDirectories++
+                Log.w(TAG, "direct mirror depth limit reached dir=${dir.name}")
+                return
+            }
+            val children = runCatching { dir.listFiles() }.getOrNull() ?: run {
+                diagnostics.mergeFailures++
+                return
+            }
             for (child in children) {
+                if (depth == 0 && isSourceEntryExcluded(child.name)) continue
                 if (child.isDirectory) {
                     walk(child, depth + 1)
                 } else if (child.isFile) {
-                    if (addMergedEntry(treeUri, sourceRoot, child.absolutePath, child.length(), mirrorRoot, entries, known)) {
+                    if (addMergedEntry(treeUri, sourceRoot, child.absolutePath, child.length(), mirrorRoot, entries, known, diagnostics)) {
                         merged++
                     }
                 }
@@ -421,6 +545,7 @@ object KrSafMirror {
         treeUri: Uri,
         entries: MutableList<Triple<String, String, Long>>,
         known: MutableSet<String>,
+        diagnostics: BuildDiagnostics,
     ): Int {
         val candidates = ArrayList<Pair<String, String>>() // (mirrorKey, sourcePath)
         val sigEntries = entries.filter { it.first.endsWith(".dll.sig") }.toList()
@@ -434,15 +559,20 @@ object KrSafMirror {
             candidates += dllMirrorKey to dllSourcePath
         }
         if (candidates.isEmpty()) return 0
-        // 批量扫描：一次调用带回逐路径回调，汇总闩等待，单文件扫描在 ROM 上近乎即时
+        // Scan callbacks are best-effort; never add seconds to every launch for a missing DLL.
+        val latch = CountDownLatch(candidates.size)
         try {
-            val latch = java.util.concurrent.CountDownLatch(candidates.size)
             MediaScannerConnection.scanFile(context, candidates.map { it.second }.toTypedArray(), null) { _, _ ->
                 latch.countDown()
             }
-            latch.await(5, java.util.concurrent.TimeUnit.SECONDS)
-        } catch (t: Throwable) {
-            Log.w(TAG, "sig sibling scan failed", t)
+            if (!awaitScanCallbacks(latch)) {
+                diagnostics.scannerTimeouts++
+                Log.w(TAG, "sig sibling scan timed out remaining=${latch.count} candidates=${candidates.size}")
+            }
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
+            diagnostics.mergeFailures++
+            Log.w(TAG, "sig sibling scan failed remaining=${latch.count}", error)
         }
         var merged = 0
         for ((dllMirrorKey, dllSourcePath) in candidates) {
@@ -456,8 +586,15 @@ object KrSafMirror {
                 )?.use { cursor ->
                     if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0) else -1L
                 } ?: -1L
+            }.onFailure { error ->
+                if (error is CancellationException) throw error
+                diagnostics.queryFailures++
+                Log.w(TAG, "sig sibling metadata unavailable path=$dllSourcePath", error)
             }.getOrDefault(-1L)
-            if (size <= 0) continue
+            if (size <= 0) {
+                diagnostics.skippedEntries++
+                continue
+            }
             val local = File(dllMirrorKey)
             val parent = local.parentFile
             if (parent == null || (!parent.isDirectory && !runCatching { parent.mkdirs() }.getOrDefault(false))) continue
@@ -469,6 +606,14 @@ object KrSafMirror {
         if (merged > 0) Log.i(TAG, "sig probing merged $merged plugin dlls")
         return merged
     }
+
+    internal fun awaitScanCallbacks(latch: CountDownLatch, timeoutMillis: Long = SIG_SCAN_WAIT_MILLIS): Boolean =
+        try {
+            latch.await(timeoutMillis, TimeUnit.MILLISECONDS)
+        } catch (error: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw CancellationException("Mirror media scan interrupted").also { it.initCause(error) }
+        }
 
     /** 文档 ID（`卷:相对路径`）还原为 `/storage/卷/相对路径`；主存储 `primary:` 对应 emulated/0。 */
     private fun documentIdToStoragePath(documentId: String): String? {
@@ -493,6 +638,7 @@ object KrSafMirror {
         mirrorRoot: File,
         entries: MutableList<Triple<String, String, Long>>,
         known: MutableSet<String>,
+        diagnostics: BuildDiagnostics,
     ): Boolean {
         try {
             if (!sourcePath.startsWith("$sourceRoot/")) return false
@@ -500,7 +646,7 @@ object KrSafMirror {
             if (relative.isBlank()) return false
             // 补全路径的中央拦截：源 savedata 子树与 mirrorDirectory 的跳过规则一致，
             // 否则 MediaStore/File 直列会把源存档合并成占位、绕过镜像跳过逻辑
-            if (isSourceSavedata(relative)) {
+            if (isSourceEntryExcluded(relative)) {
                 return false
             }
             val local = File(mirrorRoot, relative.lowercase(Locale.ROOT))
@@ -523,6 +669,8 @@ object KrSafMirror {
             known.add(key)
             return true
         } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+            diagnostics.skippedEntries++
             Log.w(TAG, "merge entry failed path=$sourcePath", t)
             return false
         }
@@ -545,10 +693,15 @@ object KrSafMirror {
         destination: File,
         entries: MutableList<Triple<String, String, Long>>,
         seenKeys: MutableSet<String>,
+        diagnostics: BuildDiagnostics,
         depth: Int = 0,
         atRoot: Boolean = false,
     ) {
-        if (depth > MIRROR_MAX_DEPTH) return
+        if (depth > MIRROR_MAX_DEPTH) {
+            diagnostics.depthLimitedDirectories++
+            Log.w(TAG, "SAF mirror depth limit reached dir=${destination.name}")
+            return
+        }
         val destRoot = runCatching { destination.canonicalPath }.getOrNull() ?: destination.absolutePath
         val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
             source.treeUri,
@@ -565,7 +718,10 @@ object KrSafMirror {
             if (error is CancellationException) throw error
             Log.w(TAG, "mirror children query failed dir=${destination.name}", error)
             null
-        } ?: return
+        } ?: run {
+            diagnostics.queryFailures++
+            return
+        }
         try {
             cursor.use {
                 val idColumn = it.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
@@ -574,16 +730,24 @@ object KrSafMirror {
                 val sizeColumn = it.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
                 while (it.moveToNext()) {
                     try {
-                        val documentId = it.getString(idColumn) ?: continue
-                        val name = it.getString(nameColumn)?.takeIf { n -> n.isNotBlank() } ?: continue
+                        val documentId = it.getString(idColumn)
+                        val name = it.getString(nameColumn)
+                        if (documentId.isNullOrBlank() || name.isNullOrBlank()) {
+                            diagnostics.skippedEntries++
+                            continue
+                        }
                         val isDirectory = it.getString(mimeColumn) == DocumentsContract.Document.MIME_TYPE_DIR
                         val size = if (sizeColumn < 0 || it.isNull(sizeColumn)) -1L else it.getLong(sizeColumn)
-                        val local = safeMirrorChild(destination, destRoot, name.lowercase(Locale.ROOT)) ?: continue
-                        if (atRoot && isSourceSavedata(local.name)) continue
+                        val local = safeMirrorChild(destination, destRoot, name.lowercase(Locale.ROOT))
+                        if (local == null) {
+                            diagnostics.skippedEntries++
+                            continue
+                        }
+                        if (atRoot && isSourceEntryExcluded(local.name)) continue
                         if (isDirectory) {
                             if (!local.isDirectory && !local.mkdirs()) throw IOException("Cannot create mirror directory")
                             mirrorDirectory(context, ResolvedDocument(source.treeUri, documentId), local,
-                                entries, seenKeys, depth + 1)
+                                entries, seenKeys, diagnostics, depth + 1)
                         } else {
                             val key = local.absolutePath.lowercase(Locale.ROOT)
                             if (key in seenKeys) continue
@@ -594,6 +758,7 @@ object KrSafMirror {
                         }
                     } catch (error: Exception) {
                         if (error is CancellationException) throw error
+                        diagnostics.skippedEntries++
                         // A provider row or one invalid local filename must not discard sibling entries.
                         Log.w(TAG, "mirror entry skipped dir=${destination.name}", error)
                     }
@@ -601,6 +766,7 @@ object KrSafMirror {
             }
         } catch (error: Exception) {
             if (error is CancellationException) throw error
+            diagnostics.queryFailures++
             // Cursor iteration/close can fail after some rows; keep the already collected files.
             Log.w(TAG, "mirror children listing incomplete dir=${destination.name}", error)
         }
@@ -648,15 +814,13 @@ object KrSafMirror {
             candidates[treeId] = permission.uri
         }
         val ordered = candidates.entries
-            .filter { (treeId, _) -> isSameOrDescendant(documentId, treeId) }
+            .filter { (treeId, _) -> relativeDocumentPath(documentId, treeId) != null }
             .sortedByDescending { it.key.length }
         for ((treeId, treeUri) in ordered) {
             val root = DocumentFile.fromTreeUri(context, treeUri)?.takeIf { it.isDirectory } ?: continue
             var current = root
             var failed = false
-            val relative = if (documentId.length == treeId.length) "" else {
-                documentId.substring(treeId.length + 1)
-            }
+            val relative = relativeDocumentPath(documentId, treeId) ?: continue
             for (segment in relative.split('/').filter { it.isNotBlank() }) {
                 val next = current.findFile(segment)
                     ?: current.listFiles().firstOrNull { it.name.equals(segment, ignoreCase = true) }
@@ -702,11 +866,13 @@ object KrSafMirror {
         }
     }
 
-    private fun isSameOrDescendant(documentId: String, treeId: String): Boolean =
-        documentId.equals(treeId, ignoreCase = true) ||
-            (documentId.length > treeId.length &&
-                documentId.regionMatches(0, treeId, 0, treeId.length, ignoreCase = true) &&
-                documentId[treeId.length] == '/')
+    /** ExternalStorageProvider volume roots end in ':' rather than a path separator. */
+    internal fun relativeDocumentPath(documentId: String, treeId: String): String? {
+        if (documentId.equals(treeId, ignoreCase = true)) return ""
+        val prefix = treeId + if (treeId.endsWith(':') || treeId.endsWith('/')) "" else "/"
+        if (!documentId.startsWith(prefix, ignoreCase = true)) return null
+        return documentId.substring(prefix.length)
+    }
 
     /** Shared streaming serializer; production never materializes the whole index String. */
     internal fun writeIndexText(output: Appendable, entries: List<Triple<String, String, Long>>) {
@@ -735,8 +901,8 @@ object KrSafMirror {
         }
     }
 
-    // java.util.Base64（API 26+，与 minSdk 一致）：URL-safe 字母表、无 padding,
-    // 与旧 android.util.Base64(NO_WRAP or URL_SAFE) 输出完全一致，且 JVM 单测可直接运行
+    // API 26+ URL-safe encoding without padding; the decoder also accepts padded legacy rows.
+    // java.util.Base64 keeps the production format available to plain JVM regression tests.
     private fun encode(value: String): String =
         java.util.Base64.getUrlEncoder().withoutPadding()
             .encodeToString(value.toByteArray(Charsets.UTF_8))

@@ -859,4 +859,5 @@
     <string name="ethornell_error_bootstrap">未找到受支持的 system.arc 与 ipl._bp 启动索引。</string>
     <string name="ethornell_error_font">字体无效或不可读取，请重新导入 TTF、TTC、OTF 或 OTC 字体。</string>
     <string name="ethornell_error_userdata">无法创建 Ethornell 私有用户数据目录，请检查可用空间。</string>
+    <string name="launch_empty_krkr_sd_mirror">未能读取到 SD 卡游戏资源，请检查目录授权与存储状态后重试</string>
 </resources>

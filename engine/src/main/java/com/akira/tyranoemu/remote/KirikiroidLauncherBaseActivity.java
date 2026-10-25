@@ -101,7 +101,9 @@ public abstract class KirikiroidLauncherBaseActivity extends KR2Activity {
         launchOrientationGuardEnabled = !getIntent().getBooleanExtra(LaunchContract.ORIGIN_MODE, false);
         applyKrkrRequestedOrientation();
         doSetSystemUiVisibility();
-        NativeBridge.configureSafMirror(getIntent().getStringExtra(LaunchContract.SAF_MIRROR_INDEX));
+        NativeBridge.configureSafMirror(
+                getIntent().getStringExtra(LaunchContract.SAF_MIRROR_INDEX),
+                getIntent().getStringExtra(LaunchContract.SAF_MIRROR_ROOT));
         // Anime4K 后处理：必须在 super.onCreate（GL SurfaceView 构造，EGL 版本定型）前配置
         com.core.gl.Anime4kRuntime.configureFromIntent(this, getIntent());
         // Must run before super.onCreate (native library loading and preference singleton construction).

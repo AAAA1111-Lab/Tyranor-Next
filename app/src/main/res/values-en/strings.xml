@@ -859,4 +859,5 @@
     <string name="ethornell_error_bootstrap">No supported system.arc index with an ipl._bp bootstrap was found.</string>
     <string name="ethornell_error_font">Invalid or unreadable font. Import a TTF, TTC, OTF or OTC font again.</string>
     <string name="ethornell_error_userdata">Cannot create private Ethornell user data. Check available storage space.</string>
+    <string name="launch_empty_krkr_sd_mirror">No SD-card game resources could be read. Check directory access and storage, then retry.</string>
 </resources>

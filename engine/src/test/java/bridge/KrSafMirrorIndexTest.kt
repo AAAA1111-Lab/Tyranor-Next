@@ -1,13 +1,19 @@
 package bridge
 
 import java.io.File
-import org.junit.Assert.assertFalse
-import org.junit.Rule
-import org.junit.rules.TemporaryFolder
+import java.util.Locale
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.coroutines.cancellation.CancellationException
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 
 /**
  * Pure-JVM tests for the KrSafMirror index and path conversion (no SAF/Context/Android
@@ -102,16 +108,6 @@ class KrSafMirrorIndexTest {
     fun documentIdConversionNormalizesSeparatorsAndTrailingSlash() {
         assertEquals("VOL:sub/file.xp3", KrSafMirror.storagePathToDocumentId("/storage/VOL/sub\\file.xp3"))
         assertEquals("VOL:sub", KrSafMirror.storagePathToDocumentId("/storage/VOL/sub/"))
-    }
-
-    @Test
-    fun mirrorKeyIsStableAndDependsOnBothInputs() {
-        val key1 = KrSafMirror.mirrorKey("content://tree/A", "/storage/A/Game")
-        val key2 = KrSafMirror.mirrorKey("content://tree/A", "/storage/A/Game")
-        assertEquals(key1, key2)
-        assertEquals(16, key1.length)
-        assertTrue(key1 != KrSafMirror.mirrorKey("content://tree/B", "/storage/A/Game"))
-        assertTrue(key1 != KrSafMirror.mirrorKey("content://tree/A", "/storage/A/Game2"))
     }
 
     @Test
@@ -252,6 +248,125 @@ class KrSafMirrorIndexTest {
         }
         assertEquals(stable, KrSafMirror.findMirrorRoot(games, key))
         assertEquals("save", File(legacy, "savedata/slot.ksd").readText())
+    }
+
+
+    @Test
+    fun childDocumentIdsDoNotInsertASlashAfterTheVolumeColon() {
+        assertEquals("VOL:patch.tjs", KrSafMirror.childDocumentId("VOL:", "patch.tjs"))
+        assertEquals("primary:ds.ini", KrSafMirror.childDocumentId("primary:", "ds.ini"))
+        assertEquals("VOL:game/patch.tjs", KrSafMirror.childDocumentId("VOL:game", "patch.tjs"))
+        assertEquals("VOL:game/patch.tjs", KrSafMirror.childDocumentId("VOL:game/", "patch.tjs"))
+    }
+
+    @Test
+    fun scanCallbacksHaveABoundedWaitAndPropagateInterruption() {
+        assertTrue(KrSafMirror.awaitScanCallbacks(CountDownLatch(0), 0L))
+        assertFalse(KrSafMirror.awaitScanCallbacks(CountDownLatch(1), 0L))
+        try {
+            Thread.currentThread().interrupt()
+            try {
+                KrSafMirror.awaitScanCallbacks(CountDownLatch(1), 0L)
+                fail("Interrupted scan must cancel preparation")
+            } catch (_: CancellationException) {
+                assertTrue(Thread.currentThread().isInterrupted)
+            }
+        } finally {
+            Thread.interrupted()
+        }
+    }
+
+    @Test
+    fun sameGamePreparationHasASingleWriter() {
+        val directory = temporary.newFolder("index-locks")
+        val firstEntered = CountDownLatch(1)
+        val releaseFirst = CountDownLatch(1)
+        val secondStarted = CountDownLatch(1)
+        val secondEntered = CountDownLatch(1)
+        val error = AtomicReference<Throwable>()
+        val first = Thread {
+            try {
+                KrSafMirror.withPreparationLock(directory, "same-game") {
+                    firstEntered.countDown()
+                    check(releaseFirst.await(5, TimeUnit.SECONDS))
+                }
+            } catch (failure: Throwable) {
+                error.set(failure)
+            }
+        }
+        val second = Thread {
+            try {
+                secondStarted.countDown()
+                KrSafMirror.withPreparationLock(directory, "same-game") { secondEntered.countDown() }
+            } catch (failure: Throwable) {
+                error.set(failure)
+            }
+        }
+        try {
+            first.start()
+            assertTrue(firstEntered.await(5, TimeUnit.SECONDS))
+            second.start()
+            assertTrue(secondStarted.await(5, TimeUnit.SECONDS))
+            assertFalse(secondEntered.await(100, TimeUnit.MILLISECONDS))
+        } finally {
+            releaseFirst.countDown()
+            first.join(5000)
+            second.join(5000)
+        }
+        assertFalse(first.isAlive)
+        assertFalse(second.isAlive)
+        assertNull(error.get())
+        assertEquals(0L, secondEntered.count)
+    }
+
+    @Test
+    fun staleSaveCleanupPreservesMarkedEmptyLocalEdits() {
+        val root = temporary.newFolder("marked-mirror")
+        val file = File(root, "savedata/empty.ksd").apply {
+            requireNotNull(parentFile).mkdirs()
+            createNewFile()
+        }
+        assertEquals(0, KrSafMirror.removeStaleSavePlaceholders(root, setOf(file.path), emptySet()) {
+            it == file
+        })
+        assertTrue(file.exists())
+    }
+
+
+    @Test
+    fun internalMirrorStateIsNeverImportedFromTheGameSource() {
+        assertTrue(KrSafMirror.isSourceEntryExcluded(".tyranor-mirror-state"))
+        assertTrue(KrSafMirror.isSourceEntryExcluded(".TYRANOR-MIRROR-STATE/local-overrides/hash"))
+        assertTrue(KrSafMirror.isSourceEntryExcluded("savedata/slot.ksd"))
+        assertFalse(KrSafMirror.isSourceEntryExcluded("data/.tyranor-mirror-state/source"))
+        assertFalse(KrSafMirror.isSourceEntryExcluded(".tyranor-mirror-state.txt"))
+    }
+
+    @Test
+    fun volumeRootGrantsKeepTheFirstChildNameIntact() {
+        assertEquals("game/plugins", KrSafMirror.relativeDocumentPath("VOL:game/plugins", "VOL:"))
+        assertEquals("", KrSafMirror.relativeDocumentPath("VOL:", "vol:"))
+        assertEquals("plugins", KrSafMirror.relativeDocumentPath("VOL:game/plugins", "VOL:game"))
+        assertEquals("plugins", KrSafMirror.relativeDocumentPath("VOL:game/plugins", "VOL:game/"))
+        assertNull(KrSafMirror.relativeDocumentPath("VOL:game-other", "VOL:game"))
+        assertNull(KrSafMirror.relativeDocumentPath("OTHER:game", "VOL:"))
+    }
+
+    @Test
+    fun stalePlaceholderCleanupResolvesTheActualLegacyRootCase() {
+        val root = temporary.newFolder("OldTitle-0123456789abcdef")
+        val stale = File(root, "savedata/stale.ksd").apply {
+            requireNotNull(parentFile).mkdirs()
+            createNewFile()
+        }
+        val local = File(root, "savedata/local.ksd").apply { createNewFile() }
+        val state = KrMirrorLocalFiles(root)
+        state.markOverridden(local)
+        val keys = setOf(stale.path.lowercase(Locale.ROOT), local.path.lowercase(Locale.ROOT),
+            root.path.lowercase(Locale.ROOT) + "/../outside")
+        assertEquals(1, KrSafMirror.removeStaleSavePlaceholders(root, keys, emptySet(), state::isOverridden))
+        assertFalse(stale.exists())
+        assertTrue(local.exists())
     }
 
 }

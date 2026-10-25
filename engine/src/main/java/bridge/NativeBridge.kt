@@ -7,23 +7,19 @@ import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
 import android.system.OsConstants
 import android.util.Log
-import com.core.engine.LaunchContract
-import org.tvp.kirikiri2.KR2Activity
 import androidx.documentfile.provider.DocumentFile
+import com.core.engine.LaunchContract
 import java.io.File
 import java.io.RandomAccessFile
 import java.util.Locale
+import org.tvp.kirikiri2.KR2Activity
 
 object NativeBridge {
-    /**
-     * SAF 读取失败的键：stat 尺寸覆盖被抑制（stat=0 与回退占位内容一致），
-     * 直到该键的镜像打开再次成功。并发集合：stat 钩子任意线程调用。
-     */
-    private val SAF_READ_FAILED: MutableSet<String> =
-        java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap())
+    /** Java/native ABI sentinel: authoritative mirror failure, never retry its placeholder. */
+    private const val MIRROR_OPEN_FAILED = -2
 
     @Volatile
-    private var SAF_DOCUMENTS: Map<String, KrSafMirror.MirrorEntry> = emptyMap()
+    private var safMirror = KrMirrorReadSession<KrSafMirror.MirrorEntry>(emptyMap())
     @Volatile
     private var krkrGameReadyListener: Runnable? = null
     @Volatile
@@ -57,17 +53,17 @@ object NativeBridge {
 
     /** 装载 SAF 镜像索引（path→文档 Uri+真实尺寸），供 [open] 路由与 [metadataSize] 查询。 */
     @JvmStatic
-    fun configureSafMirror(indexPath: String?) {
+    @JvmOverloads
+    fun configureSafMirror(indexPath: String?, mirrorRoot: String? = null) {
+        val root = mirrorRoot?.takeIf { it.isNotBlank() }?.let { File(it) }
         val documents = try {
-            KrSafMirror.loadIndex(indexPath)
+            KrSafMirror.loadIndex(indexPath, root)
         } catch (t: Throwable) {
             Log.e("NativeBridge", "load SAF mirror index failed path=$indexPath", t)
             emptyMap()
         }
-        synchronized(this) {
-            SAF_DOCUMENTS = documents
-            SAF_READ_FAILED.clear()
-        }
+        val localFiles = root?.let { KrMirrorLocalFiles(it) }
+        safMirror = KrMirrorReadSession(documents, localFiles)
         val sized = documents.values.count { it.size >= 0 }
         Log.i("NativeBridge", "SAF mirror index entries=${documents.size} sized=$sized")
     }
@@ -106,8 +102,8 @@ object NativeBridge {
 
     /**
      * 引擎侧文件打开入口（native 钩子上调）。优先级：只读 overlay → scoped 存档重定向 →
-     * SAF 镜像文档（占位仍为 0 字节时以只读 fd 供给资源）→ 本地直开/SAF 兜底。
-     * 返回可用的 fd，失败返回 -1。
+     * SAF 镜像文档（只读资源或本地 copy-up）→ 本地直开/SAF 兜底。
+     * 返回可用 fd；-1 允许 native 常规回退，-2 为必须停止回退的镜像 I/O 失败。
      */
     @JvmStatic
     fun open(path: String?, mode: Int): Int {
@@ -126,26 +122,54 @@ object NativeBridge {
             Log.e("NativeBridge", "bad open mode=$mode path=$path", t)
             return -1
         }
-        val documents = SAF_DOCUMENTS
+        val session = safMirror
         val key = target.lowercase(Locale.ROOT)
-        val mirror = documents[key]
-        // Engine CreateFile often asks for O_RDWR even when loading a DLL. Supply
-        // such mirror assets through a read-only SAF fd: reads work, writes fail
-        // with EBADF rather than modifying SD source data. Explicit write modes
-        // (O_WRONLY/O_TRUNC/O_APPEND) continue to use the local placeholder.
-        val readIntent = mirrorReadAllowed(
-            openAccess(mode),
-            append = (mode and OsConstants.O_APPEND) != 0,
-            truncate = (mode and OsConstants.O_TRUNC) != 0,
-        )
-        if (mirror != null && readIntent && File(target).length() == 0L) {
-            val mirrorFd = runCatching { openDocumentUri(mirror.uri, OsConstants.O_RDONLY) }
-                .onFailure { Log.w("NativeBridge", "open mirror SAF failed path=$path", it) }
-                .getOrDefault(-1)
-            recordMirrorReadResult(documents, key, succeeded = mirrorFd >= 0)
-            if (mirrorFd >= 0) return mirrorFd
-            // Failed reads fall back to the empty placeholder. Suppress its indexed
-            // size so the next stat agrees with the bytes libc can actually read.
+        val mirror = session.entry(key)
+        if (mirror != null) {
+            try {
+                val local = File(target)
+                val localFiles = session.localFiles ?: throw java.io.IOException("Missing mirror local state")
+                return localFiles.withFileLock(local) {
+                    if (session.entry(key) == null || localFiles.isOverridden(local) || local.length() > 0L) {
+                        return@withFileLock openMirrorLocalFile(session, key, localFiles, path, target, mode)
+                    }
+                    val readIntent = mirrorReadAllowed(
+                        openAccess(mode),
+                        append = (mode and OsConstants.O_APPEND) != 0,
+                        truncate = (mode and OsConstants.O_TRUNC) != 0,
+                    )
+                    if (readIntent && openAccess(mode) == FileAccess.READ_WRITE) {
+                        // Preserve r+/O_RDWR semantics without ever granting a writable
+                        // source fd. Complete copy-up and its durable marker before
+                        // exposing the local fd; concurrent opens share this key lock.
+                        localFiles.copyUp(local, mirror.size) {
+                            val activity = KrPathUtils.currentActivity()
+                                ?: throw java.io.IOException("Missing mirror activity")
+                            activity.contentResolver.openInputStream(mirror.uri)
+                                ?: throw java.io.IOException("Cannot open mirror source")
+                        }
+                        session.promote(key)
+                        return@withFileLock openDirectFile(path, target, mode, "mirror copy-up")
+                            .takeIf { it >= 0 } ?: MIRROR_OPEN_FAILED
+                    }
+                    if (readIntent) {
+                        val fd = openDocumentUri(mirror.uri, OsConstants.O_RDONLY)
+                        session.recordRead(key, succeeded = fd >= 0)
+                        if (fd >= 0) fd else MIRROR_OPEN_FAILED
+                    } else {
+                        // Explicit write intent stays local. Persist ownership even if
+                        // the user later truncates it to zero; prepare must not restore
+                        // original source bytes over that intentional empty override.
+                        openMirrorLocalFile(session, key, localFiles, path, target, mode)
+                    }
+                }
+            } catch (error: java.util.concurrent.CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                session.recordRead(key, succeeded = false)
+                Log.w("NativeBridge", "mirror open failed path=$path flags=$mode", error)
+                return MIRROR_OPEN_FAILED
+            }
         }
         return try {
             openDirectFile(path, target, mode, diagnosticPrefix = if (redirected != null) "redirect" else null)
@@ -162,6 +186,31 @@ object NativeBridge {
             -1
         }
     }
+
+    /** Publish local ownership only after a usable fd exists, before exposing it to native. */
+    private fun openMirrorLocalFile(
+        session: KrMirrorReadSession<KrSafMirror.MirrorEntry>,
+        key: String,
+        localFiles: KrMirrorLocalFiles,
+        path: String?,
+        target: String,
+        mode: Int,
+    ): Int {
+        val fd = openDirectFile(path, target, mode, "mirror local")
+        if (fd < 0) return MIRROR_OPEN_FAILED
+        try {
+            localFiles.markOverridden(File(target))
+            session.promote(key)
+            return fd
+        } catch (error: Exception) {
+            runCatching { ParcelFileDescriptor.adoptFd(fd).close() }
+            throw error
+        }
+    }
+
+    /** Called only for mirror-relative asset suffixes; root/scoped save case stays intact. */
+    @JvmStatic
+    fun normalizeMirrorCase(path: String?): String? = path?.lowercase(Locale.ROOT)
 
     /** 仅做路径规范化/重定向（不开文件）：scoped 存档重定向优先，其次规范化差异。 */
     @JvmStatic
@@ -207,7 +256,7 @@ object NativeBridge {
     /**
      * 镜像占位文件的 stat 尺寸覆盖：本地占位为 0 字节、SAF 侧记录了真实尺寸时返回该尺寸，
      * 否则返回 -1（不覆盖——引擎已本地覆写的文件 stat 本来就正确）。
-     * 镜像资源始终以只读 SAF fd 打开，不会因引擎写入使源文件尺寸过期。
+     * 可写打开先 copy-up 为本地覆盖并退出索引，SD 源文件始终不被引擎改写。
      * 供 native stat/lstat 钩子把 st_size 纠正为真实值：引擎按 stat 尺寸分配缓冲/匹配插件时，
      * 0 字节会让插件 DLL 与既有存档被当成空文件（issue #129 的 SD 卡 Krkr 启动失败/存档不可读）。
      */
@@ -216,24 +265,15 @@ object NativeBridge {
         val normalized = KrPathUtils.canonicalizeKrStoragePath(KrPathUtils.normalizeFilePath(path))
             ?: return -1L
         val key = normalized.lowercase(Locale.ROOT)
-        val entry = SAF_DOCUMENTS[key] ?: return -1L
-        return mirrorMetadataSize(entry.size, File(normalized).length(), SAF_READ_FAILED.contains(key))
+        val session = safMirror
+        val entry = session.entry(key) ?: return -1L
+        if (session.localFiles?.isOverridden(File(normalized)) == true) return -1L
+        return mirrorMetadataSize(entry.size, File(normalized).length(), session.readFailed(key))
     }
 
     /** A local overwrite or failed source read always wins over indexed placeholder metadata. */
     internal fun mirrorMetadataSize(indexedSize: Long, localSize: Long, readFailed: Boolean): Long =
         if (!readFailed && indexedSize >= 0L && localSize == 0L) indexedSize else -1L
-
-    /** Ignore completion from an old index if a new launch configured its own snapshot. */
-    @Synchronized
-    private fun recordMirrorReadResult(
-        documents: Map<String, KrSafMirror.MirrorEntry>,
-        key: String,
-        succeeded: Boolean,
-    ) {
-        if (SAF_DOCUMENTS !== documents) return
-        if (succeeded) SAF_READ_FAILED.remove(key) else SAF_READ_FAILED.add(key)
-    }
 
     private fun recordOpenDiagnostic(value: String) {
         try {
@@ -277,11 +317,11 @@ object NativeBridge {
 
     private fun openDirectFile(path: String?, target: String, mode: Int, diagnosticPrefix: String?): Int {
         val javaMode = toJavaMode(mode)
-        val raf = RandomAccessFile(File(target), javaMode)
-        if ((mode and OsConstants.O_TRUNC) == OsConstants.O_TRUNC) raf.setLength(0)
-        if ((mode and OsConstants.O_APPEND) == OsConstants.O_APPEND) raf.seek(raf.length())
-        val fd = getFd(raf)
-        raf.close()
+        val fd = RandomAccessFile(File(target), javaMode).use { raf ->
+            if ((mode and OsConstants.O_TRUNC) == OsConstants.O_TRUNC) raf.setLength(0)
+            if ((mode and OsConstants.O_APPEND) == OsConstants.O_APPEND) raf.seek(raf.length())
+            getFd(raf)
+        }
         if (diagnosticPrefix != null) recordOpenDiagnostic(
             "$diagnosticPrefix ok path=$path target=$target flags=$mode mode=$javaMode fd=$fd",
         )

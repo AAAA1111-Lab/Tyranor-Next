@@ -5,7 +5,6 @@
 #include <link.h>
 #include <dirent.h>
 #include <sys/stat.h>
-#include <sys/limits.h>
 
 #include <cstdarg>
 #include <cerrno>
@@ -16,6 +15,7 @@
 #include <vector>
 #include <cstdint>
 #include <atomic>
+#include <algorithm>
 #include <sys/mman.h>
 #include <unistd.h>
 #include <time.h>
@@ -23,6 +23,8 @@
 namespace {
 
 constexpr const char* kTag = "KrkrBridge";
+// NativeBridge.open ABI: do not retry an indexed mirror I/O failure through libc.
+constexpr int kMirrorOpenFailed = -2;
 constexpr const char* kGetSceneSymbol = "_ZN12TVPMainScene11GetInstanceEv";
 constexpr const char* kStartupSymbol = "_ZN12TVPMainScene11startupFromERKSs";
 constexpr const char* kUpdateSymbol = "_ZN12TVPMainScene6updateEf";
@@ -407,6 +409,8 @@ bool pathMatchesPrefix(const char* path) {
             && std::strncmp(normalized, gPathPrefix.c_str() + 1, gPathPrefix.size() - 1) == 0;
 }
 
+std::string callJavaPathMethod(const char* path, const char* methodName);
+
 // The engine does not chdir to the game directory. Only mirror launches rebase
 // relative resource paths, using the configured mirror root rather than process CWD.
 // Keep non-mirror paths and absolute paths untouched; the latter need no mutex.
@@ -442,8 +446,29 @@ std::string resolveEnginePath(const char* path) {
         if (end == std::string::npos) break;
         start = end + 1;
     }
-    for (const auto& part : parts) base += "/" + part;
-    return base;
+    std::string suffix;
+    for (const auto& part : parts) {
+        if (!suffix.empty()) suffix += "/";
+        suffix += part;
+    }
+    auto asciiLower = [](std::string value) {
+        for (char& character : value) {
+            if (character >= 'A' && character <= 'Z') character += 'a' - 'A';
+        }
+        return value;
+    };
+    // Source savedata is excluded from the mirror. Its actual local filename case
+    // belongs to the scoped-save redirect, not the lowercased source asset tree.
+    if (!parts.empty() && asciiLower(parts.front()) != "savedata") {
+        const bool hasUnicode = std::any_of(suffix.begin(), suffix.end(),
+                [](unsigned char byte) { return byte >= 0x80; });
+        suffix = asciiLower(suffix);
+        if (hasUnicode) {
+            const std::string folded = callJavaPathMethod(suffix.c_str(), "normalizeMirrorCase");
+            if (!folded.empty()) suffix = folded;
+        }
+    }
+    return suffix.empty() ? base : base + "/" + suffix;
 }
 
 int callOriginal(OpenFn original, const char* path, int flags, mode_t mode) {
@@ -476,7 +501,7 @@ int callJavaOpen(const char* path, int flags) {
     }
     if (env->ExceptionCheck()) {
         env->ExceptionClear();
-        fd = -1;
+        fd = gMirrorActive.load(std::memory_order_acquire) ? kMirrorOpenFailed : -1;
     }
     if (attached) gVm->DetachCurrentThread();
     return fd;
@@ -657,6 +682,10 @@ int hookOpenCommon(OpenFn original, const char* rawPath, int flags, va_list argu
     // zero-byte placeholders that libc can open, while Java supplies real content.
     const int fd = callJavaOpen(path, flags);
     if (fd >= 0) return fd;
+    if (fd == kMirrorOpenFailed) {
+        errno = EIO;
+        return -1;
+    }
 
     const std::string redirected = callJavaOpenRedirect(path, flags);
     return callOriginal(original, redirected.empty() ? path : redirected.c_str(), flags, mode);
@@ -693,17 +722,6 @@ int fopenModeToFlags(const char* mode) {
     }
 }
 
-// Mirror assets are deliberately opened read-only, even when the engine asks for
-// r+. Match FILE permissions to the actual fd so fdopen does not reject it and
-// fall back to an empty placeholder; writes fail instead of changing the SD source.
-const char* compatibleStreamMode(int fd, int flags, const char* requestedMode) {
-    if ((flags & O_ACCMODE) == O_RDWR) {
-        const int actual = fcntl(fd, F_GETFL);
-        if (actual >= 0 && (actual & O_ACCMODE) == O_RDONLY) return "r";
-    }
-    return requestedMode;
-}
-
 FILE* hookFopenCommon(FopenFn original, const char* rawPath, const char* mode) {
     const std::string resolved = resolveEnginePath(rawPath);
     const char* path = resolved.c_str();
@@ -716,10 +734,19 @@ FILE* hookFopenCommon(FopenFn original, const char* rawPath, const char* mode) {
     const int flags = fopenModeToFlags(mode);
     if (flags >= 0) {
         const int fd = callJavaOpen(path, flags);
+        if (fd == kMirrorOpenFailed) {
+            errno = EIO;
+            return nullptr;
+        }
         if (fd >= 0) {
-            FILE* stream = fdopen(fd, compatibleStreamMode(fd, flags, mode));
+            FILE* stream = fdopen(fd, mode);
             if (stream != nullptr) return stream;
+            const int streamError = errno;
             close(fd);
+            if (gMirrorActive.load(std::memory_order_acquire)) {
+                errno = streamError;
+                return nullptr;
+            }
         }
     }
 
@@ -783,14 +810,18 @@ FILE* hookedFreopenCommon(const char* path, const char* mode, FILE* stream, Freo
     const int flags = fopenModeToFlags(mode);
     if (flags >= 0) {
         const int fd = callJavaOpen(p, flags);
+        if (fd == kMirrorOpenFailed) {
+            fclose(stream);
+            errno = EIO;
+            return nullptr;
+        }
         if (fd >= 0) {
             // The dup2 scheme (punching the SAF fd over the stream's fd) is only valid
             // when the access mode matches: dup2 does not update the FILE's read/write
             // flags, so a mode mismatch would return a FILE* with stale flags. Compare
             // the underlying fd access mode via fcntl(F_GETFL) first.
             const int target = fileno(stream);
-            const char* streamMode = compatibleStreamMode(fd, flags, mode);
-            const int wantAccess = fopenModeToFlags(streamMode) & O_ACCMODE;
+            const int wantAccess = flags & O_ACCMODE;
             const int haveAccess = target >= 0 ? fcntl(target, F_GETFL) : -1;
             const bool accessMatches = haveAccess >= 0 && (haveAccess & O_ACCMODE) == wantAccess;
             if (accessMatches) {
@@ -802,12 +833,11 @@ FILE* hookedFreopenCommon(const char* path, const char* mode, FILE* stream, Freo
                     if ((flags & O_APPEND) == 0) rewind(stream);
                     return stream;
                 }
+                const int replaceError = errno;
                 close(fd);
-                if (original == nullptr) {
-                    fclose(stream);
-                    return nullptr;
-                }
-                return original(p, mode, stream);
+                fclose(stream);
+                errno = replaceError;
+                return nullptr;
             }
             // Access mode mismatch: never fall back to the placeholder path (it reads
             // all zeros, reintroducing the bug this fixes). Rebuild the FILE through
@@ -817,11 +847,13 @@ FILE* hookedFreopenCommon(const char* path, const char* mode, FILE* stream, Freo
             char fdPath[64];
             std::snprintf(fdPath, sizeof(fdPath), "/proc/self/fd/%d", fd);
             if (original != nullptr) {
-                FILE* rebuilt = original(fdPath, streamMode, stream);
+                FILE* rebuilt = original(fdPath, mode, stream);
+                const int reopenError = errno;
                 close(fd);
                 if (rebuilt != nullptr) return rebuilt;
                 __android_log_print(ANDROID_LOG_WARN, kTag,
-                                    "freopen procfs reopen failed errno=%d", errno);
+                                    "freopen procfs reopen failed errno=%d", reopenError);
+                errno = reopenError;
             } else {
                 close(fd);
                 fclose(stream);
@@ -1140,7 +1172,7 @@ Java_bridge_NativeBridge_relocate(JNIEnv*, jclass) {
             || hookGotSymbol(library, "fopen64", reinterpret_cast<void*>(hookedFopen64), &gOriginalFopen64);
     const bool freopenHooked = gOriginalFreopen != nullptr
             || hookGotSymbol(library, "freopen", reinterpret_cast<void*>(hookedFreopen), &gOriginalFreopen);
-        const bool freopen64Hooked = gOriginalFreopen64 != nullptr
+    const bool freopen64Hooked = gOriginalFreopen64 != nullptr
             || hookGotSymbol(library, "freopen64", reinterpret_cast<void*>(hookedFreopen64), &gOriginalFreopen64);
     const bool statHooked = gOriginalStat != nullptr
             || hookGotSymbol(library, "stat", reinterpret_cast<void*>(hookedStat), &gOriginalStat);

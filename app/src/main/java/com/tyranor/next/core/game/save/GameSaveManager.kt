@@ -79,7 +79,7 @@ class GameSaveManager(private val context: Context) {
                 // 引擎实际读写的是镜像目录内的 savedata，存档管理必须指向同一处。
                 if (GamePathUtils.isRemovableStoragePath(root)) {
                     return SaveLocation(
-                        File(bridge.KrSafMirror.mirrorRootFor(appContext, game.uri, root, game.title), "savedata"),
+                        File(bridge.KrSafMirror.mirrorRootFor(appContext, game.uri, root), "savedata"),
                         text(R.string.save_location_krkr_sd_mirror),
                         true,
                         mirrorForced = true,
@@ -317,7 +317,8 @@ class GameSaveManager(private val context: Context) {
 
     @Throws(IOException::class)
     private fun importFromZipLocked(game: ScanGame, sourceUri: Uri): Int {
-        val destination = resolveSaveLocation(game).directory ?: throw GameSaveException(SaveErrorCode.RESOLVE_SAVE_DIR_FAILED)
+        val location = resolveSaveLocation(game)
+        val destination = location.directory ?: throw GameSaveException(SaveErrorCode.RESOLVE_SAVE_DIR_FAILED)
 
         // 与目标目录同文件系统的暂存/备份目录：解压+复制阶段完全不触碰原存档；
         // 提交阶段用两次 rename 原子交换（旧目录改名留作备份 → 暂存目录顶替），
@@ -355,8 +356,7 @@ class GameSaveManager(private val context: Context) {
             // 需先剥掉再复制，否则会落成 savedata/save/... 多套一层导致引擎读不到。
             // 仅 RPG Maker MV/MZ 生效（见 unwrapOuterDirs，其它引擎原样返回）。
             val source = unwrapOuterDirs(temp, game.engine)
-            val copied = copyDirectoryContents(source, staging, excludeFor(game.engine))
-            if (copied == 0) throw GameSaveException(SaveErrorCode.NO_FILES_IN_ZIP)
+            val copied = stageImportContents(source, staging, excludeFor(game.engine), location.mirrorForced)
             if (destination.exists()) {
                 // 走到这里备份必已被开头恢复步骤消费（只剩旧存档或不存在），可安全删除
                 if (backup.exists() && !backup.deleteRecursively()) {
@@ -439,7 +439,7 @@ class GameSaveManager(private val context: Context) {
                     }
                     if (GamePathUtils.isRemovableStoragePath(root)) {
                         // 可移动存储走 KrSafMirror：清理镜像树与 SAF 索引，避免内部存储持续膨胀
-                        targetList += bridge.KrSafMirror.mirrorRootFor(appContext, game.uri, root, game.title)
+                        targetList += bridge.KrSafMirror.mirrorRootFor(appContext, game.uri, root)
                         targetList += File(
                             File(appContext.noBackupFilesDir, "krkr_saf_index"),
                             "${bridge.KrSafMirror.mirrorKey(game.uri, root)}.idx",
@@ -584,27 +584,6 @@ class GameSaveManager(private val context: Context) {
         return extracted
     }
 
-    @Throws(IOException::class)
-    private fun copyDirectoryContents(source: File, destination: File, exclude: (String) -> Boolean): Int {
-        var copied = 0
-        source.listFiles().orEmpty().forEach { child ->
-            if (exclude(child.name)) return@forEach
-            val target = File(destination, child.name)
-            if (child.isDirectory) {
-                if (!target.exists() && !target.mkdirs()) throw GameSaveException(SaveErrorCode.CREATE_SAVE_DIR_NAMED, detail = child.name)
-                copied += copyDirectoryContents(child, target, exclude)
-            } else if (child.isFile) {
-                target.parentFile?.let {
-                    if (!it.exists() && !it.mkdirs()) throw GameSaveException(SaveErrorCode.CREATE_SAVE_DIR_NAMED, detail = child.name)
-                }
-                child.copyTo(target, overwrite = true)
-                target.setLastModified(child.lastModified())
-                copied++
-            }
-        }
-        return copied
-    }
-
     /**
      * 把备份目录中不参与导入的 Artemis 引擎资源（system/、*.pfs 等）逐个 rename 回目标目录；
      * 按相对路径递归遍历，嵌套资源如 foo/data.pfs 亦能恢复（copyDirectoryContents 每层均过滤）。
@@ -709,6 +688,44 @@ class GameSaveManager(private val context: Context) {
         localizedContext.getString(id, *args)
 
     companion object {
+        /** Filter and count imported saves before the caller can exchange the live directory. */
+        internal fun stageImportContents(
+            source: File,
+            staging: File,
+            exclude: (String) -> Boolean,
+            mirrorForced: Boolean,
+        ): Int {
+            val copied = copyDirectoryContents(source, staging, exclude, mirrorForced)
+            if (copied == 0) throw GameSaveException(SaveErrorCode.NO_FILES_IN_ZIP)
+            return copied
+        }
+
+        @Throws(IOException::class)
+        private fun copyDirectoryContents(
+            source: File,
+            destination: File,
+            exclude: (String) -> Boolean,
+            mirrorForced: Boolean,
+        ): Int {
+            var copied = 0
+            source.listFiles().orEmpty().forEach { child ->
+                if (exclude(child.name)) return@forEach
+                val target = File(destination, child.name)
+                if (child.isDirectory) {
+                    if (!target.exists() && !target.mkdirs()) throw GameSaveException(SaveErrorCode.CREATE_SAVE_DIR_NAMED, detail = child.name)
+                    copied += copyDirectoryContents(child, target, exclude, mirrorForced)
+                } else if (child.isFile && includesSaveFile(child, mirrorForced)) {
+                    target.parentFile?.let {
+                        if (!it.exists() && !it.mkdirs()) throw GameSaveException(SaveErrorCode.CREATE_SAVE_DIR_NAMED, detail = child.name)
+                    }
+                    child.copyTo(target, overwrite = true)
+                    target.setLastModified(child.lastModified())
+                    copied++
+                }
+            }
+            return copied
+        }
+
         internal fun collectFiles(
             directory: File,
             out: MutableList<File>,

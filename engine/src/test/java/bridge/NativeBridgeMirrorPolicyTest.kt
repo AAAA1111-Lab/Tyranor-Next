@@ -1,19 +1,13 @@
 package bridge
 
-import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NativeBridgeMirrorPolicyTest {
-    @After
-    fun clearMirrorConfiguration() {
-        NativeBridge.configureSafMirror(null)
-    }
-
     @Test
-    fun `mirror assets accept read intent and reject every modifying mode`() {
+    fun `mirror source reads exclude explicit writes while update mode requires copy up`() {
         assertTrue(NativeBridge.mirrorReadAllowed(NativeBridge.FileAccess.READ_ONLY, false, false))
         assertTrue(NativeBridge.mirrorReadAllowed(NativeBridge.FileAccess.READ_WRITE, false, false))
         assertFalse(NativeBridge.mirrorReadAllowed(NativeBridge.FileAccess.WRITE_ONLY, false, false))
@@ -48,32 +42,23 @@ class NativeBridgeMirrorPolicyTest {
     }
 
     @Test
-    fun `configuring a launch clears failed metadata suppression`() {
-        failures().add("/mirror/plugin.dll")
-        NativeBridge.configureSafMirror(null)
-        assertTrue(failures().isEmpty())
-        assertEquals(-1L, NativeBridge.metadataSize(null))
+    fun `new launch state is isolated from late old read completions and promotions`() {
+        val old = KrMirrorReadSession(mapOf("plugin" to "old"))
+        old.recordRead("plugin", false)
+        assertTrue(old.readFailed("plugin"))
+        old.recordRead("plugin", true)
+        assertFalse(old.readFailed("plugin"))
+        val current = KrMirrorReadSession(mapOf("plugin" to "new"))
+        old.recordRead("plugin", false)
+        old.promote("plugin")
+        assertFalse(current.readFailed("plugin"))
+        assertEquals("new", current.entry("plugin"))
+        assertEquals(null, old.entry("plugin"))
     }
 
     @Test
-    fun `late old provider failure cannot poison newly configured launch`() {
-        val oldDocuments = HashMap<String, KrSafMirror.MirrorEntry>()
-        val documentsField = NativeBridge::class.java.getDeclaredField("SAF_DOCUMENTS")
-        documentsField.isAccessible = true
-        documentsField.set(null, oldDocuments)
-        val record = NativeBridge::class.java.getDeclaredMethod(
-            "recordMirrorReadResult", Map::class.java, String::class.java, Boolean::class.javaPrimitiveType,
-        ).apply { isAccessible = true }
-        record.invoke(NativeBridge, oldDocuments, "/mirror/plugin.dll", false)
-        assertTrue(failures().contains("/mirror/plugin.dll"))
-        record.invoke(NativeBridge, oldDocuments, "/mirror/plugin.dll", true)
-        assertFalse(failures().contains("/mirror/plugin.dll"))
-        NativeBridge.configureSafMirror(null)
-        record.invoke(NativeBridge, oldDocuments, "/mirror/plugin.dll", false)
-        assertFalse(failures().contains("/mirror/plugin.dll"))
+    fun `mirror asset case folding matches ROOT locale including Unicode`() {
+        assertEquals("plugin/gamepad.dll", NativeBridge.normalizeMirrorCase("Plugin/GamePad.dll"))
+        assertEquals("äset/σcript.dll", NativeBridge.normalizeMirrorCase("Äset/Σcript.DLL"))
     }
-
-    @Suppress("UNCHECKED_CAST")
-    private fun failures(): MutableSet<String> = NativeBridge::class.java.getDeclaredField("SAF_READ_FAILED")
-        .apply { isAccessible = true }.get(null) as MutableSet<String>
 }
