@@ -82,8 +82,6 @@ class WinlatorModeMigrationTest {
         val json = buildClearedParams(PerGameSettingsStore.F_WINLATOR_CONTAINER_ID to "3")
         assertEquals(PerGameSettingsStore.WINLATOR_MODE_CONTAINER, infer(json))
     }
-<<<<<<< HEAD
-=======
 
     @Test
     fun containerModeWithNameOnlyOverrideClearsInheritedId() {
@@ -99,5 +97,4 @@ class WinlatorModeMigrationTest {
         assertEquals(0, merged.containerId)
         assertEquals("我的容器", merged.containerName)
     }
->>>>>>> 9ca673a4e606b6e6ab5ef1666b013085a645b74f
 }
