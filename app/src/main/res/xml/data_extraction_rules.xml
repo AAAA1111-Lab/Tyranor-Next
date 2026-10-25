@@ -3,6 +3,11 @@
    for details.
 -->
 <data-extraction-rules>
+    <!-- Keep root/games eligible for backup: dynamic mirror roots may contain the only
+         copy of real savedata, local overrides and their .tyranor-mirror-state metadata.
+         File and control state stay eligible together. Excluding games would omit those
+         saves from backup; prefix rules cannot select only rebuildable entries across dynamic keys.
+         Platform quotas/policies still apply, so users should export saves explicitly. -->
     <cloud-backup>
         <exclude domain="sharedpref" path="hikarinagi_auth.xml" />
         <!-- OAuth 令牌加密库：Keystore 密钥换机不可解密，必须排除 -->
