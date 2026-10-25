@@ -13,6 +13,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <vector>
 #include <cstdint>
 #include <atomic>
 #include <sys/mman.h>
@@ -398,7 +399,7 @@ bool pathMatchesPrefix(const char* path) {
     if (std::strncmp(normalized, "file://", 7) == 0) normalized += 7;
     while (std::strncmp(normalized, "./", 2) == 0) normalized += 2;
     // Some Windows Steam wrappers read root config files through relative paths
-    // (for example "ds.ini") after chdir/gamedir setup. Keep this whitelist tight:
+    // (for example "ds.ini"). Keep this whitelist tight:
     // Java will still redirect only when the matching overlay has been configured.
     if (std::strcmp(normalized, "ds.ini") == 0 || std::strcmp(normalized, "patch.tjs") == 0) return true;
     if (std::strncmp(normalized, gPathPrefix.c_str(), gPathPrefix.size()) == 0) return true;
@@ -406,37 +407,43 @@ bool pathMatchesPrefix(const char* path) {
             && std::strncmp(normalized, gPathPrefix.c_str() + 1, gPathPrefix.size() - 1) == 0;
 }
 
-// The krkr plugin/script layer opens game files with paths relative to the game root
-// (engine CWD). Relative paths never matched the absolute mirror prefix, bypassed the
-// Java bridge and hit the 0-byte placeholders directly: plugin signatures and DLLs read
-// as all zeros and the engine dropped the plugins (issue #129: SD-card games fail while
-// the same copies boot from internal storage). Resolve relative paths against the CWD
-// (falling back to "." if getcwd fails) before the usual routing. Fast path: non-mirror
-// launches skip all rewriting and return the raw path without taking the lock.
+// The engine does not chdir to the game directory. Only mirror launches rebase
+// relative resource paths, using the configured mirror root rather than process CWD.
+// Keep non-mirror paths and absolute paths untouched; the latter need no mutex.
 std::string resolveEnginePath(const char* path) {
     if (path == nullptr) return {};
-    if (!gMirrorActive.load(std::memory_order_acquire)) {
-        return std::string(path);
+    if (!gMirrorActive.load(std::memory_order_acquire)) return std::string(path);
+    std::string relative(path);
+    if (relative.compare(0, 7, "file://") == 0) relative.erase(0, 7);
+    if (!relative.empty() && relative[0] == '/') return relative;
+    if (relative.empty()) return relative;
+
+    std::string base;
+    {
+        std::lock_guard<std::mutex> lock(gMutex);
+        base = gMirrorPrefix;
     }
-    std::string p(path);
-    const bool hadPath = !p.empty();
-    if (std::strncmp(p.c_str(), "file://", 7) == 0) p.erase(0, 7);
-    while (std::strncmp(p.c_str(), "./", 2) == 0) p.erase(0, 2);
-    // The CWD is the rewrite base: CWD equals the mirror root at startup, and if the
-    // engine chdirs later, relative paths resolve against the real CWD. getcwd failure
-    // falls back to "." instead of reading gMirrorPrefix outside its lock.
-    char cwdBuf[PATH_MAX];
-    const std::string base = getcwd(cwdBuf, sizeof(cwdBuf)) != nullptr
-            ? std::string(cwdBuf) : std::string(".");
-    if (p.empty()) {
-        // "./" reduced to empty: return the base directory to keep the current-directory
-        // semantics and avoid handing an empty path to libc; empty input passes through
-        if (!hadPath) return p;
-        return base;
+    if (base.empty()) return std::string(path);
+    while (base.size() > 1 && base.back() == '/') base.pop_back();
+
+    std::vector<std::string> parts;
+    size_t start = 0;
+    while (start <= relative.size()) {
+        const size_t end = relative.find('/', start);
+        const std::string part = relative.substr(start, end - start);
+        if (part == "..") {
+            // Do not turn ../outside into a routed <mirror>/../outside path. Leave
+            // the original path to libc, preserving its non-mirror CWD semantics.
+            if (parts.empty()) return std::string(path);
+            parts.pop_back();
+        } else if (!part.empty() && part != ".") {
+            parts.push_back(part);
+        }
+        if (end == std::string::npos) break;
+        start = end + 1;
     }
-    if (p[0] == '/') return p;
-    if (base.empty()) return p;
-    return base + "/" + p;
+    for (const auto& part : parts) base += "/" + part;
+    return base;
 }
 
 int callOriginal(OpenFn original, const char* path, int flags, mode_t mode) {
@@ -567,6 +574,7 @@ std::string callJavaScopedSaveRedirect(const char* path) {
 // the class is kept as a global ref (this library lives for the process lifetime).
 jlong callJavaMetadataSize(const char* path) {
     if (gVm == nullptr || path == nullptr) return -1;
+    static std::mutex lookupMutex;
     static jclass cachedClass = nullptr;
     static jmethodID cachedMethod = nullptr;
     JNIEnv* env = nullptr;
@@ -577,21 +585,30 @@ jlong callJavaMetadataSize(const char* path) {
     }
 
     jlong size = -1;
-    if (cachedClass == nullptr || cachedMethod == nullptr) {
-        jclass local = env->FindClass("bridge/NativeBridge");
-        if (local != nullptr) {
-            jmethodID method = env->GetStaticMethodID(local, "metadataSize", "(Ljava/lang/String;)J");
-            if (method != nullptr) {
-                cachedClass = static_cast<jclass>(env->NewGlobalRef(local));
-                cachedMethod = method;
+    jclass clazz;
+    jmethodID method;
+    {
+        std::lock_guard<std::mutex> lock(lookupMutex);
+        if (cachedClass == nullptr || cachedMethod == nullptr) {
+            jclass local = env->FindClass("bridge/NativeBridge");
+            if (local != nullptr) {
+                jmethodID localMethod = env->GetStaticMethodID(local, "metadataSize", "(Ljava/lang/String;)J");
+                if (localMethod != nullptr) {
+                    cachedClass = static_cast<jclass>(env->NewGlobalRef(local));
+                    if (cachedClass != nullptr) cachedMethod = localMethod;
+                }
+                env->DeleteLocalRef(local);
             }
-            env->DeleteLocalRef(local);
         }
+        // Failed worker-thread class-loader lookups may succeed on a later Java
+        // callback. Cache only successful bindings, without racing global refs.
+        clazz = cachedClass;
+        method = cachedMethod;
     }
-    if (cachedClass != nullptr && cachedMethod != nullptr) {
+    if (clazz != nullptr && method != nullptr) {
         jstring javaPath = env->NewStringUTF(path);
         if (javaPath != nullptr) {
-            size = env->CallStaticLongMethod(cachedClass, cachedMethod, javaPath);
+            size = env->CallStaticLongMethod(clazz, method, javaPath);
             env->DeleteLocalRef(javaPath);
         }
     }
@@ -676,6 +693,17 @@ int fopenModeToFlags(const char* mode) {
     }
 }
 
+// Mirror assets are deliberately opened read-only, even when the engine asks for
+// r+. Match FILE permissions to the actual fd so fdopen does not reject it and
+// fall back to an empty placeholder; writes fail instead of changing the SD source.
+const char* compatibleStreamMode(int fd, int flags, const char* requestedMode) {
+    if ((flags & O_ACCMODE) == O_RDWR) {
+        const int actual = fcntl(fd, F_GETFL);
+        if (actual >= 0 && (actual & O_ACCMODE) == O_RDONLY) return "r";
+    }
+    return requestedMode;
+}
+
 FILE* hookFopenCommon(FopenFn original, const char* rawPath, const char* mode) {
     const std::string resolved = resolveEnginePath(rawPath);
     const char* path = resolved.c_str();
@@ -689,7 +717,7 @@ FILE* hookFopenCommon(FopenFn original, const char* rawPath, const char* mode) {
     if (flags >= 0) {
         const int fd = callJavaOpen(path, flags);
         if (fd >= 0) {
-            FILE* stream = fdopen(fd, mode);
+            FILE* stream = fdopen(fd, compatibleStreamMode(fd, flags, mode));
             if (stream != nullptr) return stream;
             close(fd);
         }
@@ -761,7 +789,8 @@ FILE* hookedFreopenCommon(const char* path, const char* mode, FILE* stream, Freo
             // flags, so a mode mismatch would return a FILE* with stale flags. Compare
             // the underlying fd access mode via fcntl(F_GETFL) first.
             const int target = fileno(stream);
-            const int wantAccess = flags & O_ACCMODE;
+            const char* streamMode = compatibleStreamMode(fd, flags, mode);
+            const int wantAccess = fopenModeToFlags(streamMode) & O_ACCMODE;
             const int haveAccess = target >= 0 ? fcntl(target, F_GETFL) : -1;
             const bool accessMatches = haveAccess >= 0 && (haveAccess & O_ACCMODE) == wantAccess;
             if (accessMatches) {
@@ -788,7 +817,7 @@ FILE* hookedFreopenCommon(const char* path, const char* mode, FILE* stream, Freo
             char fdPath[64];
             std::snprintf(fdPath, sizeof(fdPath), "/proc/self/fd/%d", fd);
             if (original != nullptr) {
-                FILE* rebuilt = original(fdPath, mode, stream);
+                FILE* rebuilt = original(fdPath, streamMode, stream);
                 close(fd);
                 if (rebuilt != nullptr) return rebuilt;
                 __android_log_print(ANDROID_LOG_WARN, kTag,
@@ -1075,9 +1104,7 @@ Java_bridge_NativeBridge_interceptor(JNIEnv* env, jclass, jstring prefix) {
     __android_log_print(ANDROID_LOG_INFO, kTag, "SAF open prefix=%s", gPathPrefix.c_str());
 }
 
-// stat is a hot call: only 0-byte regular files can be placeholders, filter before the JNI.
-// Diagnostic probe: log the first 32 overrides to verify the hook chain, then stay quiet.
-// Mirror-only prefix: set by the Java side for SD mirror launches, used for relative-path
+// Mirror-only relative-path base; reset on every launch, including non-mirror launches.
 extern "C" JNIEXPORT void JNICALL
 Java_bridge_NativeBridge_setMirrorPrefix(JNIEnv* env, jclass, jstring prefix) {
     const std::string value = takeString(env, prefix);
@@ -1113,8 +1140,7 @@ Java_bridge_NativeBridge_relocate(JNIEnv*, jclass) {
             || hookGotSymbol(library, "fopen64", reinterpret_cast<void*>(hookedFopen64), &gOriginalFopen64);
     const bool freopenHooked = gOriginalFreopen != nullptr
             || hookGotSymbol(library, "freopen", reinterpret_cast<void*>(hookedFreopen), &gOriginalFreopen);
-    // rewriting; kept separate from gPathPrefix (scoped/overlay volume prefix). Non-mirror
-    const bool freopen64Hooked = gOriginalFreopen64 != nullptr
+        const bool freopen64Hooked = gOriginalFreopen64 != nullptr
             || hookGotSymbol(library, "freopen64", reinterpret_cast<void*>(hookedFreopen64), &gOriginalFreopen64);
     const bool statHooked = gOriginalStat != nullptr
             || hookGotSymbol(library, "stat", reinterpret_cast<void*>(hookedStat), &gOriginalStat);

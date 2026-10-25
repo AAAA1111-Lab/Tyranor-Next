@@ -1,0 +1,44 @@
+package com.tyranor.next.core.game.launch
+
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
+import java.util.concurrent.CancellationException
+
+/** Bounded source reads for bootstrap overlays; unknown sources must never be shadowed. */
+internal class KrMirrorOverlayReader(
+    private val sources: Map<String, Source>,
+    private val openSource: (String) -> InputStream?,
+) {
+    data class Source(val uri: String?, val size: Long = -1L, val confirmedAbsent: Boolean = false)
+
+    sealed interface Result {
+        data class Content(val bytes: ByteArray) : Result
+        data object Absent : Result
+        data object Unavailable : Result
+    }
+
+    fun read(name: String, maxBytes: Int): Result {
+        require(maxBytes >= 0)
+        val source = sources[name] ?: return Result.Unavailable
+        if (source.confirmedAbsent) return Result.Absent
+        val uri = source.uri ?: return Result.Unavailable
+        if (source.size > maxBytes) return Result.Unavailable
+        return try {
+            openSource(uri)?.use { input ->
+                val output = ByteArrayOutputStream()
+                val chunk = ByteArray(8192)
+                while (true) {
+                    val count = input.read(chunk)
+                    if (count < 0) break
+                    if (count > maxBytes - output.size()) return Result.Unavailable
+                    output.write(chunk, 0, count)
+                }
+                Result.Content(output.toByteArray())
+            } ?: Result.Unavailable
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            Result.Unavailable
+        }
+    }
+}

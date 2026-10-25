@@ -15,9 +15,6 @@ import java.io.RandomAccessFile
 import java.util.Locale
 
 object NativeBridge {
-    /** 镜像条目尺寸标记：SAF 侧已被写模式打开，索引尺寸过期，stat 时按需刷新。 */
-    private const val SIZE_DIRTY = -2L
-
     /**
      * SAF 读取失败的键：stat 尺寸覆盖被抑制（stat=0 与回退占位内容一致），
      * 直到该键的镜像打开再次成功。并发集合：stat 钩子任意线程调用。
@@ -61,14 +58,18 @@ object NativeBridge {
     /** 装载 SAF 镜像索引（path→文档 Uri+真实尺寸），供 [open] 路由与 [metadataSize] 查询。 */
     @JvmStatic
     fun configureSafMirror(indexPath: String?) {
-        SAF_DOCUMENTS = try {
+        val documents = try {
             KrSafMirror.loadIndex(indexPath)
         } catch (t: Throwable) {
             Log.e("NativeBridge", "load SAF mirror index failed path=$indexPath", t)
             emptyMap()
         }
-        val sized = SAF_DOCUMENTS.values.count { it.size >= 0 }
-        Log.i("NativeBridge", "SAF mirror index entries=${SAF_DOCUMENTS.size} sized=$sized")
+        synchronized(this) {
+            SAF_DOCUMENTS = documents
+            SAF_READ_FAILED.clear()
+        }
+        val sized = documents.values.count { it.size >= 0 }
+        Log.i("NativeBridge", "SAF mirror index entries=${documents.size} sized=$sized")
     }
 
     @JvmStatic
@@ -105,10 +106,9 @@ object NativeBridge {
 
     /**
      * 引擎侧文件打开入口（native 钩子上调）。优先级：只读 overlay → scoped 存档重定向 →
-     * SAF 镜像文档（占位仍为 0 字节时，任意模式；异常捕获后回落）→ 本地直开/SAF 兜底。
+     * SAF 镜像文档（占位仍为 0 字节时以只读 fd 供给资源）→ 本地直开/SAF 兜底。
      * 返回可用的 fd，失败返回 -1。
      */
-    @Synchronized
     @JvmStatic
     fun open(path: String?, mode: Int): Int {
         val normalized = KrPathUtils.canonicalizeKrStoragePath(KrPathUtils.normalizeFilePath(path))
@@ -126,41 +126,26 @@ object NativeBridge {
             Log.e("NativeBridge", "bad open mode=$mode path=$path", t)
             return -1
         }
-        val mirror = SAF_DOCUMENTS[target.lowercase(Locale.ROOT)]
-        // 占位文件仍是 0 字节时（未被引擎本地覆写），读意图打开（只读；无截断/追加的读写）
-        // 路由到 SAF 文档：引擎常用 O_RDWR 打开插件 DLL 与既有存档（krkr 的 CreateFile 习惯），
-        // 只读路由会让这些打开落到本地 0 字节占位上、读到全零——插件匹配失败、
-        // 用户放入游戏目录的存档被判为损坏。写意图（O_WRONLY / O_TRUNC / O_APPEND）保持
-        // 本地占位：写穿/截断 SD 源文件的风险大于收益，且与镜像的覆盖语义一致。
-        // SAF 打开失败捕获后回落本地，否则异常传出 open()、JNI 侧只会清异常返回 -1。
-        val accessMode = mode and OsConstants.O_ACCMODE
-        val readIntent = isReadOnlyOpen(mode) ||
-            (accessMode == OsConstants.O_RDWR && (mode and (OsConstants.O_TRUNC or OsConstants.O_APPEND)) == 0)
+        val documents = SAF_DOCUMENTS
+        val key = target.lowercase(Locale.ROOT)
+        val mirror = documents[key]
+        // Engine CreateFile often asks for O_RDWR even when loading a DLL. Supply
+        // such mirror assets through a read-only SAF fd: reads work, writes fail
+        // with EBADF rather than modifying SD source data. Explicit write modes
+        // (O_WRONLY/O_TRUNC/O_APPEND) continue to use the local placeholder.
+        val readIntent = mirrorReadAllowed(
+            openAccess(mode),
+            append = (mode and OsConstants.O_APPEND) != 0,
+            truncate = (mode and OsConstants.O_TRUNC) != 0,
+        )
         if (mirror != null && readIntent && File(target).length() == 0L) {
-            val mirrorFd = runCatching { openDocumentUri(mirror.uri, mode) }
+            val mirrorFd = runCatching { openDocumentUri(mirror.uri, OsConstants.O_RDONLY) }
                 .onFailure { Log.w("NativeBridge", "open mirror SAF failed path=$path", it) }
                 .getOrDefault(-1)
-            if (mirrorFd >= 0) {
-                // 非只读打开会改写 SAF 侧内容：索引尺寸即刻过期，标记脏，供 metadataSize 按需刷新
-                if (!isReadOnlyOpen(mode)) markMirrorEntryDirty(target.lowercase(Locale.ROOT))
-                SAF_READ_FAILED.remove(target.lowercase(Locale.ROOT))
-                return mirrorFd
-            }
-            if (!isReadOnlyOpen(mode)) {
-                // 写授权不可用（只读树授权/写保护 SD/provider 限制）时以只读重试：
-                // 插件 DLL 等读取不需要写权限，否则回落 0 字节占位、#129 故障重现
-                val roFd = runCatching { openDocumentUri(mirror.uri, OsConstants.O_RDONLY) }
-                    .onFailure { Log.w("NativeBridge", "open mirror SAF read-only retry failed path=$path", it) }
-                    .getOrDefault(-1)
-                if (roFd >= 0) {
-                    Log.i("NativeBridge", "open mirror SAF rw->ro retry ok path=$path")
-                    SAF_READ_FAILED.remove(target.lowercase(Locale.ROOT))
-                    return roFd
-                }
-            }
-            // SAF 读取失败回落 0 字节占位：清除该条目的尺寸覆盖，保证 stat(0) 与
-            // 可读内容(0) 一致——否则引擎按 stat 分配缓冲会拿到未填充数据（stat=N、read=0）
-            SAF_READ_FAILED.add(target.lowercase(Locale.ROOT))
+            recordMirrorReadResult(documents, key, succeeded = mirrorFd >= 0)
+            if (mirrorFd >= 0) return mirrorFd
+            // Failed reads fall back to the empty placeholder. Suppress its indexed
+            // size so the next stat agrees with the bytes libc can actually read.
         }
         return try {
             openDirectFile(path, target, mode, diagnosticPrefix = if (redirected != null) "redirect" else null)
@@ -222,7 +207,7 @@ object NativeBridge {
     /**
      * 镜像占位文件的 stat 尺寸覆盖：本地占位为 0 字节、SAF 侧记录了真实尺寸时返回该尺寸，
      * 否则返回 -1（不覆盖——引擎已本地覆写的文件 stat 本来就正确）。
-     * 脏条目（SAF 侧被引擎写入后尺寸过期）先按 ID 查询文档当前尺寸并回填缓存。
+     * 镜像资源始终以只读 SAF fd 打开，不会因引擎写入使源文件尺寸过期。
      * 供 native stat/lstat 钩子把 st_size 纠正为真实值：引擎按 stat 尺寸分配缓冲/匹配插件时，
      * 0 字节会让插件 DLL 与既有存档被当成空文件（issue #129 的 SD 卡 Krkr 启动失败/存档不可读）。
      */
@@ -231,48 +216,23 @@ object NativeBridge {
         val normalized = KrPathUtils.canonicalizeKrStoragePath(KrPathUtils.normalizeFilePath(path))
             ?: return -1L
         val key = normalized.lowercase(Locale.ROOT)
-        // SAF read previously failed for this key: keep stat consistent with the
-        // 0-byte fallback content (no override) until a later open succeeds
-        if (SAF_READ_FAILED.contains(key)) return -1L
         val entry = SAF_DOCUMENTS[key] ?: return -1L
-        if (entry.size == SIZE_DIRTY) return refreshDirtyMirrorSize(key, entry)
-        if (entry.size < 0L) return -1L
-        return if (File(normalized).length() == 0L) entry.size else -1L
+        return mirrorMetadataSize(entry.size, File(normalized).length(), SAF_READ_FAILED.contains(key))
     }
 
-    /** 把条目标记为脏（尺寸过期）；索引键不存在时忽略。与 [open]/[publishEntrySize] 共用对象锁串行化。 */
+    /** A local overwrite or failed source read always wins over indexed placeholder metadata. */
+    internal fun mirrorMetadataSize(indexedSize: Long, localSize: Long, readFailed: Boolean): Long =
+        if (!readFailed && indexedSize >= 0L && localSize == 0L) indexedSize else -1L
+
+    /** Ignore completion from an old index if a new launch configured its own snapshot. */
     @Synchronized
-    private fun markMirrorEntryDirty(key: String) {
-        val entry = SAF_DOCUMENTS[key] ?: return
-        if (entry.size == SIZE_DIRTY) return
-        SAF_DOCUMENTS = SAF_DOCUMENTS.toMutableMap().apply { put(key, KrSafMirror.MirrorEntry(entry.uri, SIZE_DIRTY)) }
-    }
-
-    /**
-     * 查询脏条目文档的当前尺寸并回填缓存；查询失败返回 -1（保持脏标记，下次再试）。
-     * Binder 查询在对象锁外执行（慢 provider 不得阻塞并发 open），仅回填持锁。
-     */
-    private fun refreshDirtyMirrorSize(key: String, entry: KrSafMirror.MirrorEntry): Long {
-        val size = runCatching {
-            KrPathUtils.currentActivity()?.contentResolver
-                ?.query(entry.uri, arrayOf(android.provider.OpenableColumns.SIZE), null, null, null)
-                ?.use { cursor -> if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0) else -1L }
-        }.getOrNull() ?: -1L
-        if (size >= 0) {
-            publishEntrySize(key, entry.uri, size)
-            return size
-        }
-        return -1L
-    }
-
-    /** 回填已刷新的尺寸；仅当条目仍处于脏状态时写入，避免覆盖更新的脏标记。 */
-    @Synchronized
-    private fun publishEntrySize(key: String, uri: Uri, size: Long) {
-        val current = SAF_DOCUMENTS[key] ?: return
-        if (current.uri != uri || current.size != SIZE_DIRTY) return
-        SAF_DOCUMENTS = SAF_DOCUMENTS.toMutableMap().apply {
-            put(key, KrSafMirror.MirrorEntry(uri, size))
-        }
+    private fun recordMirrorReadResult(
+        documents: Map<String, KrSafMirror.MirrorEntry>,
+        key: String,
+        succeeded: Boolean,
+    ) {
+        if (SAF_DOCUMENTS !== documents) return
+        if (succeeded) SAF_READ_FAILED.remove(key) else SAF_READ_FAILED.add(key)
     }
 
     private fun recordOpenDiagnostic(value: String) {
@@ -556,27 +516,32 @@ object NativeBridge {
         }
     }
 
-    private fun toJavaMode(mode: Int): String {
-        val accessMode = mode and OsConstants.O_ACCMODE
-        if (accessMode == OsConstants.O_RDONLY) return "r"
-        if (accessMode == OsConstants.O_WRONLY || accessMode == OsConstants.O_RDWR) return "rw"
-        throw IllegalArgumentException("Bad mode: $mode")
+    internal enum class FileAccess { READ_ONLY, WRITE_ONLY, READ_WRITE }
+
+    private fun openAccess(mode: Int): FileAccess = when (mode and OsConstants.O_ACCMODE) {
+        OsConstants.O_RDONLY -> FileAccess.READ_ONLY
+        OsConstants.O_WRONLY -> FileAccess.WRITE_ONLY
+        OsConstants.O_RDWR -> FileAccess.READ_WRITE
+        else -> throw IllegalArgumentException("Bad mode: $mode")
     }
 
-    private fun toPfdMode(mode: Int): String {
-        val accessMode = mode and OsConstants.O_ACCMODE
-        if (accessMode == OsConstants.O_RDONLY) return "r"
-        if ((mode and OsConstants.O_APPEND) == OsConstants.O_APPEND) {
-            // PFD 不支持 "rwa"（parseMode 只认 r/w/wt/wa/rw/rwt）：RDWR|APPEND 用 "rw"
-            // 打开后由 openDocumentUri 按 O_APPEND lseek 到末尾定位追加语义
-            return if (accessMode == OsConstants.O_RDWR) "rw" else "wa"
-        }
-        if ((mode and OsConstants.O_TRUNC) == OsConstants.O_TRUNC) {
-            // RDWR|TRUNC 必须保持可读，映射为读写截断；仅 WRONLY 截断用 "wt"
-            return if (accessMode == OsConstants.O_RDWR) "rwt" else "wt"
-        }
-        // 无 O_TRUNC 的 O_WRONLY 映射 "rw"：PFD 的 "w" 隐含 O_CREAT|O_TRUNC，
-        // 会截断源文件，与 native O_WRONLY（不截断）语义不符
+    internal fun mirrorReadAllowed(access: FileAccess, append: Boolean, truncate: Boolean): Boolean =
+        access != FileAccess.WRITE_ONLY && !append && !truncate
+
+    private fun toJavaMode(mode: Int): String =
+        if (openAccess(mode) == FileAccess.READ_ONLY) "r" else "rw"
+
+    private fun toPfdMode(mode: Int): String = pfdModeFor(
+        openAccess(mode),
+        append = (mode and OsConstants.O_APPEND) != 0,
+        truncate = (mode and OsConstants.O_TRUNC) != 0,
+    )
+
+    /** PFD has no non-truncating write-only mode and no read-write append mode. */
+    internal fun pfdModeFor(access: FileAccess, append: Boolean, truncate: Boolean): String {
+        if (access == FileAccess.READ_ONLY) return "r"
+        if (append) return if (access == FileAccess.READ_WRITE) "rw" else "wa"
+        if (truncate) return if (access == FileAccess.READ_WRITE) "rwt" else "wt"
         return "rw"
     }
 

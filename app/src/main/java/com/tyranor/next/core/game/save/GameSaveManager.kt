@@ -249,10 +249,11 @@ class GameSaveManager(private val context: Context) {
                 }
             }
         }
-        val directory = resolveSaveLocation(game).directory ?: return emptyList()
+        val location = resolveSaveLocation(game)
+        val directory = location.directory ?: return emptyList()
         if (!directory.isDirectory) return emptyList()
         return buildList {
-            collectFiles(directory, this, excludeFor(game.engine))
+            collectFiles(directory, this, excludeFor(game.engine), location.mirrorForced)
         }
     }
 
@@ -279,7 +280,7 @@ class GameSaveManager(private val context: Context) {
             ?: throw GameSaveException(SaveErrorCode.CREATE_EXPORT_ZIP)
         ZipOutputStream(output).use { zip ->
             val entries = mutableSetOf<String>()
-            val count = writeZipContents(source, source, zip, entries, excludeFor(game.engine), rename)
+            val count = writeZipContents(source, source, zip, entries, excludeFor(game.engine), rename, location.mirrorForced)
             if (count == 0) throw GameSaveException(SaveErrorCode.NO_EXPORTABLE_FILES)
             return count
         }
@@ -539,51 +540,6 @@ class GameSaveManager(private val context: Context) {
         }
     }
 
-    private fun collectFiles(directory: File, out: MutableList<File>, exclude: (String) -> Boolean) {
-        directory.listFiles().orEmpty().forEach { child ->
-            if (exclude(child.name)) return@forEach
-            when {
-                child.isDirectory -> collectFiles(child, out, exclude)
-                // 0 字节文件是旧版镜像的 savedata 占位残骸（无内容、导出为空壳），
-                // 不计入存档列表；真实存档（含引擎写入的 savecheck 等）均有内容
-                child.isFile && child.length() > 0L -> out.add(child)
-            }
-        }
-    }
-
-    @Throws(IOException::class)
-    private fun writeZipContents(
-        root: File,
-        directory: File,
-        zip: ZipOutputStream,
-        entries: MutableSet<String>,
-        exclude: (String) -> Boolean,
-        rename: ((String) -> String)? = null,
-    ): Int {
-        var written = 0
-        directory.listFiles().orEmpty().forEach { child ->
-            if (exclude(child.name)) return@forEach
-            if (child.isDirectory) {
-                written += writeZipContents(root, child, zip, entries, exclude, rename)
-            } else if (child.isFile) {
-                val relative = root.toPath().relativize(child.toPath()).toString()
-                    .replace(File.separatorChar, '/')
-                val renamedName = rename?.let { fn ->
-                    val parts = relative.split('/')
-                    safeZipEntryName(parts.dropLast(1).plus(fn(parts.last())).joinToString("/"))
-                }
-                // 换名后若与已有条目重名，回退原名，避免整条备份被静默丢弃
-                val safeName = if (renamedName != null && renamedName !in entries) renamedName else safeZipEntryName(relative)
-                if (!entries.add(safeName)) return@forEach
-                zip.putNextEntry(ZipEntry(safeName).apply { time = child.lastModified() })
-                FileInputStream(child).use { input -> input.copyTo(zip) }
-                zip.closeEntry()
-                written++
-            }
-        }
-        return written
-    }
-
     @Throws(IOException::class)
     private fun extractZip(sourceUri: Uri, destination: File): Int {
         val rootPath = destination.canonicalPath
@@ -693,15 +649,6 @@ class GameSaveManager(private val context: Context) {
         return deleted
     }
 
-    @Throws(IOException::class)
-    private fun safeZipEntryName(raw: String?): String {
-        val name = raw?.replace('\\', '/')?.trim('/').orEmpty()
-        if (name.isBlank() || name.startsWith("/") || name.contains("../")) {
-            throw GameSaveException(SaveErrorCode.ILLEGAL_ZIP_PATH, detail = raw.orEmpty())
-        }
-        return name
-    }
-
     private fun excludeFor(engine: EngineType): (String) -> Boolean = { name ->
         val lower = name.lowercase(Locale.ROOT)
         // MV/MZ 存档目录内的 original/ 是格式转化/互通留底，不参与列表计数/导出/导入/删除
@@ -762,6 +709,69 @@ class GameSaveManager(private val context: Context) {
         localizedContext.getString(id, *args)
 
     companion object {
+        internal fun collectFiles(
+            directory: File,
+            out: MutableList<File>,
+            exclude: (String) -> Boolean,
+            mirrorForced: Boolean = false,
+        ) {
+            directory.listFiles().orEmpty().forEach { child ->
+                if (exclude(child.name)) return@forEach
+                when {
+                    child.isDirectory -> collectFiles(child, out, exclude, mirrorForced)
+                    child.isFile && includesSaveFile(child, mirrorForced) -> out.add(child)
+                }
+            }
+        }
+
+        @Throws(IOException::class)
+        internal fun writeZipContents(
+            root: File,
+            directory: File,
+            zip: ZipOutputStream,
+            entries: MutableSet<String>,
+            exclude: (String) -> Boolean,
+            rename: ((String) -> String)? = null,
+            mirrorForced: Boolean = false,
+        ): Int {
+            var written = 0
+            directory.listFiles().orEmpty().forEach { child ->
+                if (exclude(child.name)) return@forEach
+                if (child.isDirectory) {
+                    written += writeZipContents(root, child, zip, entries, exclude, rename, mirrorForced)
+                } else if (child.isFile && includesSaveFile(child, mirrorForced)) {
+                    val relative = root.toPath().relativize(child.toPath()).toString()
+                        .replace(File.separatorChar, '/')
+                    val renamedName = rename?.let { fn ->
+                        val parts = relative.split('/')
+                        safeZipEntryName(parts.dropLast(1).plus(fn(parts.last())).joinToString("/"))
+                    }
+                    // 换名后若与已有条目重名，回退原名，避免整条备份被静默丢弃
+                    val safeName = if (renamedName != null && renamedName !in entries) renamedName else safeZipEntryName(relative)
+                    if (!entries.add(safeName)) return@forEach
+                    zip.putNextEntry(ZipEntry(safeName).apply { time = child.lastModified() })
+                    FileInputStream(child).use { input -> input.copyTo(zip) }
+                    zip.closeEntry()
+                    written++
+                }
+            }
+            return written
+        }
+
+        // Only mirror-forced KRKR saves can contain legacy empty placeholders. Other
+        // engines may use legitimate empty files; list and export share this rule.
+        private fun includesSaveFile(file: File, mirrorForced: Boolean): Boolean =
+            !mirrorForced || file.length() > 0L
+
+        @Throws(IOException::class)
+        private fun safeZipEntryName(raw: String?): String {
+            val name = raw?.replace('\\', '/')?.trim('/').orEmpty()
+            if (name.isBlank() || name.startsWith("/") || name.contains("../")) {
+                throw GameSaveException(SaveErrorCode.ILLEGAL_ZIP_PATH, detail = raw.orEmpty())
+            }
+            return name
+        }
+
         private const val BUFFER_SIZE = 16 * 1024
         private const val MAX_SAVE_ZIP_FILES = 20_000
         private const val MAX_SAVE_ZIP_BYTES = 1024L * 1024L * 1024L

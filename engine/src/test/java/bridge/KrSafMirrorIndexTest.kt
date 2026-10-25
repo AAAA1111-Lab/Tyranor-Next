@@ -1,5 +1,9 @@
 package bridge
 
+import java.io.File
+import org.junit.Assert.assertFalse
+import org.junit.Rule
+import org.junit.rules.TemporaryFolder
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -12,10 +16,8 @@ import org.junit.Test
  * (uri construction is injected as identity to bypass the android.net.Uri JVM stub).
  */
 class KrSafMirrorIndexTest {
-    /** Matches the internal encoding: URL-safe alphabet, no padding (pure JVM Base64). */
-    private fun encode(value: String): String =
-        java.util.Base64.getUrlEncoder().withoutPadding()
-            .encodeToString(value.toByteArray(Charsets.UTF_8))
+    @get:Rule
+    val temporary = TemporaryFolder()
 
     private fun v2(vararg lines: String): List<String> =
         listOf("krkr-saf-index-v2") + lines.toList()
@@ -24,10 +26,10 @@ class KrSafMirrorIndexTest {
         listOf("krkr-saf-index-v1") + lines.toList()
 
     private fun v2Line(path: String, uri: String, size: Long): String =
-        "${encode(path)}\t${encode(uri)}\t$size"
+        KrSafMirror.buildIndexText(listOf(Triple(path, uri, size))).lineSequence().drop(1).first()
 
     private fun v1Line(path: String, uri: String): String =
-        "${encode(path)}\t${encode(uri)}"
+        v2Line(path, uri, 0L).substringBeforeLast('\t')
 
     @Test
     fun v2IndexRoundTripsSizesAndUris() {
@@ -42,7 +44,7 @@ class KrSafMirrorIndexTest {
     @Test
     fun v2IndexToleratesMalformedSizeColumn() {
         val path = "/x/data.xp3"
-        val line = "${encode(path)}\t${encode("content://a/b")}\tnot-a-number"
+        val line = v2Line(path, "content://a/b", 0L).substringBeforeLast('\t') + "\tnot-a-number"
         val index = KrSafMirror.parseIndexLines(v2(line)) { it }
         // Malformed size falls back to -1 (stat hook does not override); entry survives
         assertEquals(-1L, index[path]?.size)
@@ -77,8 +79,8 @@ class KrSafMirrorIndexTest {
 
     @Test
     fun blankPathsAndUrisAreSkipped() {
-        val blankPath = "\t${encode("content://a/b")}\t5" // empty first column → split<=0 → skipped
-        val blankUri = "${encode("/x/f")}\t\t5" // empty uri
+        val blankPath = v2Line("", "content://a/b", 5L)
+        val blankUri = v2Line("/x/f", "", 5L)
         val index = KrSafMirror.parseIndexLines(v2(blankPath, blankUri)) { it }
         assertTrue(index.isEmpty())
     }
@@ -155,4 +157,101 @@ class KrSafMirrorIndexTest {
         val text = KrSafMirror.buildIndexText(emptyList())
         assertEquals("krkr-saf-index-v2", text.lineSequence().first())
     }
+
+    @Test
+    fun corruptRowsDoNotDiscardValidSiblingResources() {
+        val index = KrSafMirror.parseIndexLines(v2(
+            v2Line("/x/first", "content://a/first", 10L),
+            "%%%\tY29udGVudDovL2EvYg\t1",
+            "L3g\t%%%\t1",
+            v2Line("/x/last", "content://a/last", 20L),
+        )) { it }
+        assertEquals(setOf("/x/first", "/x/last"), index.keys)
+    }
+
+    @Test
+    fun productionSerializerRetainsTheLiteralV2WireFormat() {
+        assertEquals("krkr-saf-index-v2\nL3g\tY29udGVudDovL2EvYg\t41\n",
+            KrSafMirror.buildIndexText(listOf(Triple("/x", "content://a/b", 41L))))
+    }
+
+    @Test
+    fun productionFileReaderAndStreamingWriterRoundTrip() {
+        val file = temporary.newFile("index.idx")
+        file.bufferedWriter().use { writer ->
+            KrSafMirror.writeIndexText(writer, listOf(Triple("/X/data.xp3", "content://a/b", 123L)))
+        }
+        val index = KrSafMirror.readIndexFile(file) { it }
+        assertEquals(123L, index["/x/data.xp3"]?.size)
+        assertEquals("content://a/b", index["/x/data.xp3"]?.uri)
+        assertTrue(KrSafMirror.readIndexFile(File(temporary.root, "missing")) { it }.isEmpty())
+    }
+
+    @Test
+    fun savedataExclusionMatchesOnlyTheSourceRootSubtree() {
+        assertTrue(KrSafMirror.isSourceSavedata("savedata"))
+        assertTrue(KrSafMirror.isSourceSavedata("SaveData/slot/data.ksd"))
+        assertFalse(KrSafMirror.isSourceSavedata("savedatabase/data.xp3"))
+        assertFalse(KrSafMirror.isSourceSavedata("data/savedata/archive.xp3"))
+    }
+
+    @Test
+    fun newMirrorIdentityDoesNotDependOnTheGameTitle() {
+        val key = KrSafMirror.mirrorKey("content://a/game", "/storage/VOL/game")
+        val games = temporary.newFolder("games")
+        assertEquals(File(games, "game-$key"), KrSafMirror.findMirrorRoot(games, key))
+    }
+
+    @Test
+    fun legacyMirrorWithSavesIsReusedWithoutMovingOrDeletingData() {
+        val games = temporary.newFolder("games")
+        val key = "0123456789abcdef"
+        val empty = File(games, "aaa-$key").apply { mkdirs() }
+        val legacy = File(games, "old-title-$key").apply { mkdirs() }
+        val save = File(legacy, "savedata/slot.ksd").apply { requireNotNull(parentFile).mkdirs(); writeText("save") }
+        assertEquals(legacy, KrSafMirror.findMirrorRoot(games, key))
+        assertTrue(empty.isDirectory)
+        assertEquals("save", save.readText())
+        assertFalse(File(games, "game-$key").exists())
+    }
+
+    @Test
+    fun staleSaveCleanupOnlyDeletesIndexedEmptyPlaceholders() {
+        val root = temporary.newFolder("mirror")
+        val saveRoot = File(root, "savedata").apply { mkdirs() }
+        val stale = File(saveRoot, "stale.ksd").apply { createNewFile() }
+        val userEmpty = File(saveRoot, "user-empty.ksd").apply { createNewFile() }
+        val userSave = File(saveRoot, "slot.ksd").apply { writeText("save") }
+        val current = File(saveRoot, "current.ksd").apply { createNewFile() }
+        val outside = temporary.newFile("outside.ksd")
+        val previous = setOf(stale.path, userSave.path, current.path, outside.path)
+        assertEquals(1, KrSafMirror.removeStaleSavePlaceholders(root, previous, setOf(current.path)))
+        assertFalse(stale.exists())
+        assertTrue(userEmpty.exists())
+        assertTrue(current.exists())
+        assertTrue(outside.exists())
+        assertEquals("save", userSave.readText())
+    }
+
+
+    @Test
+    fun populatedLegacySavesBeatAnExistingEmptyStableRoot() {
+        val games = temporary.newFolder("games")
+        val key = "0123456789abcdef"
+        val stable = File(games, "game-$key").apply { mkdirs() }
+        val legacy = File(games, "legacy-$key").apply { mkdirs() }
+        File(legacy, "savedata/slot.ksd").apply {
+            requireNotNull(parentFile).mkdirs()
+            writeText("save")
+        }
+        assertEquals(legacy, KrSafMirror.findMirrorRoot(games, key))
+        assertTrue(stable.isDirectory)
+        File(stable, "savedata/current.ksd").apply {
+            requireNotNull(parentFile).mkdirs()
+            writeText("current")
+        }
+        assertEquals(stable, KrSafMirror.findMirrorRoot(games, key))
+        assertEquals("save", File(legacy, "savedata/slot.ksd").readText())
+    }
+
 }

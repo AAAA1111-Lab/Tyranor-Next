@@ -1,0 +1,59 @@
+package com.tyranor.next.core.game.launch
+
+import java.io.ByteArrayInputStream
+import java.io.IOException
+import java.util.concurrent.CancellationException
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class KrMirrorOverlayReaderTest {
+    @Test fun emptySourceIsSuccessfulContent() {
+        val reader = reader(size = 0) { ByteArrayInputStream(byteArrayOf()) }
+        val result = reader.read("patch.tjs", 4)
+        assertTrue(result is KrMirrorOverlayReader.Result.Content)
+        assertArrayEquals(byteArrayOf(), (result as KrMirrorOverlayReader.Result.Content).bytes)
+    }
+
+    @Test fun zeroMetadataDoesNotHideRealContent() {
+        val result = reader(size = 0) { ByteArrayInputStream(byteArrayOf(1, 2)) }.read("patch.tjs", 4)
+        assertArrayEquals(byteArrayOf(1, 2), (result as KrMirrorOverlayReader.Result.Content).bytes)
+    }
+
+    @Test fun confirmedAbsenceDoesNotOpenSource() {
+        val reader = KrMirrorOverlayReader(mapOf("patch.tjs" to KrMirrorOverlayReader.Source(null, confirmedAbsent = true))) {
+            error("Absent source must not be opened")
+        }
+        assertEquals(KrMirrorOverlayReader.Result.Absent, reader.read("patch.tjs", 4))
+    }
+
+    @Test fun missingIndexIsUnavailableRatherThanAbsent() {
+        val reader = KrMirrorOverlayReader(emptyMap()) { error("No indexed source") }
+        assertEquals(KrMirrorOverlayReader.Result.Unavailable, reader.read("patch.tjs", 4))
+    }
+
+    @Test fun deniedNullAndFailedStreamsAreUnavailable() {
+        assertEquals(KrMirrorOverlayReader.Result.Unavailable, reader { throw SecurityException() }.read("patch.tjs", 4))
+        assertEquals(KrMirrorOverlayReader.Result.Unavailable, reader { null }.read("patch.tjs", 4))
+        assertEquals(KrMirrorOverlayReader.Result.Unavailable, reader { throw IOException() }.read("patch.tjs", 4))
+    }
+
+    @Test fun declaredAndActualLimitsBothApplyAndCloseStreams() {
+        assertEquals(KrMirrorOverlayReader.Result.Unavailable, reader(size = 5) { error("Oversized source must not open") }.read("patch.tjs", 4))
+        var closed = false
+        val reader = reader { object : ByteArrayInputStream(ByteArray(5)) {
+            override fun close() { closed = true; super.close() }
+        } }
+        assertEquals(KrMirrorOverlayReader.Result.Unavailable, reader.read("patch.tjs", 4))
+        assertTrue(closed)
+    }
+
+    @Test(expected = CancellationException::class)
+    fun cancellationPropagates() {
+        reader { throw CancellationException() }.read("patch.tjs", 4)
+    }
+
+    private fun reader(size: Long = -1, open: (String) -> java.io.InputStream?) =
+        KrMirrorOverlayReader(mapOf("patch.tjs" to KrMirrorOverlayReader.Source("source", size)), open)
+}

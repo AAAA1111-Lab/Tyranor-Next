@@ -239,18 +239,22 @@ fun PerGameSettingsScreen(game: ScanGame) {
     // KRKR 亦需加载：SD 卡镜像强制接管存档路径时，独立存档开关要置灰并显示引导。
     // 镜像判定未就绪（null）前开关保持禁用，避免首帧把 SD 游戏误判为机内存储。
     var saveLocationReady by remember(gid) { mutableStateOf(false) }
+    var saveLocationLoadFailed by remember(gid) { mutableStateOf(false) }
     LaunchedEffect(gid) {
         if (game.engine != EngineType.XSYS35 && game.engine != EngineType.XSYS4 && game.engine != EngineType.KIRIKIRI) {
             saveLocationReady = true
             return@LaunchedEffect
         }
         try {
-            saveLocation = withContext(Dispatchers.IO) {
+            val loaded = withContext(Dispatchers.IO) {
                 GameSaveManager(ctx).resolveSaveLocation(game)
             }
+            saveLocation = loaded
+            saveLocationLoadFailed = loaded.directory == null || !loaded.available
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
         } catch (t: Throwable) {
+            saveLocationLoadFailed = true
             Log.w("PerGameSettings", "resolve save location failed gid=$gid", t)
         } finally {
             saveLocationReady = true
@@ -654,11 +658,14 @@ fun PerGameSettingsScreen(game: ScanGame) {
                                     stringResource(R.string.engine_settings_scoped_save_dir),
                                     globalKrScoped,
                                     krScoped,
-                                    enabled = saveLocationReady && !krMirrorForced,
+                                    enabled = saveLocationReady && !saveLocationLoadFailed && !krMirrorForced,
                                 ) { krScoped = it }
-                                if (krMirrorForced) {
+                                if (saveLocationLoadFailed || krMirrorForced) {
                                     Text(
-                                        stringResource(R.string.krkr_mirror_save_forced_note),
+                                        stringResource(
+                                            if (saveLocationLoadFailed) R.string.save_location_load_failed_note
+                                            else R.string.krkr_mirror_save_forced_note,
+                                        ),
                                         style = MaterialTheme.typography.bodyMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
