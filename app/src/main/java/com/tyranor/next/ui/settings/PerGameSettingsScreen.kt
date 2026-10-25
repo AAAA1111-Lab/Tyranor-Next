@@ -401,8 +401,10 @@ fun PerGameSettingsScreen(game: ScanGame) {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     // 只覆盖容器名时 mergeWinlator 会把生效 ID 置 0，摘要必须按生效值显示，否则和实际启动不一致。
+    val winlatorAutoByContainerNameLabel =
+        stringResource(R.string.engine_settings_winlator_container_id_auto_by_name)
     val winlatorEffectiveContainerIdLabel = when {
-        winlatorContainerId == null && !winlatorContainerName.isNullOrBlank() -> "0"
+        winlatorContainerId == null && !winlatorContainerName.isNullOrBlank() -> winlatorAutoByContainerNameLabel
         globalWinlator.containerId > 0 -> globalWinlator.containerId.toString()
         else -> ""
     }

@@ -193,6 +193,9 @@ object EffectiveEngineSettings {
      *
      * 覆盖字段带值即生效（""=显式不下发该参数，跟随容器配置）；字符串字段仍走各自的
      * 白名单/正则归一，非法覆盖值归一回空串而不是继承全局，避免全局与覆盖混搭出非法参数。
+     *
+     * 容器规则：`containerId` 与 `containerName` 同时存在时以 ID 为准；只覆盖名称时
+     * （`containerId == null` 且名称非空）会清除继承的全局 ID，否则 ID 优先会让名称覆盖失效。
      */
     fun mergeWinlator(
         global: EngineSettingsStore.Winlator,

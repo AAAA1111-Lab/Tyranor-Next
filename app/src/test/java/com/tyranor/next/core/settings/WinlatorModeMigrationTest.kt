@@ -82,4 +82,22 @@ class WinlatorModeMigrationTest {
         val json = buildClearedParams(PerGameSettingsStore.F_WINLATOR_CONTAINER_ID to "3")
         assertEquals(PerGameSettingsStore.WINLATOR_MODE_CONTAINER, infer(json))
     }
+<<<<<<< HEAD
+=======
+
+    @Test
+    fun containerModeWithNameOnlyOverrideClearsInheritedId() {
+        // 推断 + 合并的联动：六个参数全空落到 CONTAINER 后，只填名称必须清掉继承的全局 ID，
+        // 否则协议里 ID 优先会让名称覆盖失效。
+        val json = buildClearedParams(PerGameSettingsStore.F_WINLATOR_CONTAINER_NAME to "我的容器")
+        assertEquals(PerGameSettingsStore.WINLATOR_MODE_CONTAINER, infer(json))
+
+        val merged = EffectiveEngineSettings.mergeWinlator(
+            EngineSettingsStore.Winlator(containerId = 5, containerName = "全局容器"),
+            PerGameSettingsStore.toWinlatorOverride(json),
+        )
+        assertEquals(0, merged.containerId)
+        assertEquals("我的容器", merged.containerName)
+    }
+>>>>>>> 9ca673a4e606b6e6ab5ef1666b013085a645b74f
 }
