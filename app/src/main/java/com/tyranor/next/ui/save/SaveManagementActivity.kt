@@ -49,7 +49,6 @@ import com.tyranor.next.ui.common.AppAlertDialog
 import com.tyranor.next.ui.common.AppNavItem
 import com.tyranor.next.ui.common.AppScreenActivity
 import com.tyranor.next.ui.common.AppTopBar
-import com.tyranor.next.ui.common.TopBarBlurHost
 import com.tyranor.next.ui.common.BottomInsetSpacer
 import com.tyranor.next.ui.common.DialogTextButton
 import kotlinx.coroutines.CancellationException
@@ -181,12 +180,12 @@ private fun SaveManagementScreen(game: ScanGame) {
         }
     }
 
-    TopBarBlurHost(topBar = {
+    Column(Modifier.fillMaxSize()) {
         AppTopBar(title = stringResource(R.string.save_management_title))
-    }) { topInset ->
+
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
-            contentPadding = PaddingValues(top = 16.dp + topInset, bottom = 16.dp),
+            contentPadding = PaddingValues(top = 16.dp, bottom = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item {
