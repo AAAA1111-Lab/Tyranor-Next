@@ -421,7 +421,7 @@
     <string name="engine_settings_winlator_global_entry">查看/修改 Winlator 全局设置</string>
     <string name="engine_settings_winlator_global_entry_summary">打开引擎设置中的 Winlator 外置启动</string>
     <string name="engine_settings_winlator_container_id_auto_by_name">自动（由容器名覆盖）</string>
-    <string name="engine_settings_winlator_container_id_summary_per_game">0 或留空 = 自动（最近使用 / 唯一 / 第一个容器）；只填容器名时会忽略继承的容器 ID</string>
+    <string name="engine_settings_winlator_container_id_summary_per_game">容器 ID 为 0 或留空时：填写了容器名则按名称选择，否则自动（最近使用 / 唯一 / 第一个容器）；只填容器名时会忽略继承的容器 ID</string>
     <string name="engine_settings_winlator_container_name_summary_per_game">留空 = 自动；容器 ID 优先于容器名，只填名称时会清除继承的容器 ID</string>
     <string name="engine_settings_winlator_container_name_title">容器名</string>
     <string name="engine_settings_winlator_container_name_summary">留空 = 自动；容器 ID 优先于容器名</string>

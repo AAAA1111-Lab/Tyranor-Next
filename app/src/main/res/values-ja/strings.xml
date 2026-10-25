@@ -421,7 +421,7 @@
     <string name="engine_settings_winlator_global_entry">Winlator の全体設定を表示・変更</string>
     <string name="engine_settings_winlator_global_entry_summary">エンジン設定の Winlator 外部起動を開く</string>
     <string name="engine_settings_winlator_container_id_auto_by_name">自動（コンテナ名が優先）</string>
-    <string name="engine_settings_winlator_container_id_summary_per_game">0 または空欄 = 自動（最近使用 / 唯一 / 最初のコンテナ）。名前のみ指定時は継承したコンテナ ID を無視します</string>
+    <string name="engine_settings_winlator_container_id_summary_per_game">コンテナ ID が 0 または空欄の場合：コンテナ名が入力されていれば名前で選択し、なければ自動（最近使用 / 唯一 / 最初のコンテナ）。名前のみ指定時は継承したコンテナ ID を無視します</string>
     <string name="engine_settings_winlator_container_name_summary_per_game">空欄 = 自動。コンテナ ID が優先され、名前のみ指定時は継承した ID をクリアします</string>
     <string name="engine_settings_winlator_container_name_title">コンテナ名</string>
     <string name="engine_settings_winlator_container_name_summary">空欄 = 自動。コンテナ ID がコンテナ名より優先されます</string>
