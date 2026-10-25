@@ -387,6 +387,13 @@ object KrSafMirror {
             if (!sourcePath.startsWith("$sourceRoot/")) return false
             val relative = sourcePath.substring(sourceRoot.length + 1)
             if (relative.isBlank()) return false
+            // 补全路径的中央拦截：源 savedata 子树与 mirrorDirectory 的跳过规则一致，
+            // 否则 MediaStore/File 直列会把源存档合并成占位、绕过镜像跳过逻辑
+            if (relative.equals("savedata", ignoreCase = true) ||
+                relative.startsWith("savedata/", ignoreCase = true)
+            ) {
+                return false
+            }
             val local = File(mirrorRoot, relative.lowercase(Locale.ROOT))
             // canonical 前缀校验（与 mirrorDirectory 的 safeMirrorChild 同类防护）：
             // sourcePath 携带 ../ 时 File(mirrorRoot, relative) 可能逃出镜像目录
