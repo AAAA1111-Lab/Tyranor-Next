@@ -6,7 +6,6 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.util.AtomicFile
-import android.util.Base64
 import android.util.Log
 import androidx.documentfile.provider.DocumentFile
 import java.io.File
@@ -137,40 +136,55 @@ object KrSafMirror {
         if (indexPath.isNullOrBlank()) return emptyMap()
         val file = File(indexPath)
         if (!file.isFile) return emptyMap()
-        val result = LinkedHashMap<String, MirrorEntry>()
-        file.bufferedReader().useLines { lines ->
-            val iterator = lines.iterator()
-            if (!iterator.hasNext()) return emptyMap()
-            when (iterator.next()) {
-                // v2 行带第三列十进制尺寸；v1 无尺寸列，size 记 -1（stat 钩子不覆盖）
-                INDEX_VERSION -> {}
-                INDEX_VERSION_V1 -> {}
-                else -> return emptyMap()
+        return file.bufferedReader().useLines { lines ->
+            parseIndexLines(lines.asIterable()) { uri -> Uri.parse(uri) }
+                .mapValues { (_, holder) -> MirrorEntry(holder.uri, holder.size) }
+        }
+    }
+
+    /**
+     * 索引文本行解析（与 [loadIndex] 共用；独立出来便于 JVM 单测——
+     * Uri 构造经由 [buildUri] 注入，测试中用恒等函数绕开 android.net.Uri stub）。
+     */
+    internal fun <T> parseIndexLines(
+        lines: Iterable<String>,
+        buildUri: (String) -> T,
+    ): Map<String, MirrorEntryHolder<T>> {
+        val result = LinkedHashMap<String, MirrorEntryHolder<T>>()
+        val iterator = lines.iterator()
+        if (!iterator.hasNext()) return result
+        when (iterator.next()) {
+            // v2 行带第三列十进制尺寸；v1 无尺寸列，size 记 -1（stat 钩子不覆盖）
+            INDEX_VERSION -> {}
+            INDEX_VERSION_V1 -> {}
+            else -> return result
+        }
+        while (iterator.hasNext()) {
+            val line = iterator.next()
+            val split = line.indexOf('\t')
+            if (split <= 0 || split >= line.lastIndex) continue
+            val path = decode(line.substring(0, split)).lowercase(Locale.ROOT)
+            val rest = line.substring(split + 1)
+            val sizeSplit = rest.indexOf('\t')
+            val uri: String
+            val size: Long
+            if (sizeSplit < 0) {
+                uri = rest
+                size = -1L
+            } else {
+                uri = rest.substring(0, sizeSplit)
+                size = rest.substring(sizeSplit + 1).toLongOrNull() ?: -1L
             }
-            while (iterator.hasNext()) {
-                val line = iterator.next()
-                val split = line.indexOf('\t')
-                if (split <= 0 || split >= line.lastIndex) continue
-                val path = decode(line.substring(0, split)).lowercase(Locale.ROOT)
-                val rest = line.substring(split + 1)
-                val sizeSplit = rest.indexOf('\t')
-                val uri: String
-                val size: Long
-                if (sizeSplit < 0) {
-                    uri = rest
-                    size = -1L
-                } else {
-                    uri = rest.substring(0, sizeSplit)
-                    size = rest.substring(sizeSplit + 1).toLongOrNull() ?: -1L
-                }
-                val decodedUri = decode(uri)
-                if (path.isNotBlank() && decodedUri.isNotBlank()) {
-                    result[path] = MirrorEntry(Uri.parse(decodedUri), size)
-                }
+            val decodedUri = decode(uri)
+            if (path.isNotBlank() && decodedUri.isNotBlank()) {
+                result[path] = MirrorEntryHolder(decodedUri, size, buildUri(decodedUri))
             }
         }
         return result
     }
+
+    /** 解析中间产物：Uri 的原始字符串与构造结果并列，泛型承载 android/net 或测试恒等实现。 */
+    internal data class MirrorEntryHolder<T>(val uriString: String, val size: Long, val uri: T)
 
     private data class ResolvedDocument(val treeUri: Uri, val documentId: String)
 
@@ -579,11 +593,14 @@ object KrSafMirror {
         }
     }
 
+    // java.util.Base64（API 26+，与 minSdk 一致）：URL-safe 字母表、无 padding,
+    // 与旧 android.util.Base64(NO_WRAP or URL_SAFE) 输出完全一致，且 JVM 单测可直接运行
     private fun encode(value: String): String =
-        Base64.encodeToString(value.toByteArray(Charsets.UTF_8), Base64.NO_WRAP or Base64.URL_SAFE)
+        java.util.Base64.getUrlEncoder().withoutPadding()
+            .encodeToString(value.toByteArray(Charsets.UTF_8))
 
     private fun decode(value: String): String =
-        String(Base64.decode(value, Base64.NO_WRAP or Base64.URL_SAFE), Charsets.UTF_8)
+        String(java.util.Base64.getUrlDecoder().decode(value), Charsets.UTF_8)
 
     private fun sanitize(value: String): String = value
         .replace(Regex("[\\\\/:*?\"<>|]"), "_")
