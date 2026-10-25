@@ -1334,7 +1334,7 @@ fun PerGameSettingsScreen(game: ScanGame) {
                             label = stringResource(R.string.engine_settings_winlator_container_id_title),
                             globalValue = winlatorEffectiveContainerIdLabel,
                             override = winlatorContainerId,
-                            hint = stringResource(R.string.engine_settings_winlator_container_id_summary),
+                            hint = stringResource(R.string.engine_settings_winlator_container_id_summary_per_game),
                             sanitize = { it.filter { ch -> ch.isDigit() }.take(6) },
                             // 容器模式下这两项留空 = 继承全局容器（解析器以全局为基线），沿用默认摘要即可。
                         ) { winlatorContainerId = it?.takeIf { value -> value.isNotBlank() } }
@@ -1342,7 +1342,7 @@ fun PerGameSettingsScreen(game: ScanGame) {
                             label = stringResource(R.string.engine_settings_winlator_container_name_title),
                             globalValue = globalWinlator.containerName,
                             override = winlatorContainerName,
-                            hint = stringResource(R.string.engine_settings_winlator_container_name_summary),
+                            hint = stringResource(R.string.engine_settings_winlator_container_name_summary_per_game),
                         ) { winlatorContainerName = it }
                     }
                 }
@@ -1355,14 +1355,14 @@ fun PerGameSettingsScreen(game: ScanGame) {
                             label = stringResource(R.string.engine_settings_winlator_container_id_title),
                             globalValue = winlatorEffectiveContainerIdLabel,
                             override = winlatorContainerId,
-                            hint = stringResource(R.string.engine_settings_winlator_container_id_summary),
+                            hint = stringResource(R.string.engine_settings_winlator_container_id_summary_per_game),
                             sanitize = { it.filter { ch -> ch.isDigit() }.take(6) },
                         ) { winlatorContainerId = it?.takeIf { value -> value.isNotBlank() } }
                         OverrideText(
                             label = stringResource(R.string.engine_settings_winlator_container_name_title),
                             globalValue = globalWinlator.containerName,
                             override = winlatorContainerName,
-                            hint = stringResource(R.string.engine_settings_winlator_container_name_summary),
+                            hint = stringResource(R.string.engine_settings_winlator_container_name_summary_per_game),
                         ) { winlatorContainerName = it }
                         OverrideChoice(
                             stringResource(R.string.engine_settings_winlator_graphics_driver_title),

@@ -163,8 +163,11 @@ class GameOverridePartitionsTest {
 
         val blob = JSONObject().put(PerGameSettingsStore.F_WINLATOR_MODE, PerGameSettingsStore.WINLATOR_MODE_CONTAINER)
         val row = GameOverridePartitions.split("/games/winlator", blob, 1L)
-        assertTrue(JSONObject(row.tyranoJson!!).has(PerGameSettingsStore.F_WINLATOR_MODE))
-        assertEquals(blob.length(), GameOverridePartitions.assemble(row).length())
+        val tyrano = JSONObject(row.tyranoJson!!)
+        assertEquals(PerGameSettingsStore.WINLATOR_MODE_CONTAINER, tyrano.optString(PerGameSettingsStore.F_WINLATOR_MODE))
+        val restored = GameOverridePartitions.assemble(row)
+        assertEquals(PerGameSettingsStore.WINLATOR_MODE_CONTAINER, restored.optString(PerGameSettingsStore.F_WINLATOR_MODE))
+        assertEquals(blob.length(), restored.length())
     }
 
     @Test
