@@ -1337,7 +1337,7 @@ fun PerGameSettingsScreen(game: ScanGame) {
                             hint = stringResource(R.string.engine_settings_winlator_container_id_summary),
                             sanitize = { it.filter { ch -> ch.isDigit() }.take(6) },
                             // 容器模式下这两项留空 = 继承全局容器（解析器以全局为基线），沿用默认摘要即可。
-                        ) { winlatorContainerId = it }
+                        ) { winlatorContainerId = it?.takeIf { value -> value.isNotBlank() } }
                         OverrideText(
                             label = stringResource(R.string.engine_settings_winlator_container_name_title),
                             globalValue = globalWinlator.containerName,
@@ -1357,7 +1357,7 @@ fun PerGameSettingsScreen(game: ScanGame) {
                             override = winlatorContainerId,
                             hint = stringResource(R.string.engine_settings_winlator_container_id_summary),
                             sanitize = { it.filter { ch -> ch.isDigit() }.take(6) },
-                        ) { winlatorContainerId = it }
+                        ) { winlatorContainerId = it?.takeIf { value -> value.isNotBlank() } }
                         OverrideText(
                             label = stringResource(R.string.engine_settings_winlator_container_name_title),
                             globalValue = globalWinlator.containerName,
