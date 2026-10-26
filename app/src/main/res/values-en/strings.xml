@@ -411,7 +411,7 @@
     <string name="engine_settings_fvp_font_hint">FVP only. TTC uses the first face. Missing glyphs fall back to system fonts. Restart to apply.</string>
     <string name="engine_settings_fvp_font_import_failed">Font import failed: choose a ttf/otf/ttc file</string>
     <string name="engine_settings_winlator_title">Winlator external launch</string>
-    <string name="engine_settings_winlator_follow_container">Follow container</string>
+    <string name="engine_settings_winlator_follow_container">Use container config</string>
     <string name="engine_settings_winlator_container_id_title">Container ID</string>
     <string name="engine_settings_winlator_container_id_summary">0 or empty = auto (last used / only / first container)</string>
     <string name="engine_settings_winlator_mode_title">Run mode</string>

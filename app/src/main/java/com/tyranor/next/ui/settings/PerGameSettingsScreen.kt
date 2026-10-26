@@ -152,7 +152,6 @@ fun PerGameSettingsScreen(game: ScanGame) {
     var winlatorBox64Preset by remember { mutableStateOf(PerGameSettingsStore.getStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_BOX64_PRESET)) }
     var winlatorSave by remember { mutableStateOf(PerGameSettingsStore.getBool(ctx, gid, PerGameSettingsStore.F_WINLATOR_SAVE)) }
     var winlatorMode by remember { mutableStateOf(PerGameSettingsStore.getWinlatorMode(ctx, gid)) }
-    var winlatorModeTouched by remember { mutableStateOf(false) }
     var artPatchRunning by remember(gid) { mutableStateOf(false) }
     var artPatchResult by remember(gid) { mutableStateOf<EngineLauncher.ArtemisManualPatchResult?>(null) }
     var renpyOverride by remember(gid) {
@@ -408,6 +407,11 @@ fun PerGameSettingsScreen(game: ScanGame) {
         globalWinlator.containerId > 0 -> globalWinlator.containerId.toString()
         else -> ""
     }
+    // 只填名称时摘要直接呈现生效值，不再加「跟随全局 ·」前缀——容器模式下没有「跟随全局」语义。
+    val winlatorContainerIdSummaryOverride =
+        winlatorAutoByContainerNameLabel.takeIf {
+            winlatorContainerId == null && !winlatorContainerName.isNullOrBlank()
+        }
     val globalPpssppVersion = EngineSettingsStore.getPpssppVersion(ctx)
     val globalWebShellPort = EngineSettingsStore.getWebShellPort(ctx)
     val ppssppVersionMap = ppssppVersionOptionsMap()
@@ -558,9 +562,9 @@ fun PerGameSettingsScreen(game: ScanGame) {
         if (winlatorMode == PerGameSettingsStore.WINLATOR_MODE_CUSTOM) {
             PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_WINLATOR_SAVE, winlatorSave)
         }
-        if (winlatorModeTouched) {
-            PerGameSettingsStore.setWinlatorMode(ctx, gid, winlatorMode)
-        }
+        // 模式键总是落盘：否则「把六个下拉改回空」后推断会翻转成 CONTAINER，
+        // 用户看到的模式与实际生效值不一致（save 还会被静默忽略）。
+        PerGameSettingsStore.setWinlatorMode(ctx, gid, winlatorMode)
         val onsObj = JSONObject()
         putIfNotNull(onsObj, "scopedsavedir", onsScoped)
         putIfNotNull(onsObj, "strechfull", onsStretch)
@@ -1308,7 +1312,6 @@ fun PerGameSettingsScreen(game: ScanGame) {
                                     1 -> PerGameSettingsStore.WINLATOR_MODE_CONTAINER
                                     else -> PerGameSettingsStore.WINLATOR_MODE_CUSTOM
                                 }
-                                winlatorModeTouched = true
                             },
                         )
                         if (winlatorMode == PerGameSettingsStore.WINLATOR_MODE_GLOBAL) {
@@ -1336,6 +1339,7 @@ fun PerGameSettingsScreen(game: ScanGame) {
                             override = winlatorContainerId,
                             hint = stringResource(R.string.engine_settings_winlator_container_id_summary_per_game),
                             sanitize = { it.filter { ch -> ch.isDigit() }.take(6) },
+                            summaryOverride = winlatorContainerIdSummaryOverride,
                             // 容器模式下这两项留空 = 继承全局容器（解析器以全局为基线），沿用默认摘要即可。
                         ) { winlatorContainerId = it?.takeIf { value -> value.isNotBlank() } }
                         OverrideText(
@@ -1343,7 +1347,9 @@ fun PerGameSettingsScreen(game: ScanGame) {
                             globalValue = globalWinlator.containerName,
                             override = winlatorContainerName,
                             hint = stringResource(R.string.engine_settings_winlator_container_name_summary_per_game),
-                        ) { winlatorContainerName = it }
+                            sanitize = { it.filter { ch -> !ch.isISOControl() }.take(64) },
+                            validate = { it.length <= 64 },
+                        ) { winlatorContainerName = it?.takeIf { value -> value.isNotBlank() } }
                     }
                 }
 
@@ -1357,13 +1363,16 @@ fun PerGameSettingsScreen(game: ScanGame) {
                             override = winlatorContainerId,
                             hint = stringResource(R.string.engine_settings_winlator_container_id_summary_per_game),
                             sanitize = { it.filter { ch -> ch.isDigit() }.take(6) },
+                            summaryOverride = winlatorContainerIdSummaryOverride,
                         ) { winlatorContainerId = it?.takeIf { value -> value.isNotBlank() } }
                         OverrideText(
                             label = stringResource(R.string.engine_settings_winlator_container_name_title),
                             globalValue = globalWinlator.containerName,
                             override = winlatorContainerName,
                             hint = stringResource(R.string.engine_settings_winlator_container_name_summary_per_game),
-                        ) { winlatorContainerName = it }
+                            sanitize = { it.filter { ch -> !ch.isISOControl() }.take(64) },
+                            validate = { it.length <= 64 },
+                        ) { winlatorContainerName = it?.takeIf { value -> value.isNotBlank() } }
                         OverrideChoice(
                             stringResource(R.string.engine_settings_winlator_graphics_driver_title),
                             winlatorDriverMap,
@@ -1686,11 +1695,12 @@ private fun OverrideText(
     sanitize: ((String) -> String)? = null,
     allowEmpty: Boolean = true,
     validate: (String) -> Boolean = { true },
+    summaryOverride: String? = null,
     onSet: (String?) -> Unit,
 ) {
     var showDialog by remember { mutableStateOf(false) }
     val emptyLabel = stringResource(R.string.engine_settings_winlator_follow_container)
-    val summary = if (override == null) {
+    val summary = summaryOverride ?: if (override == null) {
         stringResource(R.string.engine_settings_follow_global_with_value, globalValue.ifBlank { emptyLabel })
     } else {
         override.ifBlank { emptyLabel }
