@@ -304,9 +304,9 @@ data class WinlatorOverride(
          * 「跟随容器」模式的基线覆盖：除容器 ID / 名称外，每个字段都取
          * [EngineSettingsStore.Winlator] 的默认值（显式不下发、沿用容器），save 固定 false。
          *
-         * 默认值派生而不是手写空串：新增覆盖字段时默认值会自动生效；
+         * 新增覆盖字段时仍需在此显式列出；测试
          * `EngineSettingsResolverWinlatorTest.containerModeClearsEveryFieldExceptContainer`
-         * 会用反射逐一断言「除容器字段外都等于默认值」，漏更新时测试先红。
+         * 会把全局夹具的每个非容器字段设成非默认值，漏更新时测试先红。
          */
         fun containerBaseline(containerId: String?, containerName: String?): WinlatorOverride {
             val defaults = EngineSettingsStore.Winlator()

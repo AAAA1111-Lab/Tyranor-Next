@@ -1697,12 +1697,13 @@ private fun WinlatorContainerRows(
         globalValue = globalContainerName,
         override = containerName,
         hint = stringResource(R.string.engine_settings_winlator_container_name_summary_per_game),
-        // 容器名参与 Winlator 端匹配：限制长度并过滤控制字符，避免零宽字符导致匹配失败。
         // 控制字符与零宽格式字符都会破坏 Winlator 端名称匹配，一并过滤。
         sanitize = {
             it.filterNot { ch -> ch.isISOControl() || ch.category == CharCategory.FORMAT }.take(64)
         },
-    ) { onContainerNameChange(it?.takeIf { value -> value.isNotBlank() }) }
+        // 弹窗确认空文本要保留为 "：它表示「显式不下发名称」，与「跟随全局」（null）不同；
+        // 否则继承了全局容器名的游戏无法单独取消名称选择。
+    ) { onContainerNameChange(it) }
 }
 
 @Composable

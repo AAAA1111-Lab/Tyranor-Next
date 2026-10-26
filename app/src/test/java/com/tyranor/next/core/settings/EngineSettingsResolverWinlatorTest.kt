@@ -87,10 +87,27 @@ class EngineSettingsResolverWinlatorTest {
 
     @Test
     fun containerModeClearsEveryFieldExceptContainer() {
-        // 反射穷举：除容器 ID / 名称外，CONTAINER 的生效值必须等于 Winlator 默认值。
-        // #124 新增覆盖字段时，若 containerBaseline 没有同步，这条测试会先红。
-        val resolved = EngineSettingsResolver.resolveWinlatorSettings(global, clearedLegacyJson())
+        // 反射穷举：全局的每个非容器字段都设成非默认值，CONTAINER 的生效值必须等于默认值。
+        // #124 新增覆盖字段时，若 containerBaseline 没有同步，这条测试会先红；
+        // 全局夹具用非默认值，避免「没清空但恰好等于默认值」的假通过。
         val defaults = EngineSettingsStore.Winlator()
+        val sentinelGlobal = EngineSettingsStore.Winlator().apply {
+            containerId = 5
+            containerName = "全局容器"
+            EngineSettingsStore.Winlator::class.java.declaredFields
+                .filterNot { java.lang.reflect.Modifier.isStatic(it.modifiers) }
+                .filterNot { it.name == "containerId" || it.name == "containerName" }
+                .forEach { field ->
+                    field.isAccessible = true
+                    when (field.get(this)) {
+                        is String -> field.set(this, "sentinel-${field.name}")
+                        is Boolean -> field.set(this, true)
+                        is Int -> field.set(this, 7)
+                    }
+                }
+        }
+
+        val resolved = EngineSettingsResolver.resolveWinlatorSettings(sentinelGlobal, clearedLegacyJson())
 
         EngineSettingsStore.Winlator::class.java.declaredFields
             .filterNot { java.lang.reflect.Modifier.isStatic(it.modifiers) }
@@ -99,6 +116,19 @@ class EngineSettingsResolverWinlatorTest {
                 field.isAccessible = true
                 assertEquals("字段 ${field.name}", field.get(defaults), field.get(resolved))
             }
+    }
+
+    @Test
+    fun explicitEmptyContainerNameDoesNotInheritGlobal() {
+        // 弹窗确认空文本 = 显式不下发名称，不能继承全局容器名。
+        val json = clearedLegacyJson().apply {
+            put(PerGameSettingsStore.F_WINLATOR_MODE, PerGameSettingsStore.WINLATOR_MODE_CUSTOM)
+            put(PerGameSettingsStore.F_WINLATOR_CONTAINER_NAME, "")
+        }
+
+        val resolved = EngineSettingsResolver.resolveWinlatorSettings(global, json)
+
+        assertEquals("", resolved.containerName)
     }
 
     @Test
