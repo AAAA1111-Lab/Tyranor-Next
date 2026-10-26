@@ -553,16 +553,42 @@ fun PerGameSettingsScreen(game: ScanGame) {
             PerGameSettingsStore.F_XSYS4_MSGSKIP_DELAY,
             xs4Msgskip?.toIntOrNull()?.takeIf { it in EngineSettingsStore.XSYS4_MSGSKIP_DELAY_VALUES }?.toString(),
         )
-        PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_CONTAINER_ID, winlatorContainerId)
-        PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_CONTAINER_NAME, winlatorContainerName)
-        PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_GRAPHICS_DRIVER, winlatorGraphicsDriver)
-        PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_DXWRAPPER, winlatorDxwrapper)
-        PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_SCREEN_SIZE, winlatorScreenSize)
-        PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_LC_ALL, winlatorLcAll)
-        PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_TZ, winlatorTz)
-        PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_BOX64_PRESET, winlatorBox64Preset)
-        if (winlatorMode == PerGameSettingsStore.WINLATOR_MODE_CUSTOM) {
-            PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_WINLATOR_SAVE, winlatorSave)
+        // 按模式落盘：跟随全局不留任何 Winlator 参数（降级到 1.61 或模式键丢失时不会复活旧值）；
+        // 跟随容器只保留容器 ID/名称，六个参数与 save 清空；自定义写全部。
+        val winlatorParamKeys = listOf(
+            PerGameSettingsStore.F_WINLATOR_GRAPHICS_DRIVER,
+            PerGameSettingsStore.F_WINLATOR_DXWRAPPER,
+            PerGameSettingsStore.F_WINLATOR_SCREEN_SIZE,
+            PerGameSettingsStore.F_WINLATOR_LC_ALL,
+            PerGameSettingsStore.F_WINLATOR_TZ,
+            PerGameSettingsStore.F_WINLATOR_BOX64_PRESET,
+        )
+        when (winlatorMode) {
+            PerGameSettingsStore.WINLATOR_MODE_GLOBAL -> {
+                PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_CONTAINER_ID, null)
+                PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_CONTAINER_NAME, null)
+                winlatorParamKeys.forEach { PerGameSettingsStore.setStr(ctx, gid, it, null) }
+                PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_WINLATOR_SAVE, null)
+            }
+
+            PerGameSettingsStore.WINLATOR_MODE_CONTAINER -> {
+                PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_CONTAINER_ID, winlatorContainerId)
+                PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_CONTAINER_NAME, winlatorContainerName)
+                winlatorParamKeys.forEach { PerGameSettingsStore.setStr(ctx, gid, it, null) }
+                PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_WINLATOR_SAVE, null)
+            }
+
+            else -> {
+                PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_CONTAINER_ID, winlatorContainerId)
+                PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_CONTAINER_NAME, winlatorContainerName)
+                PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_GRAPHICS_DRIVER, winlatorGraphicsDriver)
+                PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_DXWRAPPER, winlatorDxwrapper)
+                PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_SCREEN_SIZE, winlatorScreenSize)
+                PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_LC_ALL, winlatorLcAll)
+                PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_TZ, winlatorTz)
+                PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_BOX64_PRESET, winlatorBox64Preset)
+                PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_WINLATOR_SAVE, winlatorSave)
+            }
         }
         // 模式键总是落盘：否则「把六个下拉改回空」后推断会翻转成 CONTAINER，
         // 用户看到的模式与实际生效值不一致（save 还会被静默忽略）。
