@@ -187,6 +187,43 @@ class GameOverridePartitionsTest {
     }
 
     @Test
+    fun winlatorOverridesRoundTripWithTypesIntact() {
+        // 十个逐游戏 Winlator 键一起走 split → assemble → toWinlatorOverride：
+        // 既覆盖「全部键都在 tyrano 分区」，也锁住 save 的 Boolean 类型不退化。
+        val blob = JSONObject().apply {
+            put(PerGameSettingsStore.F_WINLATOR_MODE, PerGameSettingsStore.WINLATOR_MODE_CUSTOM)
+            put(PerGameSettingsStore.F_WINLATOR_CONTAINER_ID, "5")
+            put(PerGameSettingsStore.F_WINLATOR_CONTAINER_NAME, "常規容器")
+            put(PerGameSettingsStore.F_WINLATOR_GRAPHICS_DRIVER, "vulkan")
+            put(PerGameSettingsStore.F_WINLATOR_DXWRAPPER, "wined3d")
+            put(PerGameSettingsStore.F_WINLATOR_SCREEN_SIZE, "1280x720")
+            put(PerGameSettingsStore.F_WINLATOR_LC_ALL, "ja_JP.UTF-8")
+            put(PerGameSettingsStore.F_WINLATOR_TZ, "Asia/Tokyo")
+            put(PerGameSettingsStore.F_WINLATOR_BOX64_PRESET, "PERFORMANCE")
+            put(PerGameSettingsStore.F_WINLATOR_SAVE, true)
+        }
+
+        val row = GameOverridePartitions.split("/games/winlator-roundtrip", blob, 1L)
+        val restored = GameOverridePartitions.assemble(row)
+
+        assertEquals(blob.length(), restored.length())
+        for (key in blob.keys()) {
+            assertEquals("键 $key", blob.get(key), restored.get(key))
+        }
+
+        val override = PerGameSettingsStore.toWinlatorOverride(restored)!!
+        assertEquals("5", override.containerId)
+        assertEquals("常規容器", override.containerName)
+        assertEquals("vulkan", override.graphicsDriver)
+        assertEquals("wined3d", override.dxwrapper)
+        assertEquals("1280x720", override.screenSize)
+        assertEquals("ja_JP.UTF-8", override.lcAll)
+        assertEquals("Asia/Tokyo", override.tz)
+        assertEquals("PERFORMANCE", override.box64Preset)
+        assertEquals(true, override.save)
+    }
+
+    @Test
     fun partitionKeysMatchPerGameSettingsStoreConstants() {
         // 字面量键集与 settings 层常量的契约约束（避免漂移）
         assertEquals(PerGameSettingsStore.F_ENGINE_VERSION, GameOverridePartitions.KEY_ENGINE_VERSION)

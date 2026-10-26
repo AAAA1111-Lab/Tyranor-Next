@@ -318,10 +318,17 @@ object PerGameSettingsStore {
     )
 
     /**
-     * 当前全部逐游戏参数覆盖键；新增字段（例如后续的 wined3d / winComponents /
-     * audioDriver / envVars）必须登记在这里，否则「只写了新字段」的记录会被判成全局。
+     * 当前全部逐游戏参数覆盖键（独立清单，不等于旧六键）：新增字段必须同时登记到这里，
+     * 否则「只写了新字段」的记录会被判成全局。
      */
-    internal val CURRENT_OVERRIDE_FIELDS = LEGACY_CONTAINER_FIELDS
+    internal val CURRENT_OVERRIDE_FIELDS = listOf(
+        F_WINLATOR_GRAPHICS_DRIVER,
+        F_WINLATOR_DXWRAPPER,
+        F_WINLATOR_SCREEN_SIZE,
+        F_WINLATOR_LC_ALL,
+        F_WINLATOR_TZ,
+        F_WINLATOR_BOX64_PRESET,
+    )
 
     /**
      * 单游戏运行模式：global（默认）/ container / custom。
@@ -335,8 +342,7 @@ object PerGameSettingsStore {
         if (mode == WINLATOR_MODE_GLOBAL || mode == WINLATOR_MODE_CONTAINER || mode == WINLATOR_MODE_CUSTOM) {
             return mode
         }
-        // 未知的非空 mode 只可能来自损坏数据或未来版本：按全局处理，不静默落入容器语义。
-        if (mode.isNotEmpty()) return WINLATOR_MODE_GLOBAL
+        // 未知的非空 mode 不直接判全局：继续走下面的字段推断，尽量保留可解释的旧数据。
 
         val legacyPresent = LEGACY_CONTAINER_FIELDS.filter { json.has(it) }
         val legacyAllBlank =
@@ -371,10 +377,10 @@ object PerGameSettingsStore {
         fun boolOrNull(key: String): Boolean? = if (json.has(key)) json.optBoolean(key) else null
         fun strOrNull(key: String): String? = if (json.has(key)) json.optString(key) else null
         val override = WinlatorOverride(
-            // 旧数据里 "" 是「弹窗确认空值」的产物，与 UI 现在的 null（未覆盖）统一，
-            // 避免空串被当成显式 0 而在继承全局 ID 时产生差异。
-            containerId = strOrNull(F_WINLATOR_CONTAINER_ID)?.takeIf { it.isNotBlank() },
-            containerName = strOrNull(F_WINLATOR_CONTAINER_NAME)?.takeIf { it.isNotBlank() },
+            // 旧数据的 "" 与 null 语义不同："" = 显式不下发该字段（1.61 的弹窗确认空值），
+            // null = 未覆盖、继承全局。不能把空串归一成 null，否则升级后会改用全局容器。
+            containerId = strOrNull(F_WINLATOR_CONTAINER_ID),
+            containerName = strOrNull(F_WINLATOR_CONTAINER_NAME),
             graphicsDriver = strOrNull(F_WINLATOR_GRAPHICS_DRIVER),
             dxwrapper = strOrNull(F_WINLATOR_DXWRAPPER),
             screenSize = strOrNull(F_WINLATOR_SCREEN_SIZE),

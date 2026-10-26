@@ -189,6 +189,14 @@ object EffectiveEngineSettings {
             ?: EngineSettingsStore.normalizeXs4MsgskipDelay(global)
 
     /**
+     * 只覆盖容器名（容器 ID 未覆盖）时会清除继承的全局 ID。
+     *
+     * UI 的摘要与 [mergeWinlator] 共用这一条规则，避免两处判断漂移。
+     */
+    fun isNameOnlyContainerOverride(override: WinlatorOverride?): Boolean =
+        override?.containerId == null && !override?.containerName.isNullOrBlank()
+
+    /**
      * Winlator 外置启动全局设置 + 单游戏覆盖合并。
      *
      * 覆盖字段带值即生效（""=显式不下发该参数，跟随容器配置）；字符串字段仍走各自的
@@ -197,14 +205,6 @@ object EffectiveEngineSettings {
      * 容器规则：`containerId` 与 `containerName` 同时存在时以 ID 为准；只覆盖名称时
      * （`containerId == null` 且名称非空）会清除继承的全局 ID，否则 ID 优先会让名称覆盖失效。
      */
-    /**
-     * 只覆盖容器名（容器 ID 未覆盖）时会清除继承的全局 ID。
-     *
-     * UI 的摘要与 [mergeWinlator] 共用这一条规则，避免两处判断漂移。
-     */
-    fun isNameOnlyContainerOverride(override: WinlatorOverride?): Boolean =
-        override?.containerId == null && !override?.containerName.isNullOrBlank()
-
     fun mergeWinlator(
         global: EngineSettingsStore.Winlator,
         override: WinlatorOverride?,
@@ -301,22 +301,26 @@ data class WinlatorOverride(
 ) {
     companion object {
         /**
-         * 「跟随容器」模式的基线覆盖：全部参数置空（显式不下发、沿用容器），save 固定 false。
+         * 「跟随容器」模式的基线覆盖：除容器 ID / 名称外，每个字段都取
+         * [EngineSettingsStore.Winlator] 的默认值（显式不下发、沿用容器），save 固定 false。
          *
-         * 新增覆盖字段时**必须**在这里同步清空，否则新参数会在容器模式下继续继承全局；
-         * 容器 ID / 名称先继承全局，再由逐游戏值覆盖。
+         * 默认值派生而不是手写空串：新增覆盖字段时默认值会自动生效；
+         * `EngineSettingsResolverWinlatorTest.containerModeClearsEveryFieldExceptContainer`
+         * 会用反射逐一断言「除容器字段外都等于默认值」，漏更新时测试先红。
          */
-        fun containerBaseline(containerId: String?, containerName: String?): WinlatorOverride =
-            WinlatorOverride(
+        fun containerBaseline(containerId: String?, containerName: String?): WinlatorOverride {
+            val defaults = EngineSettingsStore.Winlator()
+            return WinlatorOverride(
                 containerId = containerId,
                 containerName = containerName,
-                graphicsDriver = "",
-                dxwrapper = "",
-                screenSize = "",
-                lcAll = "",
-                tz = "",
-                box64Preset = "",
+                graphicsDriver = defaults.graphicsDriver,
+                dxwrapper = defaults.dxwrapper,
+                screenSize = defaults.screenSize,
+                lcAll = defaults.lcAll,
+                tz = defaults.tz,
+                box64Preset = defaults.box64Preset,
                 save = false,
             )
+        }
     }
 }

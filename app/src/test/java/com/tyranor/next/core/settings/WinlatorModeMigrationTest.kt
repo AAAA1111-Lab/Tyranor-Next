@@ -84,13 +84,14 @@ class WinlatorModeMigrationTest {
     }
 
     @Test
-    fun unknownModeFallsBackToGlobal() {
-        // 未知的非空 mode 只可能来自损坏数据或未来版本：显式按全局处理，不回落字段推断。
+    fun unknownModeFallsBackToFieldInference() {
+        // 未知的非空 mode 只可能来自损坏数据或未来版本：不直接判全局，继续按字段推断，
+        // 尽量保留可解释的旧记录。
         val json = build(
             PerGameSettingsStore.F_WINLATOR_MODE to "future-mode",
             PerGameSettingsStore.F_WINLATOR_GRAPHICS_DRIVER to "vulkan",
         )
-        assertEquals(PerGameSettingsStore.WINLATOR_MODE_GLOBAL, infer(json))
+        assertEquals(PerGameSettingsStore.WINLATOR_MODE_CUSTOM, infer(json))
     }
 
     @Test

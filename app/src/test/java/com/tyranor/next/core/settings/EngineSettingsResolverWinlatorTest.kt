@@ -71,6 +71,37 @@ class EngineSettingsResolverWinlatorTest {
     }
 
     @Test
+    fun legacyExplicitEmptyContainerFieldsStayExplicit() {
+        // 1.61 的「弹窗确认空值」会写入空串：它表示显式不下发，而不是继承全局。
+        // 若把空串归一成 null，升级后会从「Winlator 自动选容器」变成「全局容器」。
+        val json = JSONObject().apply {
+            put(PerGameSettingsStore.F_WINLATOR_CONTAINER_ID, "")
+            put(PerGameSettingsStore.F_WINLATOR_CONTAINER_NAME, "")
+        }
+
+        val resolved = EngineSettingsResolver.resolveWinlatorSettings(global, json)
+
+        assertEquals(0, resolved.containerId)
+        assertEquals("", resolved.containerName)
+    }
+
+    @Test
+    fun containerModeClearsEveryFieldExceptContainer() {
+        // 反射穷举：除容器 ID / 名称外，CONTAINER 的生效值必须等于 Winlator 默认值。
+        // #124 新增覆盖字段时，若 containerBaseline 没有同步，这条测试会先红。
+        val resolved = EngineSettingsResolver.resolveWinlatorSettings(global, clearedLegacyJson())
+        val defaults = EngineSettingsStore.Winlator()
+
+        EngineSettingsStore.Winlator::class.java.declaredFields
+            .filterNot { java.lang.reflect.Modifier.isStatic(it.modifiers) }
+            .filterNot { it.name == "containerId" || it.name == "containerName" }
+            .forEach { field ->
+                field.isAccessible = true
+                assertEquals("字段 ${field.name}", field.get(defaults), field.get(resolved))
+            }
+    }
+
+    @Test
     fun customModeAppliesOverrideValues() {
         val json = JSONObject().apply {
             put(PerGameSettingsStore.F_WINLATOR_MODE, PerGameSettingsStore.WINLATOR_MODE_CUSTOM)
