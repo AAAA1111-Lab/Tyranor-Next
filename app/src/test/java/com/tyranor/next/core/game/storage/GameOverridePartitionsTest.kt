@@ -156,6 +156,22 @@ class GameOverridePartitionsTest {
         // 运行模式没有独立分区，必须显式建模进 tyrano；
         // 只靠「未识别键兜底」会在未来收紧分区时静默丢键，把玩家的模式选择重置成推断值。
         assertEquals(PerGameSettingsStore.F_WINLATOR_MODE, GameOverridePartitions.KEY_WINLATOR_MODE)
+        assertEquals(PerGameSettingsStore.F_WINLATOR_CONTAINER_ID, GameOverridePartitions.KEY_WINLATOR_CONTAINER_ID)
+        assertEquals(PerGameSettingsStore.F_WINLATOR_CONTAINER_NAME, GameOverridePartitions.KEY_WINLATOR_CONTAINER_NAME)
+        assertEquals(PerGameSettingsStore.F_WINLATOR_GRAPHICS_DRIVER, GameOverridePartitions.KEY_WINLATOR_GRAPHICS_DRIVER)
+        assertEquals(PerGameSettingsStore.F_WINLATOR_DXWRAPPER, GameOverridePartitions.KEY_WINLATOR_DXWRAPPER)
+        assertEquals(PerGameSettingsStore.F_WINLATOR_SCREEN_SIZE, GameOverridePartitions.KEY_WINLATOR_SCREEN_SIZE)
+        assertEquals(PerGameSettingsStore.F_WINLATOR_LC_ALL, GameOverridePartitions.KEY_WINLATOR_LC_ALL)
+        assertEquals(PerGameSettingsStore.F_WINLATOR_TZ, GameOverridePartitions.KEY_WINLATOR_TZ)
+        assertEquals(PerGameSettingsStore.F_WINLATOR_BOX64_PRESET, GameOverridePartitions.KEY_WINLATOR_BOX64_PRESET)
+        assertEquals(PerGameSettingsStore.F_WINLATOR_SAVE, GameOverridePartitions.KEY_WINLATOR_SAVE)
+        assertTrue(
+            "全部 Winlator 覆盖键必须显式属于 tyrano 分区",
+            GameOverridePartitions.TYRANO_KEYS.containsAll(PerGameSettingsStore.CURRENT_OVERRIDE_FIELDS) &&
+                GameOverridePartitions.KEY_WINLATOR_CONTAINER_ID in GameOverridePartitions.TYRANO_KEYS &&
+                GameOverridePartitions.KEY_WINLATOR_CONTAINER_NAME in GameOverridePartitions.TYRANO_KEYS &&
+                GameOverridePartitions.KEY_WINLATOR_SAVE in GameOverridePartitions.TYRANO_KEYS,
+        )
         assertTrue(
             "运行模式必须显式属于 tyrano 分区",
             GameOverridePartitions.KEY_WINLATOR_MODE in GameOverridePartitions.TYRANO_KEYS,

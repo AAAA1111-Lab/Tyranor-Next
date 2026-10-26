@@ -290,4 +290,25 @@ data class WinlatorOverride(
     val tz: String? = null,
     val box64Preset: String? = null,
     val save: Boolean? = null,
-)
+) {
+    companion object {
+        /**
+         * 「跟随容器」模式的基线覆盖：全部参数置空（显式不下发、沿用容器），save 固定 false。
+         *
+         * 新增覆盖字段时**必须**在这里同步清空，否则新参数会在容器模式下继续继承全局；
+         * 容器 ID / 名称先继承全局，再由逐游戏值覆盖。
+         */
+        fun containerBaseline(containerId: String?, containerName: String?): WinlatorOverride =
+            WinlatorOverride(
+                containerId = containerId,
+                containerName = containerName,
+                graphicsDriver = "",
+                dxwrapper = "",
+                screenSize = "",
+                lcAll = "",
+                tz = "",
+                box64Preset = "",
+                save = false,
+            )
+    }
+}

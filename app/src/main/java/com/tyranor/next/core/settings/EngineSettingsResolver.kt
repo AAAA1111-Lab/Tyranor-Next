@@ -13,6 +13,38 @@ import com.tyranor.next.core.game.model.ScanGame
  */
 object EngineSettingsResolver {
 
+    /**
+     * 纯函数：全局 Winlator 设置 + 逐游戏覆盖 JSON → 生效设置。
+     *
+     * 三种模式的行为：
+     * - 跟随全局：直接返回全局（等价于 `mergeWinlator(global, null)`）；
+     * - 跟随容器：以 [WinlatorOverride.containerBaseline] 为覆盖，清空全部参数并 `save=false`，
+     *   容器 ID / 名称先继承全局再由逐游戏值覆盖；
+     * - 自定义：按覆盖值合并。
+     *
+     * 抽成纯函数是为了让 CONTAINER 的 forced-empty 组装与 `save=false` 有直接的 JVM 断言，
+     * 而不是只能通过 UI 或启动链间接验证。
+     */
+    internal fun resolveWinlatorSettings(
+        global: EngineSettingsStore.Winlator,
+        overrideJson: org.json.JSONObject?,
+    ): EngineSettingsStore.Winlator {
+        val override = PerGameSettingsStore.toWinlatorOverride(overrideJson)
+        return when (PerGameSettingsStore.inferWinlatorMode(overrideJson ?: org.json.JSONObject())) {
+            PerGameSettingsStore.WINLATOR_MODE_CONTAINER ->
+                EffectiveEngineSettings.mergeWinlator(
+                    global,
+                    WinlatorOverride.containerBaseline(override?.containerId, override?.containerName),
+                )
+
+            PerGameSettingsStore.WINLATOR_MODE_CUSTOM ->
+                EffectiveEngineSettings.mergeWinlator(global, override)
+
+            else -> EffectiveEngineSettings.mergeWinlator(global, null)
+        }
+    }
+
+
     /** 解析单个游戏的生效引擎设置；[gameDir] 用于可移动存储的内核回退判定，未知传 null。 */
     fun resolve(context: Context, game: ScanGame, gameDir: String?): ResolvedEngineSettings {
         val app = context.applicationContext
@@ -260,33 +292,8 @@ object EngineSettingsResolver {
             ),
             winlator = run {
                 val global = EngineSettingsStore.loadWinlator(app)
-                val winlatorOverride = PerGameSettingsStore.toWinlatorOverride(override)
                 // 模式推断复用本函数已加载的覆盖 JSON，避免 getWinlatorMode 再走一次阻塞读。
-                when (PerGameSettingsStore.inferWinlatorMode(override)) {
-                    PerGameSettingsStore.WINLATOR_MODE_CONTAINER ->
-                        // 1.61 语义：容器模式以全局设置为基线，只清空六个参数与 save；
-                        // 容器 ID / 名称先继承全局，再由逐游戏值覆盖。
-                        EffectiveEngineSettings.mergeWinlator(
-                            global,
-                            WinlatorOverride(
-                                containerId = winlatorOverride?.containerId,
-                                containerName = winlatorOverride?.containerName,
-                                graphicsDriver = "",
-                                dxwrapper = "",
-                                screenSize = "",
-                                lcAll = "",
-                                tz = "",
-                                box64Preset = "",
-                                save = false,
-                            ),
-                        )
-
-                    PerGameSettingsStore.WINLATOR_MODE_CUSTOM ->
-                        EffectiveEngineSettings.mergeWinlator(global, winlatorOverride)
-
-                    // 显式 GLOBAL 与任何未知值都按全局处理，不静默落入容器语义。
-                    else -> global
-                }
+                resolveWinlatorSettings(global, override)
             },
         )
     }

@@ -84,6 +84,16 @@ class WinlatorModeMigrationTest {
     }
 
     @Test
+    fun unknownModeFallsBackToGlobal() {
+        // 未知的非空 mode 只可能来自损坏数据或未来版本：显式按全局处理，不回落字段推断。
+        val json = build(
+            PerGameSettingsStore.F_WINLATOR_MODE to "future-mode",
+            PerGameSettingsStore.F_WINLATOR_GRAPHICS_DRIVER to "vulkan",
+        )
+        assertEquals(PerGameSettingsStore.WINLATOR_MODE_GLOBAL, infer(json))
+    }
+
+    @Test
     fun containerModeWithNameOnlyOverrideClearsInheritedId() {
         // 推断 + 合并的联动：六个参数全空落到 CONTAINER 后，只填名称必须清掉继承的全局 ID，
         // 否则协议里 ID 优先会让名称覆盖失效。

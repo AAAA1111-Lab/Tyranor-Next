@@ -304,7 +304,11 @@ object PerGameSettingsStore {
         return override.takeIf { it != RenPyOverride() }
     }
 
-    private val WINLATOR_OVERRIDE_FIELDS = listOf(
+    /**
+     * 1.61 的六个旧参数键：只用于「六键都存在且全为空串 → 跟随容器」的迁移判定。
+     * 新增覆盖字段时不要动这个列表，否则历史记录会被误判。
+     */
+    private val LEGACY_CONTAINER_FIELDS = listOf(
         F_WINLATOR_GRAPHICS_DRIVER,
         F_WINLATOR_DXWRAPPER,
         F_WINLATOR_SCREEN_SIZE,
@@ -312,6 +316,12 @@ object PerGameSettingsStore {
         F_WINLATOR_TZ,
         F_WINLATOR_BOX64_PRESET,
     )
+
+    /**
+     * 当前全部逐游戏参数覆盖键；新增字段（例如后续的 wined3d / winComponents /
+     * audioDriver / envVars）必须登记在这里，否则「只写了新字段」的记录会被判成全局。
+     */
+    internal val CURRENT_OVERRIDE_FIELDS = LEGACY_CONTAINER_FIELDS
 
     /**
      * 单游戏运行模式：global（默认）/ container / custom。
@@ -325,23 +335,25 @@ object PerGameSettingsStore {
         if (mode == WINLATOR_MODE_GLOBAL || mode == WINLATOR_MODE_CONTAINER || mode == WINLATOR_MODE_CUSTOM) {
             return mode
         }
-        val presentParams = WINLATOR_OVERRIDE_FIELDS.filter { json.has(it) }
-        val hasNonEmptyParam = presentParams.any { json.optString(it).isNotEmpty() }
-        if (hasNonEmptyParam) return WINLATOR_MODE_CUSTOM
-        // 六个参数字段全空是「跟随容器」的强信号，必须优先于单独出现的容器字段判断：
+        // 未知的非空 mode 只可能来自损坏数据或未来版本：按全局处理，不静默落入容器语义。
+        if (mode.isNotEmpty()) return WINLATOR_MODE_GLOBAL
+
+        val legacyPresent = LEGACY_CONTAINER_FIELDS.filter { json.has(it) }
+        val legacyAllBlank =
+            legacyPresent.size == LEGACY_CONTAINER_FIELDS.size &&
+                LEGACY_CONTAINER_FIELDS.all { json.optString(it).isEmpty() }
+        // 任一当前覆盖字段有值即自定义；用当前字段清单而不是「旧六键数量」，避免新增字段被漏判。
+        val anyNonEmptyCurrent = CURRENT_OVERRIDE_FIELDS.any { json.has(it) && json.optString(it).isNotEmpty() }
+        if (anyNonEmptyCurrent) return WINLATOR_MODE_CUSTOM
+        // 六个旧参数全空是「跟随容器」的强信号，必须优先于单独出现的容器字段判断：
         // 这类记录在 1.61 里本来就走容器基线，若判成 custom 会把 save 继承成全局值。
-        if (presentParams.isNotEmpty()) {
-            return if (presentParams.size == WINLATOR_OVERRIDE_FIELDS.size) {
-                WINLATOR_MODE_CONTAINER
-            } else {
-                WINLATOR_MODE_CUSTOM
-            }
-        }
+        if (legacyAllBlank) return WINLATOR_MODE_CONTAINER
+        if (legacyPresent.isNotEmpty()) return WINLATOR_MODE_CUSTOM
         if (json.has(F_WINLATOR_CONTAINER_ID) || json.has(F_WINLATOR_CONTAINER_NAME)) {
             return WINLATOR_MODE_CUSTOM
         }
         // save 是真实的逐游戏覆盖（仅「自定义」模式写入）：只有它一条的旧记录不能回落到全局，
-        // 否则会丢掉玩家原有的「写回容器配置」。六个参数字段全空 = 跟随容器的语义已在上方先行返回。
+        // 否则会丢掉玩家原有的「写回容器配置」。
         if (json.has(F_WINLATOR_SAVE)) return WINLATOR_MODE_CUSTOM
         return WINLATOR_MODE_GLOBAL
     }
@@ -359,8 +371,10 @@ object PerGameSettingsStore {
         fun boolOrNull(key: String): Boolean? = if (json.has(key)) json.optBoolean(key) else null
         fun strOrNull(key: String): String? = if (json.has(key)) json.optString(key) else null
         val override = WinlatorOverride(
-            containerId = strOrNull(F_WINLATOR_CONTAINER_ID),
-            containerName = strOrNull(F_WINLATOR_CONTAINER_NAME),
+            // 旧数据里 "" 是「弹窗确认空值」的产物，与 UI 现在的 null（未覆盖）统一，
+            // 避免空串被当成显式 0 而在继承全局 ID 时产生差异。
+            containerId = strOrNull(F_WINLATOR_CONTAINER_ID)?.takeIf { it.isNotBlank() },
+            containerName = strOrNull(F_WINLATOR_CONTAINER_NAME)?.takeIf { it.isNotBlank() },
             graphicsDriver = strOrNull(F_WINLATOR_GRAPHICS_DRIVER),
             dxwrapper = strOrNull(F_WINLATOR_DXWRAPPER),
             screenSize = strOrNull(F_WINLATOR_SCREEN_SIZE),
