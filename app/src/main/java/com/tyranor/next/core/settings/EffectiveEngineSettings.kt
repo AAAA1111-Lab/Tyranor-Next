@@ -197,6 +197,14 @@ object EffectiveEngineSettings {
      * 容器规则：`containerId` 与 `containerName` 同时存在时以 ID 为准；只覆盖名称时
      * （`containerId == null` 且名称非空）会清除继承的全局 ID，否则 ID 优先会让名称覆盖失效。
      */
+    /**
+     * 只覆盖容器名（容器 ID 未覆盖）时会清除继承的全局 ID。
+     *
+     * UI 的摘要与 [mergeWinlator] 共用这一条规则，避免两处判断漂移。
+     */
+    fun isNameOnlyContainerOverride(override: WinlatorOverride?): Boolean =
+        override?.containerId == null && !override?.containerName.isNullOrBlank()
+
     fun mergeWinlator(
         global: EngineSettingsStore.Winlator,
         override: WinlatorOverride?,
@@ -204,7 +212,7 @@ object EffectiveEngineSettings {
         if (override == null) return global
         // 只覆盖容器名时不能再继承全局 ID：协议规定 container_id 优先于 container_name，
         // 继承下来的 ID 会让逐游戏的名称覆盖失效。
-        val nameOnlyOverride = override.containerId == null && !override.containerName.isNullOrBlank()
+        val nameOnlyOverride = isNameOnlyContainerOverride(override)
         return global.copy(
             containerId = when {
                 override.containerId != null ->

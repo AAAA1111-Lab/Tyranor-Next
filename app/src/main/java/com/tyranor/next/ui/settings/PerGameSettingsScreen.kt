@@ -56,6 +56,7 @@ import com.tyranor.next.core.settings.EffectiveEngineSettings
 import com.tyranor.next.core.settings.PerGameSettingsStore
 import com.tyranor.next.core.settings.RenPyOverride
 import com.tyranor.next.core.settings.RpgMakerOverride
+import com.tyranor.next.core.settings.WinlatorOverride
 import com.tyranor.next.theme.MiuixSettingsTheme
 import com.tyranor.next.theme.glassShadow
 import com.tyranor.next.theme.NavWhite
@@ -402,16 +403,17 @@ fun PerGameSettingsScreen(game: ScanGame) {
     // 只覆盖容器名时 mergeWinlator 会把生效 ID 置 0，摘要必须按生效值显示，否则和实际启动不一致。
     val winlatorAutoByContainerNameLabel =
         stringResource(R.string.engine_settings_winlator_container_id_auto_by_name)
+    val winlatorNameOnlyOverride = EffectiveEngineSettings.isNameOnlyContainerOverride(
+        WinlatorOverride(containerId = winlatorContainerId, containerName = winlatorContainerName),
+    )
     val winlatorEffectiveContainerIdLabel = when {
-        winlatorContainerId == null && !winlatorContainerName.isNullOrBlank() -> winlatorAutoByContainerNameLabel
+        winlatorNameOnlyOverride -> winlatorAutoByContainerNameLabel
         globalWinlator.containerId > 0 -> globalWinlator.containerId.toString()
         else -> ""
     }
     // 只填名称时摘要直接呈现生效值，不再加「跟随全局 ·」前缀——容器模式下没有「跟随全局」语义。
     val winlatorContainerIdSummaryOverride =
-        winlatorAutoByContainerNameLabel.takeIf {
-            winlatorContainerId == null && !winlatorContainerName.isNullOrBlank()
-        }
+        winlatorAutoByContainerNameLabel.takeIf { winlatorNameOnlyOverride }
     val globalPpssppVersion = EngineSettingsStore.getPpssppVersion(ctx)
     val globalWebShellPort = EngineSettingsStore.getWebShellPort(ctx)
     val ppssppVersionMap = ppssppVersionOptionsMap()
@@ -1293,7 +1295,7 @@ fun PerGameSettingsScreen(game: ScanGame) {
                 }
 
                 if (game.engine in WINLATOR_LAUNCH_ENGINES) item {
-                    SectionCard(stringResource(R.string.engine_settings_winlator_mode_title)) {
+                    SectionCard("Winlator") {
                         OverlayDropdownPreference(
                             title = stringResource(R.string.engine_settings_winlator_mode_title),
                             items = listOf(
@@ -1333,23 +1335,15 @@ fun PerGameSettingsScreen(game: ScanGame) {
                     winlatorMode == PerGameSettingsStore.WINLATOR_MODE_CONTAINER
                 ) item {
                     SectionCard("Winlator") {
-                        OverrideText(
-                            label = stringResource(R.string.engine_settings_winlator_container_id_title),
-                            globalValue = winlatorEffectiveContainerIdLabel,
-                            override = winlatorContainerId,
-                            hint = stringResource(R.string.engine_settings_winlator_container_id_summary_per_game),
-                            sanitize = { it.filter { ch -> ch.isDigit() }.take(6) },
-                            summaryOverride = winlatorContainerIdSummaryOverride,
-                            // 容器模式下这两项留空 = 继承全局容器（解析器以全局为基线），沿用默认摘要即可。
-                        ) { winlatorContainerId = it?.takeIf { value -> value.isNotBlank() } }
-                        OverrideText(
-                            label = stringResource(R.string.engine_settings_winlator_container_name_title),
-                            globalValue = globalWinlator.containerName,
-                            override = winlatorContainerName,
-                            hint = stringResource(R.string.engine_settings_winlator_container_name_summary_per_game),
-                            sanitize = { it.filter { ch -> !ch.isISOControl() }.take(64) },
-                            validate = { it.length <= 64 },
-                        ) { winlatorContainerName = it?.takeIf { value -> value.isNotBlank() } }
+                        WinlatorContainerRows(
+                            globalContainerName = globalWinlator.containerName,
+                            effectiveContainerIdLabel = winlatorEffectiveContainerIdLabel,
+                            containerId = winlatorContainerId,
+                            containerName = winlatorContainerName,
+                            idSummaryOverride = winlatorContainerIdSummaryOverride,
+                            onContainerIdChange = { winlatorContainerId = it },
+                            onContainerNameChange = { winlatorContainerName = it },
+                        )
                     }
                 }
 
@@ -1357,22 +1351,15 @@ fun PerGameSettingsScreen(game: ScanGame) {
                     winlatorMode == PerGameSettingsStore.WINLATOR_MODE_CUSTOM
                 ) item {
                     SectionCard("Winlator") {
-                        OverrideText(
-                            label = stringResource(R.string.engine_settings_winlator_container_id_title),
-                            globalValue = winlatorEffectiveContainerIdLabel,
-                            override = winlatorContainerId,
-                            hint = stringResource(R.string.engine_settings_winlator_container_id_summary_per_game),
-                            sanitize = { it.filter { ch -> ch.isDigit() }.take(6) },
-                            summaryOverride = winlatorContainerIdSummaryOverride,
-                        ) { winlatorContainerId = it?.takeIf { value -> value.isNotBlank() } }
-                        OverrideText(
-                            label = stringResource(R.string.engine_settings_winlator_container_name_title),
-                            globalValue = globalWinlator.containerName,
-                            override = winlatorContainerName,
-                            hint = stringResource(R.string.engine_settings_winlator_container_name_summary_per_game),
-                            sanitize = { it.filter { ch -> !ch.isISOControl() }.take(64) },
-                            validate = { it.length <= 64 },
-                        ) { winlatorContainerName = it?.takeIf { value -> value.isNotBlank() } }
+                        WinlatorContainerRows(
+                            globalContainerName = globalWinlator.containerName,
+                            effectiveContainerIdLabel = winlatorEffectiveContainerIdLabel,
+                            containerId = winlatorContainerId,
+                            containerName = winlatorContainerName,
+                            idSummaryOverride = winlatorContainerIdSummaryOverride,
+                            onContainerIdChange = { winlatorContainerId = it },
+                            onContainerNameChange = { winlatorContainerName = it },
+                        )
                         OverrideChoice(
                             stringResource(R.string.engine_settings_winlator_graphics_driver_title),
                             winlatorDriverMap,
@@ -1686,6 +1673,36 @@ private val WINLATOR_LAUNCH_ENGINES: Set<EngineType> = EngineType.entries
     .toSet()
 
 /** 覆盖版文本行：弹统一输入框；确定=写入覆盖（空串=显式不下发该参数），「跟随全局」=移除覆盖。 */
+/** 容器 ID / 名称两行：跟随容器与自定义卡片复用，规则只在这里维护一份。 */
+@Composable
+private fun WinlatorContainerRows(
+    globalContainerName: String,
+    effectiveContainerIdLabel: String,
+    containerId: String?,
+    containerName: String?,
+    idSummaryOverride: String?,
+    onContainerIdChange: (String?) -> Unit,
+    onContainerNameChange: (String?) -> Unit,
+) {
+    OverrideText(
+        label = stringResource(R.string.engine_settings_winlator_container_id_title),
+        globalValue = effectiveContainerIdLabel,
+        override = containerId,
+        hint = stringResource(R.string.engine_settings_winlator_container_id_summary_per_game),
+        sanitize = { it.filter { ch -> ch.isDigit() }.take(6) },
+        summaryOverride = idSummaryOverride,
+    ) { onContainerIdChange(it?.takeIf { value -> value.isNotBlank() }) }
+    OverrideText(
+        label = stringResource(R.string.engine_settings_winlator_container_name_title),
+        globalValue = globalContainerName,
+        override = containerName,
+        hint = stringResource(R.string.engine_settings_winlator_container_name_summary_per_game),
+        // 容器名参与 Winlator 端匹配：限制长度并过滤控制字符，避免零宽字符导致匹配失败。
+        sanitize = { it.filter { ch -> !ch.isISOControl() }.take(64) },
+        validate = { it.length <= 64 },
+    ) { onContainerNameChange(it?.takeIf { value -> value.isNotBlank() }) }
+}
+
 @Composable
 private fun OverrideText(
     label: String,
