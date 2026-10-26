@@ -1,6 +1,8 @@
 package com.tyranor.next.core.game.launch
 
+import bridge.KrSafMirror
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.InputStream
 import java.util.concurrent.CancellationException
 
@@ -45,4 +47,22 @@ internal class KrMirrorOverlayReader(
             Result.Unavailable
         }
     }
+
+    companion object {
+        /** Production assembly shared by the launcher and the cross-module bootstrap regression. */
+        fun fromPrepared(prepared: KrSafMirror.Prepared, openSource: (String) -> InputStream?): KrMirrorOverlayReader {
+            val sources = KrSafMirror.BOOTSTRAP_FILE_NAMES.associateWith { name ->
+                val bootstrap = prepared.bootstrapFiles[name]
+                val local = File(prepared.mirrorRoot, name)
+                val localOverride = bootstrap?.localOverride == true
+                Source(
+                    uri = if (localOverride) local.toURI().toString() else bootstrap?.uri,
+                    size = if (localOverride) local.length() else bootstrap?.size ?: -1L,
+                    confirmedAbsent = !localOverride && bootstrap?.state == KrSafMirror.BootstrapFileState.ABSENT,
+                )
+            }
+            return KrMirrorOverlayReader(sources, openSource)
+        }
+    }
+
 }

@@ -175,20 +175,28 @@ object NativeBridge {
         }
     }
 
-    /** Called after existing libc unlink/remove/rename hooks succeed, never for failed operations. */
+    /** JNI bridge back to unhooked libc pointers; called only within the Java lock transaction. */
     @JvmStatic
-    fun onMirrorFileMutation(fromPath: String?, toPath: String?) {
+    private external fun executeOriginalMirrorMutation(operation: Int, from: String, to: String?): Long
+
+    /** Result low word is syscall result; high word preserves errno across Java bookkeeping. */
+    @JvmStatic
+    fun runMirrorMutation(operation: Int, fromPath: String?, toPath: String?): Long {
         val session = safMirror
-        val state = session.localFiles ?: return
+        val state = session.localFiles ?: return Long.MIN_VALUE
         val fromKey = fromPath?.lowercase(Locale.ROOT)
         val from = fromKey?.let { state.fileForIndexKey(it) }
         val toKey = toPath?.lowercase(Locale.ROOT)
         val to = toKey?.let { state.fileForIndexKey(it) }
-        if (from == null && to == null) return
-        try {
-            session.synchronizeMutation(fromKey.takeIf { from != null }, from, toKey, to)
+        if (fromPath == null || (from == null && to == null)) return Long.MIN_VALUE
+        return try {
+            session.runMutation(fromKey.takeIf { from != null }, from, toKey, to) {
+                executeOriginalMirrorMutation(operation, fromPath, toPath)
+            }
         } catch (error: Exception) {
-            Log.w("NativeBridge", "Mirror ownership mutation failed from=$fromPath to=$toPath", error)
+            Log.w("NativeBridge", "Mirror mutation failed from=$fromPath to=$toPath", error)
+            val errorNumber = if (Thread.currentThread().isInterrupted) OsConstants.EINTR else OsConstants.EIO
+            (errorNumber.toLong() shl 32) or 0xffffffffL
         }
     }
 

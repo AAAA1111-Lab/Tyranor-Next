@@ -1,12 +1,9 @@
 package bridge
 
-import android.content.Intent
-import android.net.Uri
 import android.util.Log
 import com.core.engine.LaunchContract
 import org.tvp.kirikiri2.KR2Activity
 import java.io.File
-import java.util.Locale
 
 object KrPathUtils {
     private const val TAG = "KrPathUtils"
@@ -70,53 +67,61 @@ object KrPathUtils {
     @JvmStatic
     fun redirectScopedSavePath(path: String?): String? {
         return try {
-            val activity = currentActivity()
-            if (activity == null || activity.intent == null) return null
-            if (!activity.intent.getBooleanExtra(LaunchContract.SCOPED_SAVE_DIR, false)) return null
-            if (path == null || path.trim().isEmpty()) return null
-            val p = normalizeFilePath(path)!!
-            // Anchor to the configured save root so nested game resources (for example
-            // data/savedata inside the game tree) are not hijacked into the save root.
-            val root = normalizeFilePath(activity.intent.getStringExtra(LaunchContract.SCOPED_SAVE_ROOT))
-            if (root != null && root.trim().isNotEmpty() && root.startsWith("/")) {
-                if (p.equals(root, ignoreCase = true)) {
-                    Log.i(TAG, "redirect KR save $p -> $root")
-                    return root
-                }
-                if (p.length > root.length && p.startsWith(root, ignoreCase = true) && p[root.length] == '/') {
-                    val out = File(root, p.substring(root.length + 1))
-                    val parent = if (out.isDirectory) out else out.parentFile
-                    if (parent != null && !parent.exists()) parent.mkdirs()
-                    Log.i(TAG, "redirect KR save $p -> ${out.absolutePath}")
-                    return out.absolutePath
-                }
-                // Outside the anchored save root: not a scoped save, serve normally.
-                return null
-            }
-            // Legacy fallback when the root extra is missing: match the first path segment
-            // named savedata (game roots place their save directory at the top level).
-            val lower = p.lowercase(Locale.ROOT)
-            var idx = lower.indexOf("/savedata/")
-            val len = if (idx < 0) {
-                if (lower.endsWith("/savedata")) {
-                    idx = lower.length - "/savedata".length
-                    "/savedata".length
-                } else {
-                    return null
-                }
-            } else "/savedata/".length
-            val rel = if (p.length > idx + len) p.substring(idx + len) else ""
-            var fallbackRoot = normalizeFilePath(activity.intent.getStringExtra(LaunchContract.PROJECT_ROOT))
-            if (fallbackRoot == null || fallbackRoot.trim().isEmpty()) fallbackRoot = normalizeFilePath(activity.intent.getStringExtra(LaunchContract.GAME_DIR))
-            if (fallbackRoot == null || fallbackRoot.trim().isEmpty() || !fallbackRoot.startsWith("/")) return null
-            val dir = File(fallbackRoot, "savedata")
-            val out = if (rel.isEmpty()) dir else File(dir, rel)
+            val intent = currentActivity()?.intent ?: return null
+            if (!intent.getBooleanExtra(LaunchContract.SCOPED_SAVE_DIR, false)) return null
+            val out = resolveScopedSavePath(
+                path,
+                intent.getStringExtra(LaunchContract.PROJECT_ROOT),
+                intent.getStringExtra(LaunchContract.GAME_DIR),
+                intent.getStringExtra(LaunchContract.SCOPED_SAVE_ROOT),
+            ) ?: return null
             val parent = if (out.isDirectory) out else out.parentFile
             if (parent != null && !parent.exists()) parent.mkdirs()
-            Log.i(TAG, "redirect KR save $p -> ${out.absolutePath}")
+            Log.i(TAG, "redirect KR save $path -> ${out.absolutePath}")
             out.absolutePath
         } catch (t: Throwable) {
             Log.w(TAG, "redirect KR save failed path=$path", t)
+            null
+        }
+    }
+
+    /** Source savedata and the independent destination are distinct anchors. */
+    internal fun resolveScopedSavePath(
+        path: String?,
+        projectRoot: String?,
+        gameDirectory: String?,
+        scopedSaveRoot: String?,
+    ): File? {
+        val requested = normalizeFilePath(path)?.replace(File.separatorChar, '/')
+            ?.takeIf { it.isNotBlank() && File(it).isAbsolute } ?: return null
+        fun absoluteDirectory(value: String?): File? = normalizeFilePath(value)
+            ?.takeIf { it.isNotBlank() && File(it).isAbsolute }?.let { File(it) }
+        val sourceProject = absoluteDirectory(projectRoot) ?: absoluteDirectory(gameDirectory)
+        val source = sourceProject?.let { File(it, "savedata") }
+        val destination = absoluteDirectory(scopedSaveRoot) ?: source ?: return null
+        return try {
+            val destinationCanonical = destination.canonicalFile
+            // Already redirected paths are idempotent. Only the game's top-level
+            // savedata is a source; resources such as data/savedata stay untouched.
+            for (anchor in listOfNotNull(destination, source).distinct()) {
+                for (alias in listOf(anchor.absoluteFile, anchor.canonicalFile).distinct()) {
+                    val prefix = alias.path.replace(File.separatorChar, '/').trimEnd('/')
+                    val relative = when {
+                        requested.equals(prefix, ignoreCase = true) -> ""
+                        requested.startsWith(prefix + "/", ignoreCase = true) -> requested.substring(prefix.length + 1)
+                        else -> continue
+                    }
+                    val out = if (relative.isEmpty()) destinationCanonical else File(destinationCanonical, relative).canonicalFile
+                    if (out == destinationCanonical || out.path.startsWith(destinationCanonical.path + File.separator)) {
+                        return out
+                    }
+                    return null
+                }
+            }
+            null
+        } catch (_: java.io.IOException) {
+            null
+        } catch (_: SecurityException) {
             null
         }
     }

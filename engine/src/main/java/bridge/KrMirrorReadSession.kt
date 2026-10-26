@@ -33,6 +33,22 @@ internal class KrMirrorReadSession<T>(
 
     fun readFailed(key: String): Boolean = key in failedReads
 
+    /** Execute the actual mutation and ownership updates inside copy-up's lock domain. */
+    fun runMutation(
+        fromKey: String?,
+        from: File?,
+        toKey: String? = null,
+        to: File? = null,
+        operation: () -> Long,
+    ): Long {
+        val state = localFiles ?: return operation()
+        return state.withFileLocks(listOfNotNull(from, to)) {
+            val result = operation()
+            if (result.toInt() == 0) synchronizeMutation(fromKey, from, toKey, to)
+            result
+        }
+    }
+
     /** Synchronize ownership after a successful local unlink/remove/rename. */
     fun synchronizeMutation(fromKey: String?, from: File?, toKey: String? = null, to: File? = null) {
         val state = localFiles ?: return
@@ -48,8 +64,8 @@ internal class KrMirrorReadSession<T>(
             try {
                 state.markOverridden(to)
             } catch (error: Exception) {
-                // Marker failure only loses cross-launch ownership; the next copy-up
-                // or prepare cleanup repairs it.
+                // In-session ownership remains, but a failed durable marker can lose
+                // cross-launch ownership, especially for an intentionally empty file.
             }
         }
         if (from != null && fromKey != null && !from.exists()) {

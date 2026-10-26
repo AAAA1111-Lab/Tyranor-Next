@@ -1,9 +1,14 @@
 package bridge
 
+import java.io.ByteArrayInputStream
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.Locale
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -15,6 +20,121 @@ import org.junit.rules.TemporaryFolder
 class KrMirrorReadSessionTest {
     @get:Rule
     val temporary = TemporaryFolder()
+
+    @Test
+    fun `real rename waits for inflight copy up and retains newly committed content`() {
+        verifyCopyUpMutationInterleave(rename = true)
+    }
+
+    @Test
+    fun `real unlink waits for inflight copy up and cannot resurrect removed file`() {
+        verifyCopyUpMutationInterleave(rename = false)
+    }
+
+    @Test
+    fun `copy up waits until real rename and ownership commit complete`() {
+        val root = temporary.newFolder()
+        val target = File(root, "asset").apply { createNewFile() }
+        val replacement = File(root, "temporary").apply { writeText("new save") }
+        val key = target.absolutePath.lowercase(Locale.ROOT)
+        val state = KrMirrorLocalFiles(root)
+        val session = KrMirrorReadSession(mapOf(key to "source"), state)
+        val renamed = CountDownLatch(1)
+        val releaseMutation = CountDownLatch(1)
+        val copyStarted = CountDownLatch(1)
+        val sourceOpened = AtomicBoolean(false)
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val mutation = executor.submit<Long> {
+                session.runMutation(replacement.absolutePath.lowercase(Locale.ROOT), replacement, key, target) {
+                    Files.move(replacement.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                    renamed.countDown()
+                    assertTrue(releaseMutation.await(5, TimeUnit.SECONDS))
+                    0L
+                }
+            }
+            assertTrue(renamed.await(5, TimeUnit.SECONDS))
+            val copy = executor.submit<File> {
+                copyStarted.countDown()
+                state.copyUp(target, 3) {
+                    sourceOpened.set(true)
+                    ByteArrayInputStream("old".toByteArray())
+                }
+            }
+            assertTrue(copyStarted.await(5, TimeUnit.SECONDS))
+            assertFalse(copy.isDone)
+            releaseMutation.countDown()
+            assertEquals(0L, mutation.get(5, TimeUnit.SECONDS))
+            copy.get(5, TimeUnit.SECONDS)
+            assertFalse(sourceOpened.get())
+            assertEquals("new save", target.readText())
+            assertTrue(state.isOverridden(target))
+        } finally {
+            releaseMutation.countDown()
+            executor.shutdownNow()
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS))
+        }
+    }
+
+    private fun verifyCopyUpMutationInterleave(rename: Boolean) {
+        val root = temporary.newFolder()
+        val target = File(root, "asset").apply { createNewFile() }
+        val replacement = File(root, "temporary").apply { writeText("new save") }
+        val key = target.absolutePath.lowercase(Locale.ROOT)
+        val state = KrMirrorLocalFiles(root)
+        val session = KrMirrorReadSession(mapOf(key to "source"), state)
+        val copying = CountDownLatch(1)
+        val releaseCopy = CountDownLatch(1)
+        val mutationStarted = CountDownLatch(1)
+        val syscallEntered = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val copy = executor.submit<File> {
+                state.copyUp(target, 3) {
+                    copying.countDown()
+                    assertTrue(releaseCopy.await(5, TimeUnit.SECONDS))
+                    ByteArrayInputStream("old".toByteArray())
+                }
+            }
+            assertTrue(copying.await(5, TimeUnit.SECONDS))
+            val mutation = executor.submit<Long> {
+                mutationStarted.countDown()
+                val from = if (rename) replacement else target
+                val to = if (rename) target else null
+                session.runMutation(
+                    from.absolutePath.lowercase(Locale.ROOT), from,
+                    to?.absolutePath?.lowercase(Locale.ROOT), to,
+                ) {
+                    syscallEntered.countDown()
+                    if (rename) {
+                        Files.move(replacement.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                    } else {
+                        Files.delete(target.toPath())
+                    }
+                    0L
+                }
+            }
+            assertTrue(mutationStarted.await(5, TimeUnit.SECONDS))
+            // The actual filesystem syscall, not merely its callback, is blocked.
+            assertFalse(syscallEntered.await(150, TimeUnit.MILLISECONDS))
+            releaseCopy.countDown()
+            copy.get(5, TimeUnit.SECONDS)
+            assertEquals(0L, mutation.get(5, TimeUnit.SECONDS))
+            assertEquals(0L, syscallEntered.count)
+            if (rename) {
+                assertEquals("new save", target.readText())
+                assertTrue(state.isOverridden(target))
+            } else {
+                assertFalse(target.exists())
+                assertFalse(state.isOverridden(target))
+                assertNull(session.sourceEntry(key))
+            }
+        } finally {
+            releaseCopy.countDown()
+            executor.shutdownNow()
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS))
+        }
+    }
 
     @Test
     fun `successful rename migrates empty override and unlink clears marker and source route`() {

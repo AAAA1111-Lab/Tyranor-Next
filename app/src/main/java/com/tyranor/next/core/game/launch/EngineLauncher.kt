@@ -2092,19 +2092,9 @@ object EngineLauncher {
         }.getOrNull()
     }
 
-    /** Build the bounded bootstrap reader from the engine-typed Prepared payload (no index re-parse). */
-    private fun createKrMirrorOverlayReader(context: Context, prepared: KrSafMirror.Prepared): KrMirrorOverlayReader {
-        val sources = KrSafMirror.BOOTSTRAP_FILE_NAMES.associateWith { name ->
-            val bootstrap = prepared.bootstrapFiles[name]
-            val localOverride = bootstrap?.localOverride == true
-            KrMirrorOverlayReader.Source(
-                uri = if (localOverride) Uri.fromFile(File(prepared.mirrorRoot, name)).toString() else bootstrap?.uri,
-                size = if (localOverride) File(prepared.mirrorRoot, name).length() else bootstrap?.size ?: -1L,
-                confirmedAbsent = !localOverride && bootstrap?.state == KrSafMirror.BootstrapFileState.ABSENT,
-            )
-        }
-        return KrMirrorOverlayReader(sources) { uri -> context.contentResolver.openInputStream(Uri.parse(uri)) }
-    }
+    /** Build the bounded reader from the engine payload without reparsing the resource index. */
+    private fun createKrMirrorOverlayReader(context: Context, prepared: KrSafMirror.Prepared): KrMirrorOverlayReader =
+        KrMirrorOverlayReader.fromPrepared(prepared) { uri -> context.contentResolver.openInputStream(Uri.parse(uri)) }
 
     private fun rootContainsFbfSteamPlugin(root: File): Boolean {
         val files = root.listFiles() ?: return false
@@ -2139,7 +2129,7 @@ object EngineLauncher {
         |
     """.trimMargin()
 
-    private fun hasMeaningfulPatchContent(bytes: ByteArray): Boolean =
+    internal fun hasMeaningfulPatchContent(bytes: ByteArray): Boolean =
         bytes.any { byte ->
             val value = byte.toInt() and 0xFF
             value > 0x20 && value != 0xFE && value != 0xFF

@@ -15,6 +15,7 @@ import java.io.IOException
 import java.io.OutputStreamWriter
 import java.io.RandomAccessFile
 import java.nio.channels.FileLockInterruptionException
+import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
@@ -202,24 +203,25 @@ object KrSafMirror {
         merged += mergeMissingFromDirectListing(resolved.treeUri, sourceRoot, mirrorRoot, entries, known, localFiles, diagnostics)
         merged += probeSigSiblingDlls(context.applicationContext, resolved.treeUri, entries, known, localFiles, diagnostics)
 
-        val localOverrides = entries.asSequence().map { it.first }
-            .filter { key -> localFiles.fileForIndexKey(key)?.let(localFiles::isOverridden) == true }.toMutableSet()
+        val bootstrapLocalOverrides = HashSet<String>()
+        val bootstrapFiles = probeBootstrapFiles(context.applicationContext, resolved, mirrorRoot, entries,
+            known, localFiles, bootstrapLocalOverrides, diagnostics)
+        // Local fallback must not depend on this run's SAF rows: a failed provider can
+        // return no rows even though durable local resource copies still exist.
+        val preparationSources = assemblePreparationSources(
+            mirrorRoot, previousIndex.keys, entries, diagnostics.observedSourceFiles,
+            diagnostics.queryFailures, bootstrapLocalOverrides,
+        )
+        val localOverrides = preparationSources.localOverrides
         entries.removeAll { it.first in localOverrides }
         known.removeAll(localOverrides)
-        val bootstrapFiles = probeBootstrapFiles(context.applicationContext, resolved, mirrorRoot, entries,
-            known, localFiles, localOverrides, diagnostics)
-        removeStaleSavePlaceholders(mirrorRoot, previousIndex.keys, known) { localFiles.isOverridden(it) }
-        // Completeness decision: a fully failed source listing must not brick a launch that
-        // still has a usable previous index or local copies; a partially failed listing must
-        // not silently erase the rows of failed subtrees from the index.
-        val decision = decideMirrorSources(
-            observed = diagnostics.observedSourceFiles,
-            previousCount = previousIndex.size,
-            queryFailures = diagnostics.queryFailures,
-            localOverrideCount = localOverrides.size,
-        )
+        // An incomplete listing must not silently erase rows of failed subtrees.
+        val decision = preparationSources.decision
         if (decision == MirrorSourceDecision.FAIL_EMPTY) {
             throw PrepareException(Stage.EMPTY_MIRROR, mirrorRoot.name)
+        }
+        if (decision != MirrorSourceDecision.KEEP_EXISTING) {
+            removeStaleSavePlaceholders(mirrorRoot, previousIndex.keys, known) { localFiles.isOverridden(it) }
         }
         if (decision == MirrorSourceDecision.REBUILD_MERGED) {
             val carried = carryPreviousIndexRows(previousIndex, entries, known, localOverrides)
@@ -251,6 +253,60 @@ object KrSafMirror {
                 "mergedFiles=$merged localOverrides=${localOverrides.size} bytes=$totalBytes cost=${System.currentTimeMillis() - startedAt}ms",
         )
         return Prepared(mirrorRoot, indexFile, fileCount, bootstrapFiles, localOverrides, snapshot)
+    }
+
+    internal data class PreparationSources(
+        val localOverrides: Set<String>,
+        val decision: MirrorSourceDecision,
+    )
+
+    /** Assemble fallback from durable local state, independently of current provider rows. */
+    internal fun assemblePreparationSources(
+        mirrorRoot: File,
+        previousIndexKeys: Set<String>,
+        entries: List<Triple<String, String, Long>>,
+        observed: Int,
+        queryFailures: Int,
+        bootstrapLocalOverrides: Set<String> = emptySet(),
+    ): PreparationSources {
+        val localFiles = KrMirrorLocalFiles(mirrorRoot)
+        val candidateKeys = previousIndexKeys + entries.map { it.first }
+        val overrides = bootstrapLocalOverrides.toMutableSet()
+        fun collectExisting(relativeKeys: Set<String>) {
+            for (relative in relativeKeys) {
+                if (isSourceEntryExcluded(relative)) continue
+                val file = File(mirrorRoot, relative)
+                try {
+                    if (file.isFile && localFiles.isOverridden(file)) {
+                        overrides.add(file.absolutePath.lowercase(Locale.ROOT))
+                    }
+                } catch (error: IOException) {
+                    Log.w(TAG, "local mirror override unavailable path=${file.path}", error)
+                }
+            }
+        }
+        collectExisting(localFiles.snapshotOverrideKeys(candidateKeys))
+        if (overrides.isEmpty() && observed == 0 && previousIndexKeys.isEmpty() &&
+            File(mirrorRoot, ".tyranor-mirror-state/local-overrides").listFiles().orEmpty().any { it.isFile }
+        ) {
+            // A header-only old index cannot resolve one-byte markers back to filenames.
+            // Only in this failed-source fallback, inspect existing local resources to
+            // supply candidate names; normal preparation never adds a second tree walk.
+            val canonicalRoot = mirrorRoot.canonicalFile
+            val candidates = mirrorRoot.walkTopDown().onEnter { directory ->
+                directory == mirrorRoot || (!isSourceEntryExcluded(directory.relativeTo(mirrorRoot).invariantSeparatorsPath) &&
+                    !Files.isSymbolicLink(directory.toPath()))
+            }.onFail { file, error ->
+                Log.w(TAG, "local mirror fallback listing failed path=${file.path}", error)
+            }.filter { file ->
+                file.isFile && !isSourceEntryExcluded(file.relativeTo(mirrorRoot).invariantSeparatorsPath) &&
+                    file.canonicalPath.startsWith(canonicalRoot.path + File.separator)
+            }.map { it.absolutePath.lowercase(Locale.ROOT) }.toList()
+            collectExisting(localFiles.snapshotOverrideKeys(candidates))
+        }
+        return PreparationSources(overrides, decideMirrorSources(
+            observed, previousIndexKeys.size, queryFailures, overrides.size,
+        ))
     }
 
     /** Completeness decision for one prepare run; pure for JVM regression. */
@@ -459,11 +515,12 @@ object KrSafMirror {
             val local = File(mirrorRoot, name)
             val key = local.absolutePath.lowercase(Locale.ROOT)
             localFiles.clearMissingOverride(local)
-            if (localFiles.isOverridden(local)) {
-                localOverrides.add(key)
-                return@associateWith BootstrapFile(BootstrapFileState.PRESENT, null, -1L, localOverride = true)
+            val listed = entries.firstOrNull { it.first == key }
+            bootstrapFromListedEntry(local, listed?.second, listed?.third ?: -1L,
+                localFiles.isOverridden(local))?.let { bootstrap ->
+                if (bootstrap.localOverride) localOverrides.add(key)
+                return@associateWith bootstrap
             }
-            if (key in known) return@associateWith BootstrapFile(BootstrapFileState.PRESENT, null, -1L, localOverride = true)
             try {
                 val uri = DocumentsContract.buildDocumentUriUsingTree(source.treeUri, childDocumentId(source.documentId, name))
                 val cursor = queryWithOptionalSize(
@@ -502,6 +559,20 @@ object KrSafMirror {
                 BootstrapFile(state, null, -1L, localOverride = false)
             }
         }
+    }
+
+    /** Preserve listed source metadata; an empty placeholder is not a local override. */
+    fun bootstrapFromListedEntry(
+        local: File,
+        indexedUri: String?,
+        indexedSize: Long,
+        markedLocal: Boolean,
+    ): BootstrapFile? = when {
+        local.isFile && (markedLocal || local.length() > 0L) ->
+            BootstrapFile(BootstrapFileState.PRESENT, null, local.length(), localOverride = true)
+        indexedUri != null ->
+            BootstrapFile(BootstrapFileState.PRESENT, indexedUri, indexedSize, localOverride = false)
+        else -> null
     }
 
     /** A missing-document exception alone is ambiguous; a complete root listing supplies proof. */

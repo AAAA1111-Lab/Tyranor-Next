@@ -5,6 +5,7 @@
 #include <link.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <stdio_ext.h>
 
 #include <cstdarg>
 #include <cerrno>
@@ -836,9 +837,9 @@ FILE* hookedFreopenCommon(const char* path, const char* mode, FILE* stream, Freo
             const int haveAccess = target >= 0 ? fcntl(target, F_GETFL) : -1;
             const bool accessMatches = haveAccess >= 0 && (haveAccess & O_ACCMODE) == wantAccess;
             if (accessMatches) {
-                // fflush before dup2 flushes pending writes to the old file so they are
-                // not silently lost; clearerr afterwards drops stale EOF/error flags
-                if (fflush(stream) == 0 && dup2(fd, target) >= 0) {
+                // Bionic rejects fflush on a pure read-only FILE with EBADF.
+                // Only output/update streams can have pending writes to flush.
+                if ((!__fwritable(stream) || fflush(stream) == 0) && dup2(fd, target) >= 0) {
                     close(fd);
                     clearerr(stream);
                     if ((flags & O_APPEND) == 0) rewind(stream);
@@ -944,37 +945,55 @@ int hookedAccess(const char* rawPath, int mode) {
     return gOriginalAccess(redirected.empty() ? path : redirected.c_str(), mode);
 }
 
-// Existing mutation hooks notify Java only after libc succeeds. Preserve syscall errno.
-void notifyMirrorMutation(const char* from, const char* to) {
-    if (!gMirrorActive.load(std::memory_order_acquire) || gVm == nullptr || from == nullptr) return;
-    const int operationErrno = errno;
+constexpr jlong kMutationNotRouted = INT64_MIN;
+constexpr int kMutationRename = 0;
+constexpr int kMutationUnlink = 1;
+constexpr int kMutationRemove = 2;
+
+jlong packMutationResult(int result, int errorNumber) {
+    return static_cast<jlong>((static_cast<uint64_t>(static_cast<uint32_t>(errorNumber)) << 32)
+            | static_cast<uint32_t>(result));
+}
+
+// Java holds the same ordered file locks as copy-up while calling back into
+// executeOriginalMirrorMutation. No lock/monitor escapes a JNI attach lifetime.
+jlong callJavaMirrorMutation(int operation, const char* from, const char* to) {
+    if (!gMirrorActive.load(std::memory_order_acquire) || gVm == nullptr || from == nullptr) {
+        return kMutationNotRouted;
+    }
     JNIEnv* env = nullptr;
     bool attached = false;
     if (gVm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
-        if (gVm->AttachCurrentThread(&env, nullptr) != JNI_OK) {
-            errno = operationErrno;
-            return;
-        }
+        if (gVm->AttachCurrentThread(&env, nullptr) != JNI_OK) return packMutationResult(-1, EIO);
         attached = true;
     }
+    jlong result = packMutationResult(-1, EIO);
     jclass clazz = env->FindClass("bridge/NativeBridge");
     if (clazz != nullptr) {
-        jmethodID method = env->GetStaticMethodID(clazz, "onMirrorFileMutation",
-                "(Ljava/lang/String;Ljava/lang/String;)V");
+        jmethodID method = env->GetStaticMethodID(clazz, "runMirrorMutation",
+                "(ILjava/lang/String;Ljava/lang/String;)J");
         if (method != nullptr) {
             jstring javaFrom = env->NewStringUTF(from);
             jstring javaTo = to == nullptr ? nullptr : env->NewStringUTF(to);
             if (javaFrom != nullptr && (to == nullptr || javaTo != nullptr)) {
-                env->CallStaticVoidMethod(clazz, method, javaFrom, javaTo);
+                result = env->CallStaticLongMethod(clazz, method, operation, javaFrom, javaTo);
             }
             if (javaFrom != nullptr) env->DeleteLocalRef(javaFrom);
             if (javaTo != nullptr) env->DeleteLocalRef(javaTo);
         }
         env->DeleteLocalRef(clazz);
     }
-    if (env->ExceptionCheck()) env->ExceptionClear();
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        result = packMutationResult(-1, EIO);
+    }
     if (attached) gVm->DetachCurrentThread();
-    errno = operationErrno;
+    return result;
+}
+
+int unpackMutationResult(jlong packed) {
+    errno = static_cast<int>(static_cast<uint64_t>(packed) >> 32);
+    return static_cast<int32_t>(static_cast<uint32_t>(packed));
 }
 
 int hookedRename(const char* rawFrom, const char* rawTo) {
@@ -987,29 +1006,29 @@ int hookedRename(const char* rawFrom, const char* rawTo) {
     const std::string redirectedTo = pathMatchesPrefix(to) ? callJavaRedirect(to) : std::string();
     const char* actualFrom = redirectedFrom.empty() ? from : redirectedFrom.c_str();
     const char* actualTo = redirectedTo.empty() ? to : redirectedTo.c_str();
-    const int result = gOriginalRename(actualFrom, actualTo);
-    if (result == 0) notifyMirrorMutation(actualFrom, actualTo);
-    return result;
+    const jlong transaction = callJavaMirrorMutation(kMutationRename, actualFrom, actualTo);
+    if (transaction != kMutationNotRouted) return unpackMutationResult(transaction);
+    return gOriginalRename(actualFrom, actualTo);
 }
 
 template<typename Fn>
-int hookRemoveFile(Fn original, const char* rawPath) {
+int hookRemoveFile(Fn original, const char* rawPath, int operation) {
     if (original == nullptr) return -1;
     const std::string resolved = resolveEnginePath(rawPath);
     const char* path = resolved.c_str();
     const std::string redirected = pathMatchesPrefix(path) ? callJavaRedirect(path) : std::string();
     const char* actual = redirected.empty() ? path : redirected.c_str();
-    const int result = original(actual);
-    if (result == 0) notifyMirrorMutation(actual, nullptr);
-    return result;
+    const jlong transaction = callJavaMirrorMutation(operation, actual, nullptr);
+    if (transaction != kMutationNotRouted) return unpackMutationResult(transaction);
+    return original(actual);
 }
 
 int hookedUnlink(const char* path) {
-    return hookRemoveFile(gOriginalUnlink, path);
+    return hookRemoveFile(gOriginalUnlink, path, kMutationUnlink);
 }
 
 int hookedRemove(const char* path) {
-    return hookRemoveFile(gOriginalRemove, path);
+    return hookRemoveFile(gOriginalRemove, path, kMutationRemove);
 }
 
 int hookedMkdir(const char* path, mode_t mode) {
@@ -1265,6 +1284,33 @@ Java_bridge_NativeBridge_relocate(JNIEnv*, jclass) {
             | (freopen64Hooked ? 65536 : 0);
 }
 
+extern "C" JNIEXPORT jlong JNICALL
+Java_bridge_NativeBridge_executeOriginalMirrorMutation(
+        JNIEnv* env, jclass, jint operation, jstring from, jstring to) {
+    const std::string source = takeString(env, from);
+    const std::string target = takeString(env, to);
+    if (source.empty()) return packMutationResult(-1, EINVAL);
+    int result = -1;
+    switch (operation) {
+        case kMutationRename:
+            if (gOriginalRename == nullptr) return packMutationResult(-1, ENOSYS);
+            result = gOriginalRename(source.c_str(), target.c_str());
+            break;
+        case kMutationUnlink:
+            if (gOriginalUnlink == nullptr) return packMutationResult(-1, ENOSYS);
+            result = gOriginalUnlink(source.c_str());
+            break;
+        case kMutationRemove:
+            if (gOriginalRemove == nullptr) return packMutationResult(-1, ENOSYS);
+            result = gOriginalRemove(source.c_str());
+            break;
+        default:
+            return packMutationResult(-1, EINVAL);
+    }
+    const int operationErrno = errno;
+    return packMutationResult(result, operationErrno);
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
 Java_bridge_NativeBridge_write(JNIEnv* env, jclass, jstring path, jbyteArray bytes) {
     const std::string outputPath = takeString(env, path);
@@ -1323,6 +1369,9 @@ extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
              reinterpret_cast<void*>(Java_bridge_NativeBridge_relocate)},
             {const_cast<char*>("write"), const_cast<char*>("(Ljava/lang/String;[B)Z"),
              reinterpret_cast<void*>(Java_bridge_NativeBridge_write)},
+            {const_cast<char*>("executeOriginalMirrorMutation"),
+             const_cast<char*>("(ILjava/lang/String;Ljava/lang/String;)J"),
+             reinterpret_cast<void*>(Java_bridge_NativeBridge_executeOriginalMirrorMutation)},
     };
     if (env->RegisterNatives(bridge, methods, sizeof(methods) / sizeof(methods[0])) != JNI_OK) {
         env->ExceptionClear();

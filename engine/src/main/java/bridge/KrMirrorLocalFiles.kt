@@ -147,22 +147,30 @@ internal class KrMirrorLocalFiles(mirrorRoot: File) {
     }
 
     /** Only modifying opens take an OS lock; at most 64 files exist per mirror. */
-    fun <T> withFileLock(file: File, action: () -> T): T {
-        localKey(file) // Enforce canonical containment before any writable filesystem operation.
-        val stripe = stripe(file)
-        return synchronized(PROCESS_LOCKS[stripe]) {
-            val lockKey = root.path + "/" + stripe
-            val held = requireNotNull(HELD_LOCKS.get())
-            if (lockKey in held) return@synchronized action()
-            val lockDirectory = File(stateDirectory, "locks")
-            ensureStateDirectory(lockDirectory)
-            RandomAccessFile(File(lockDirectory, "$stripe.lock"), "rw").use { lockFile ->
-                lockFile.channel.lock().use {
-                    held.add(lockKey)
-                    try { action() } finally { held.remove(lockKey) }
+    fun <T> withFileLock(file: File, action: () -> T): T = withFileLocks(listOf(file), action)
+
+    /** Real rename/unlink and copy-up use the same lock domain, in fixed stripe order. */
+    fun <T> withFileLocks(files: List<File>, action: () -> T): T {
+        files.forEach { localKey(it) }
+        val stripes = files.map { stripe(it) }.distinct().sorted()
+        fun acquire(index: Int): T {
+            if (index == stripes.size) return action()
+            val stripe = stripes[index]
+            return synchronized(PROCESS_LOCKS[stripe]) {
+                val lockKey = root.path + "/" + stripe
+                val held = requireNotNull(HELD_LOCKS.get())
+                if (lockKey in held) return@synchronized acquire(index + 1)
+                val lockDirectory = File(stateDirectory, "locks")
+                ensureStateDirectory(lockDirectory)
+                RandomAccessFile(File(lockDirectory, "$stripe.lock"), "rw").use { lockFile ->
+                    lockFile.channel.lock().use {
+                        held.add(lockKey)
+                        try { acquire(index + 1) } finally { held.remove(lockKey) }
+                    }
                 }
             }
         }
+        return acquire(0)
     }
 
     /** Stream complete source bytes, bounded in disk use, and atomically publish ownership. */

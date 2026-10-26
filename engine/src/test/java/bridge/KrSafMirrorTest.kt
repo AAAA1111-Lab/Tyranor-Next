@@ -456,4 +456,88 @@ class KrSafMirrorTest {
         assertEquals(0L, local.length())
     }
 
+    @Test
+    fun listedBootstrapPlaceholderKeepsRealSourceUriAndSize() {
+        val root = temporary.newFolder("listed-bootstrap")
+        for (name in KrSafMirror.BOOTSTRAP_FILE_NAMES) {
+            val local = File(root, name).apply { createNewFile() }
+            val source = "content://source/$name"
+            val payload = requireNotNull(KrSafMirror.bootstrapFromListedEntry(local, source, 123L, false))
+            assertEquals(KrSafMirror.BootstrapFileState.PRESENT, payload.state)
+            assertEquals(source, payload.uri)
+            assertEquals(123L, payload.size)
+            assertFalse(payload.localOverride)
+            assertEquals(0L, local.length())
+        }
+    }
+
+    @Test
+    fun onlyActualLocalBootstrapContentsOrAnExistingMarkedFileOverrideTheSource() {
+        val root = temporary.newFolder("local-bootstrap")
+        val local = File(root, "patch.tjs").apply { writeText("local patch") }
+        assertTrue(requireNotNull(KrSafMirror.bootstrapFromListedEntry(local, "content://source/patch", 50L, false)).localOverride)
+        local.writeBytes(byteArrayOf())
+        assertTrue(requireNotNull(KrSafMirror.bootstrapFromListedEntry(local, "content://source/patch", 50L, true)).localOverride)
+        assertFalse(requireNotNull(KrSafMirror.bootstrapFromListedEntry(local, "content://source/patch", 0L, false)).localOverride)
+        assertNull(KrSafMirror.bootstrapFromListedEntry(local, null, -1L, false))
+        assertTrue(local.delete())
+        assertNull(KrSafMirror.bootstrapFromListedEntry(local, null, -1L, true))
+    }
+
+    @Test
+    fun failedSourceWithAnEmptyPreviousIndexKeepsARealMarkedStartupCopy() {
+        val root = temporary.newFolder("local-startup-fallback")
+        val startup = File(root, "startup.tjs").apply { writeText("local startup contents") }
+        KrMirrorLocalFiles(root).markOverridden(startup)
+        val index = File(temporary.root, "empty-previous.idx").apply { writeText("krkr-saf-index-v2\n") }
+        val previous = KrSafMirror.readIndexFile(index) { it }
+        assertTrue(previous.isEmpty())
+
+        val sources = KrSafMirror.assemblePreparationSources(root, previous.keys, emptyList(),
+            observed = 0, queryFailures = 3)
+
+        assertEquals(KrSafMirror.MirrorSourceDecision.KEEP_EXISTING, sources.decision)
+        assertTrue(startup.absolutePath.lowercase(Locale.ROOT) in sources.localOverrides)
+        assertEquals("local startup contents", startup.readText())
+    }
+
+    @Test
+    fun absentMarkedResourcesAndSaveOnlyStateDoNotPretendTheMirrorIsUsable() {
+        val root = temporary.newFolder("stale-local-fallback")
+        val startup = File(root, "startup.tjs").apply { writeText("local startup") }
+        val saves = File(root, "savedata/slot.ksd").apply {
+            requireNotNull(parentFile).mkdirs()
+            writeText("save")
+        }
+        val state = KrMirrorLocalFiles(root)
+        state.markOverridden(startup)
+        state.markOverridden(saves)
+        assertTrue(startup.delete())
+
+        val sources = KrSafMirror.assemblePreparationSources(root, emptySet(), emptyList(),
+            observed = 0, queryFailures = 2)
+
+        assertEquals(KrSafMirror.MirrorSourceDecision.FAIL_EMPTY, sources.decision)
+        assertTrue(sources.localOverrides.isEmpty())
+        assertEquals("save", saves.readText())
+    }
+
+    @Test
+    fun failedSourceWithHeaderOnlyIndexAlsoRecognizesLegacyStartupMarkers() {
+        val root = temporary.newFolder("legacy-startup-fallback")
+        val startup = File(root, "startup.tjs").apply { writeText("legacy startup contents") }
+        val helper = KrMirrorLocalFiles(root)
+        helper.markOverridden(startup)
+        helper.ownershipMarker(startup).writeBytes(byteArrayOf(1))
+        val emptyIndex = File(temporary.root, "legacy-empty.idx").apply { writeText("krkr-saf-index-v2\n") }
+        val previous = KrSafMirror.readIndexFile(emptyIndex) { it }
+
+        val sources = KrSafMirror.assemblePreparationSources(root, previous.keys, emptyList(),
+            observed = 0, queryFailures = 2)
+
+        assertEquals(KrSafMirror.MirrorSourceDecision.KEEP_EXISTING, sources.decision)
+        assertTrue(startup.absolutePath.lowercase(Locale.ROOT) in sources.localOverrides)
+        assertEquals("legacy startup contents", startup.readText())
+    }
+
 }

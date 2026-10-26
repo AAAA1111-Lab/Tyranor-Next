@@ -1,14 +1,84 @@
 package com.tyranor.next.core.game.launch
 
+import bridge.KrSafMirror
 import java.io.ByteArrayInputStream
+import java.io.File
 import java.io.IOException
 import java.util.concurrent.CancellationException
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 
 class KrMirrorOverlayReaderTest {
+    @get:Rule
+    val temporary = TemporaryFolder()
+
+    @Test
+    fun listedBootstrapSourceMetadataReachesTheProductionReaderWithoutReadingPlaceholders() {
+        val root = temporary.newFolder()
+        val payloads = mapOf(
+            "patch.tjs" to "Plugins.link(\"game-plugin.dll\");".toByteArray(),
+            "ds.ini" to "Language=english\nOtherSetting=keep\n".toByteArray(),
+        )
+        val descriptors = payloads.mapValues { (name, bytes) ->
+            val placeholder = File(root, name).apply { createNewFile() }
+            requireNotNull(KrSafMirror.bootstrapFromListedEntry(placeholder, "content://source/$name", bytes.size.toLong(), false))
+        }
+        val prepared = KrSafMirror.Prepared(root, File(root, "unused.idx"), payloads.size, descriptors)
+        val opened = mutableListOf<String>()
+        val reader = KrMirrorOverlayReader.fromPrepared(prepared) { uri ->
+            opened.add(uri)
+            val name = uri.removePrefix("content://source/")
+            requireNotNull(payloads[name]) { "Must read the listed source, not its empty placeholder: $uri" }.inputStream()
+        }
+        payloads.forEach { (name, bytes) ->
+            val result = reader.read(name, 1024)
+            assertTrue(result is KrMirrorOverlayReader.Result.Content)
+            val content = (result as KrMirrorOverlayReader.Result.Content).bytes
+            assertArrayEquals(bytes, content)
+            if (name == "patch.tjs") {
+                // The production AUTO-overlay decision must see real user content,
+                // not synthesize a basic patch over an empty local placeholder.
+                assertTrue(EngineLauncher.hasMeaningfulPatchContent(content))
+            }
+            assertEquals(0L, File(root, name).length())
+            assertEquals(false, descriptors.getValue(name).localOverride)
+        }
+        assertEquals(payloads.keys.map { "content://source/$it" }, opened)
+        assertEquals(false, prepared.indexFile.exists())
+    }
+
+    @Test
+    fun intentionallyEmptyLocalBootstrapDoesNotFallBackToTheListedSource() {
+        val root = temporary.newFolder()
+        val local = File(root, "patch.tjs").apply { createNewFile() }
+        val descriptor = requireNotNull(KrSafMirror.bootstrapFromListedEntry(local, "content://source/patch.tjs", 128L, true))
+        val prepared = KrSafMirror.Prepared(root, File(root, "unused.idx"), 1, mapOf("patch.tjs" to descriptor))
+        val reader = KrMirrorOverlayReader.fromPrepared(prepared) { uri ->
+            assertTrue(uri.startsWith("file:"))
+            File(java.net.URI(uri)).inputStream()
+        }
+        val result = reader.read("patch.tjs", 1024)
+        assertArrayEquals(byteArrayOf(), (result as KrMirrorOverlayReader.Result.Content).bytes)
+    }
+
+    @Test
+    fun nonemptyLocalBootstrapRemainsPreferredOverItsListedSource() {
+        val root = temporary.newFolder()
+        val local = File(root, "ds.ini").apply { writeText("Language=local\nKeep=1") }
+        val descriptor = requireNotNull(KrSafMirror.bootstrapFromListedEntry(local, "content://source/ds.ini", 128L, false))
+        val prepared = KrSafMirror.Prepared(root, File(root, "unused.idx"), 1, mapOf("ds.ini" to descriptor))
+        val reader = KrMirrorOverlayReader.fromPrepared(prepared) { uri ->
+            assertTrue(uri.startsWith("file:"))
+            File(java.net.URI(uri)).inputStream()
+        }
+        val result = reader.read("ds.ini", 1024)
+        assertArrayEquals(local.readBytes(), (result as KrMirrorOverlayReader.Result.Content).bytes)
+    }
+
     @Test fun emptySourceIsSuccessfulContent() {
         val reader = reader(size = 0) { ByteArrayInputStream(byteArrayOf()) }
         val result = reader.read("patch.tjs", 4)
