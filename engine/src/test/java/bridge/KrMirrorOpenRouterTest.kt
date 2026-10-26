@@ -60,50 +60,84 @@ class KrMirrorOpenRouterTest {
     }
 
     @Test
-    fun `oversized update source downgrades to read only SAF descriptor`() {
+    fun `oversized mutating source fails closed without exposing placeholder`() {
         val fixture = fixture(size = KrMirrorLocalFiles.MAX_COPY_BYTES + 1)
-        assertEquals(10, fixture.router().open(fixture.key, fixture.file, KrMirrorOpenRouter.Intent.UPDATE))
-        assertEquals(listOf("source"), fixture.sourceOpens)
+        // Mutating opens copy up first; an oversized source must fail the open (EIO at
+        // the native layer) instead of silently serving an empty placeholder. The size
+        // check fires before any provider stream is opened or descriptor handed out.
+        assertEquals(KrMirrorOpenRouter.FAILED, fixture.router().open(fixture.key, fixture.file, KrMirrorOpenRouter.Intent.UPDATE))
+        assertTrue(fixture.sourceOpens.isEmpty())
         assertEquals(0, fixture.streamOpens)
         assertTrue(fixture.localOpens.isEmpty())
         assertFalse(fixture.state.isOverridden(fixture.file))
-        assertTrue(fixture.diagnostics.any { it.contains("read-only") })
+        assertEquals(0L, fixture.file.length())
     }
 
     @Test
-    fun `copy provider failure downgrades without exposing partial local file`() {
+    fun `copy provider failure fails closed without exposing partial local file`() {
         val fixture = fixture(streamFails = true)
-        assertEquals(10, fixture.router().open(fixture.key, fixture.file, KrMirrorOpenRouter.Intent.UPDATE))
+        assertEquals(KrMirrorOpenRouter.FAILED, fixture.router().open(fixture.key, fixture.file, KrMirrorOpenRouter.Intent.UPDATE))
         assertEquals(0L, fixture.file.length())
         assertFalse(fixture.state.isOverridden(fixture.file))
         assertTrue(fixture.localOpens.isEmpty())
+        assertEquals("source", fixture.session.entry(fixture.key))
     }
 
     @Test
-    fun `unwritable state still permits update read only fallback`() {
+    fun `unwritable state fails mutating open without falling back to source`() {
         val fixture = fixture()
         File(fixture.root, ".tyranor-mirror-state").writeText("blocks locks")
-        assertEquals(10, fixture.router().open(fixture.key, fixture.file, KrMirrorOpenRouter.Intent.UPDATE))
+        assertEquals(KrMirrorOpenRouter.FAILED, fixture.router().open(fixture.key, fixture.file, KrMirrorOpenRouter.Intent.UPDATE))
         assertTrue(fixture.localOpens.isEmpty())
+        assertEquals("source", fixture.session.entry(fixture.key))
     }
 
     @Test
-    fun `write ownership failure closes local descriptor and fails closed`() {
+    fun `write open copies source first so crashes cannot shadow it`() {
+        val fixture = fixture()
+        // WRITE (no truncation) also copies up before handing out the fd: a crash after
+        // open leaves a real local copy, never a 0-byte file masking the source.
+        assertEquals(20, fixture.router().open(fixture.key, fixture.file, KrMirrorOpenRouter.Intent.WRITE))
+        assertEquals("source", fixture.file.readText())
+        assertTrue(fixture.state.isOverridden(fixture.file))
+        assertTrue(fixture.session.isLocal(fixture.key, fixture.file))
+    }
+
+    @Test
+    fun `blocked marker directory fails the mutating open after copy-up rollback`() {
         val fixture = fixture()
         val stateDirectory = File(fixture.root, ".tyranor-mirror-state").apply { mkdirs() }
         File(stateDirectory, "local-overrides").writeText("blocks markers")
+        // Copy-up publishes the local copy, but the ownership marker cannot be created;
+        // copyUp rolls the placeholder back (no durable ownership → no fd exposure) and
+        // the open fails closed instead of masking the source with a doomed local file.
         assertEquals(KrMirrorOpenRouter.FAILED, fixture.router().open(fixture.key, fixture.file, KrMirrorOpenRouter.Intent.WRITE))
-        assertEquals(listOf(20), fixture.closed)
+        assertTrue(fixture.closed.isEmpty())
         assertTrue(fixture.sourceOpens.isEmpty())
+        assertEquals(0L, fixture.file.length())
+        assertFalse(fixture.state.isOverridden(fixture.file))
     }
 
     @Test
-    fun `invalid local descriptor does not promote source route or ownership`() {
+    fun `invalid local descriptor fails closed after durable copy-up ownership`() {
         val fixture = fixture(localFd = -1)
+        // copyUp publishes content + ownership marker durably before openLocal runs; the
+        // unusable fd fails the open, but the local copy legitimately owns the file.
         assertEquals(KrMirrorOpenRouter.FAILED, fixture.router().open(fixture.key, fixture.file, KrMirrorOpenRouter.Intent.WRITE))
-        assertFalse(fixture.state.isOverridden(fixture.file))
+        assertTrue(fixture.state.isOverridden(fixture.file))
+        assertTrue(fixture.session.isLocal(fixture.key, fixture.file))
         assertEquals("source", fixture.session.entry(fixture.key))
+        assertEquals("source", fixture.file.readText())
         assertTrue(fixture.closed.isEmpty())
+    }
+
+    @Test
+    fun `read only failure records read failure and closes nothing`() {
+        val fixture = fixture(sourceFd = -1)
+        assertEquals(KrMirrorOpenRouter.FAILED, fixture.router().open(fixture.key, fixture.file, KrMirrorOpenRouter.Intent.READ_ONLY))
+        assertTrue(fixture.session.readFailed(fixture.key))
+        assertTrue(fixture.closed.isEmpty())
+        assertTrue(fixture.localOpens.isEmpty())
     }
 
     @Test

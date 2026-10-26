@@ -75,6 +75,26 @@ object KrPathUtils {
             if (!activity.intent.getBooleanExtra(LaunchContract.SCOPED_SAVE_DIR, false)) return null
             if (path == null || path.trim().isEmpty()) return null
             val p = normalizeFilePath(path)!!
+            // Anchor to the configured save root so nested game resources (for example
+            // data/savedata inside the game tree) are not hijacked into the save root.
+            val root = normalizeFilePath(activity.intent.getStringExtra(LaunchContract.SCOPED_SAVE_ROOT))
+            if (root != null && root.trim().isNotEmpty() && root.startsWith("/")) {
+                if (p.equals(root, ignoreCase = true)) {
+                    Log.i(TAG, "redirect KR save $p -> $root")
+                    return root
+                }
+                if (p.length > root.length && p.startsWith(root, ignoreCase = true) && p[root.length] == '/') {
+                    val out = File(root, p.substring(root.length + 1))
+                    val parent = if (out.isDirectory) out else out.parentFile
+                    if (parent != null && !parent.exists()) parent.mkdirs()
+                    Log.i(TAG, "redirect KR save $p -> ${out.absolutePath}")
+                    return out.absolutePath
+                }
+                // Outside the anchored save root: not a scoped save, serve normally.
+                return null
+            }
+            // Legacy fallback when the root extra is missing: match the first path segment
+            // named savedata (game roots place their save directory at the top level).
             val lower = p.lowercase(Locale.ROOT)
             var idx = lower.indexOf("/savedata/")
             val len = if (idx < 0) {
@@ -86,19 +106,10 @@ object KrPathUtils {
                 }
             } else "/savedata/".length
             val rel = if (p.length > idx + len) p.substring(idx + len) else ""
-            var root = normalizeFilePath(activity.intent.getStringExtra(LaunchContract.SCOPED_SAVE_ROOT))
-            if (root != null && root.trim().isNotEmpty() && root.startsWith("/")) {
-                val dir = File(root)
-                val out = if (rel.isEmpty()) dir else File(dir, rel)
-                val parent = if (out.isDirectory) out else out.parentFile
-                if (parent != null && !parent.exists()) parent.mkdirs()
-                Log.i(TAG, "redirect KR save $p -> ${out.absolutePath}")
-                return out.absolutePath
-            }
-            root = normalizeFilePath(activity.intent.getStringExtra(LaunchContract.PROJECT_ROOT))
-            if (root == null || root.trim().isEmpty()) root = normalizeFilePath(activity.intent.getStringExtra(LaunchContract.GAME_DIR))
-            if (root == null || root.trim().isEmpty() || !root.startsWith("/")) return null
-            val dir = File(root, "savedata")
+            var fallbackRoot = normalizeFilePath(activity.intent.getStringExtra(LaunchContract.PROJECT_ROOT))
+            if (fallbackRoot == null || fallbackRoot.trim().isEmpty()) fallbackRoot = normalizeFilePath(activity.intent.getStringExtra(LaunchContract.GAME_DIR))
+            if (fallbackRoot == null || fallbackRoot.trim().isEmpty() || !fallbackRoot.startsWith("/")) return null
+            val dir = File(fallbackRoot, "savedata")
             val out = if (rel.isEmpty()) dir else File(dir, rel)
             val parent = if (out.isDirectory) out else out.parentFile
             if (parent != null && !parent.exists()) parent.mkdirs()

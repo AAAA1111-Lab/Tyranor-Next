@@ -5,10 +5,13 @@
 <data-extraction-rules>
     <!-- Keep root/games eligible for backup: dynamic mirror roots may contain the only
          copy of real savedata, local overrides and their .tyranor-mirror-state metadata.
-         File and control state stay eligible together. Excluding games would omit those
-         saves from backup; prefix rules cannot select only rebuildable entries across dynamic keys.
-         Platform quotas/policies still apply, so users should export saves explicitly. -->
+         File and control state stay eligible together. The app root domain is NOT part of
+         the default backup set (only files/database/sharedpref/external are), so the
+         mirror directory needs this explicit include; placeholder trees are small (one
+         entry per source file). Platform quotas/policies still apply, so users should
+         export saves explicitly. -->
     <cloud-backup>
+        <include domain="root" path="games/" />
         <exclude domain="sharedpref" path="hikarinagi_auth.xml" />
         <!-- OAuth 令牌加密库：Keystore 密钥换机不可解密，必须排除 -->
         <exclude domain="sharedpref" path="hikarinagi_auth_secure.xml" />
@@ -18,6 +21,7 @@
         <exclude domain="database" path="game_library.db-shm" />
     </cloud-backup>
     <device-transfer>
+        <include domain="root" path="games/" />
         <exclude domain="sharedpref" path="hikarinagi_auth.xml" />
         <exclude domain="sharedpref" path="hikarinagi_auth_secure.xml" />
         <exclude domain="database" path="game_library.db" />

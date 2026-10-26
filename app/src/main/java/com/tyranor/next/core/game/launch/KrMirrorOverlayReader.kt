@@ -33,6 +33,10 @@ internal class KrMirrorOverlayReader(
                     if (count > maxBytes - output.size()) return Result.Unavailable
                     output.write(chunk, 0, count)
                 }
+                // A known-size source that delivered fewer bytes (provider EOF, source
+                // shrank after prepare) must not pass as content: an empty short read
+                // would be mistaken for "no user patch" and shadow the real file.
+                if (source.size >= 0 && output.size().toLong() != source.size) return Result.Unavailable
                 Result.Content(output.toByteArray())
             } ?: Result.Unavailable
         } catch (cancelled: CancellationException) {

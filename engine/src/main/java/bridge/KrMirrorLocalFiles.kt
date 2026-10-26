@@ -11,6 +11,21 @@ import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.util.Locale
 
+/** Shared SHA-256 hex helper for mirror-local keying. */
+internal object KrMirrorDigest {
+    fun sha256Hex(value: String): String {
+        val bytes = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
+        val hex = "0123456789abcdef"
+        return buildString(bytes.size * 2) {
+            for (byte in bytes) {
+                val value = byte.toInt() and 0xff
+                append(hex[value ushr 4])
+                append(hex[value and 15])
+            }
+        }
+    }
+}
+
 /** App-private copy-up state. Markers survive an intentionally empty local override. */
 internal class KrMirrorLocalFiles(mirrorRoot: File) {
     private val absoluteRoot = mirrorRoot.absoluteFile
@@ -20,16 +35,50 @@ internal class KrMirrorLocalFiles(mirrorRoot: File) {
     }.distinct()
     private val stateDirectory = File(root, ".tyranor-mirror-state")
 
-    /** Accept the selected root's absolute alias and canonical path (for example /var on macOS). */
+    /**
+     * Resolve an index key (or engine path) to the local mirror file. Index keys are
+     * written from [absoluteRoot]-based spellings, but callers may present the same real
+     * root through a different symlinked ancestor whose string form matches neither
+     * prefix; such keys canonicalize onto [root], and the relative remainder rebuilds
+     * the same local file under [absoluteRoot]. Returns null for paths outside the root.
+     */
     fun fileForIndexKey(indexKey: String): File? {
         val normalized = indexKey.replace(File.separatorChar, '/').lowercase(Locale.ROOT)
-        val prefix = rootPrefixes.firstOrNull { normalized.startsWith(it) } ?: return null
-        val relative = normalized.substring(prefix.length)
-        if (!safeRelativePath(relative)) return null
-        return File(absoluteRoot, relative)
+        fileForPrefix(normalized)?.let { return it }
+        val canonical = runCatching { File(indexKey).canonicalFile.path }.getOrNull()
+            ?.replace(File.separatorChar, '/')?.lowercase(Locale.ROOT) ?: return null
+        return fileForPrefix(canonical)
     }
 
-    /** New markers contain relative keys; old one-byte markers remain readable on first use. */
+    private fun fileForPrefix(normalized: String): File? {
+        for (prefix in rootPrefixes) {
+            if (!normalized.startsWith(prefix)) continue
+            val relative = normalized.substring(prefix.length)
+            if (!safeRelativePath(relative)) return null
+            return File(absoluteRoot, relative)
+        }
+        return null
+    }
+
+    /**
+     * Cheap prefix-only relative resolution for index keys written by this mirror
+     * (absoluteRoot-based spelling). Returns null for unknown spellings; no canonicalize.
+     */
+    fun relativeForIndexKey(indexKey: String): String? {
+        val normalized = indexKey.replace(File.separatorChar, '/').lowercase(Locale.ROOT)
+        for (prefix in rootPrefixes) {
+            if (!normalized.startsWith(prefix)) continue
+            val relative = normalized.substring(prefix.length)
+            return relative.takeIf { safeRelativePath(it) }
+        }
+        return null
+    }
+
+    /**
+     * Relative keys (lowercase, root-relative) of intentional local overrides, including
+     * legacy one-byte markers resolved against the provided index keys. Consumers compare
+     * the relative part of their own keys instead of enumerating root spellings.
+     */
     fun snapshotOverrideKeys(indexKeys: Collection<String> = emptyList()): Set<String> {
         val directory = File(stateDirectory, "local-overrides")
         val result = HashSet<String>()
@@ -39,7 +88,7 @@ internal class KrMirrorLocalFiles(mirrorRoot: File) {
             if (relative == "\u0001") {
                 legacyHashes.add(marker.name)
             } else if (safeRelativePath(relative) && marker.name == digest(relative)) {
-                rootPrefixes.forEach { result.add(it + relative) }
+                result.add(relative)
             }
         }
         // Only pre-upgrade markers lack a relative payload. Keep intentional empty
@@ -48,7 +97,7 @@ internal class KrMirrorLocalFiles(mirrorRoot: File) {
             indexKeys.forEach { key ->
                 val file = fileForIndexKey(key) ?: return@forEach
                 val relative = try { localKey(file) } catch (_: IOException) { return@forEach }
-                if (digest(relative) in legacyHashes) rootPrefixes.forEach { result.add(it + relative) }
+                if (digest(relative) in legacyHashes) result.add(relative)
             }
         }
         return result
@@ -197,17 +246,7 @@ internal class KrMirrorLocalFiles(mirrorRoot: File) {
         }
     }
 
-    private fun digest(value: String): String {
-        val bytes = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
-        val hex = "0123456789abcdef"
-        return buildString(bytes.size * 2) {
-            for (byte in bytes) {
-                val value = byte.toInt() and 0xff
-                append(hex[value ushr 4])
-                append(hex[value and 15])
-            }
-        }
-    }
+    private fun digest(value: String): String = KrMirrorDigest.sha256Hex(value)
 
     private fun localKey(file: File): String {
         val path = file.canonicalPath

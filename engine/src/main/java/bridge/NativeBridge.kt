@@ -61,9 +61,19 @@ object NativeBridge {
             emptyMap()
         }
         val localFiles = root?.let { KrMirrorLocalFiles(it) }
-        safMirror = KrMirrorReadSession(documents, localFiles, localFiles?.snapshotOverrideKeys().orEmpty())
+        // snapshotOverrideKeys returns root-relative keys; translate them to this index's
+        // full keys so the session's override lookups stay key-based.
+        val relativeOverrides = localFiles?.snapshotOverrideKeys(documents.keys).orEmpty()
+        val initialOverrides = if (localFiles == null || relativeOverrides.isEmpty()) {
+            emptySet()
+        } else {
+            documents.keys
+                .filter { key -> localFiles.relativeForIndexKey(key)?.let { it in relativeOverrides } == true }
+                .toSet()
+        }
+        safMirror = KrMirrorReadSession(documents, localFiles, initialOverrides)
         val sized = documents.values.count { it.size >= 0 }
-        Log.i("NativeBridge", "SAF mirror index entries=${documents.size} sized=$sized")
+        Log.i("NativeBridge", "SAF mirror index entries=${documents.size} sized=$sized overrides=${initialOverrides.size}")
     }
 
     @JvmStatic

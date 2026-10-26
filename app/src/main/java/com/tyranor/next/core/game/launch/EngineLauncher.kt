@@ -2092,23 +2092,15 @@ object EngineLauncher {
         }.getOrNull()
     }
 
-    /** Load once per launch; successful empty content stays distinct from unavailable content. */
+    /** Build the bounded bootstrap reader from the engine-typed Prepared payload (no index re-parse). */
     private fun createKrMirrorOverlayReader(context: Context, prepared: KrSafMirror.Prepared): KrMirrorOverlayReader {
-        val index = runCatching { KrSafMirror.loadIndex(prepared.indexFile.absolutePath, prepared.mirrorRoot) }
-            .onFailure { error ->
-                if (error is CancellationException) throw error
-                Log.w(TAG, "KRKR overlay SAF index unavailable", error)
-            }
-            .getOrDefault(emptyMap())
         val sources = KrSafMirror.BOOTSTRAP_FILE_NAMES.associateWith { name ->
-            val local = File(prepared.mirrorRoot, name)
-            val key = local.absolutePath.lowercase(Locale.ROOT)
-            val entry = index[key]
-            val localOverride = key in prepared.localOverrides
+            val bootstrap = prepared.bootstrapFiles[name]
+            val localOverride = bootstrap?.localOverride == true
             KrMirrorOverlayReader.Source(
-                uri = if (localOverride) Uri.fromFile(local).toString() else entry?.uri?.toString(),
-                size = if (localOverride) local.length() else entry?.size ?: -1L,
-                confirmedAbsent = !localOverride && prepared.bootstrapFiles[name] == KrSafMirror.BootstrapFileState.ABSENT,
+                uri = if (localOverride) Uri.fromFile(File(prepared.mirrorRoot, name)).toString() else bootstrap?.uri,
+                size = if (localOverride) File(prepared.mirrorRoot, name).length() else bootstrap?.size ?: -1L,
+                confirmedAbsent = !localOverride && bootstrap?.state == KrSafMirror.BootstrapFileState.ABSENT,
             )
         }
         return KrMirrorOverlayReader(sources) { uri -> context.contentResolver.openInputStream(Uri.parse(uri)) }

@@ -152,8 +152,10 @@ class KrMirrorLocalFilesTest {
         val realKey = target.absolutePath.lowercase(java.util.Locale.ROOT)
         assertEquals(target.canonicalFile, local.fileForIndexKey(aliasKey)?.canonicalFile)
         assertEquals(target.canonicalFile, local.fileForIndexKey(realKey)?.canonicalFile)
-        assertTrue(aliasKey.replace(File.separatorChar, '/') in local.snapshotOverrideKeys())
-        assertTrue(realKey.replace(File.separatorChar, '/') in local.snapshotOverrideKeys())
+        // snapshotOverrideKeys returns root-relative keys; both spellings resolve to the
+        // same relative remainder (the real root here is reached through a second
+        // symlink, /var → /private/var, so only the canonical fallback finds it).
+        assertEquals(setOf("config.ksd"), local.snapshotOverrideKeys())
         assertEquals(null, local.fileForIndexKey(alias.absolutePath + "/../outside"))
     }
 
@@ -181,7 +183,9 @@ class KrMirrorLocalFilesTest {
         marker.writeBytes(byteArrayOf(1))
         val key = target.absolutePath.lowercase(java.util.Locale.ROOT)
         assertTrue(local.isOverridden(target))
-        assertTrue(key.replace(File.separatorChar, '/') in local.snapshotOverrideKeys(listOf(key)))
+        // Relative-key semantics: the legacy (1-byte) marker resolves through the
+        // candidate index key to "asset".
+        assertEquals(setOf("asset"), local.snapshotOverrideKeys(listOf(key)))
     }
 
     @Test

@@ -31,21 +31,23 @@ internal class KrMirrorOpenRouter<T>(
                     readSource(key, source)
                 }
             } else {
+                // Every mutating open materializes the source first (copy-up), so a
+                // crash or ENOSPC mid-write cannot leave a 0-byte local file with an
+                // ownership marker permanently shadowing the real document. Append
+                // opens copy up as well; their content is then preserved locally.
                 state.withFileLock(file) {
                     if (session.isLocal(key, file) || file.length() > 0L) {
                         return@withFileLock openLocal(key, file, intent, state)
                     }
-                    if (intent == Intent.UPDATE) {
-                        try {
-                            state.copyUp(file, sourceSize(source), { before, after ->
-                                diagnostic("Mirror source size changed: indexed=$before actual=$after", null)
-                            }) { sourceStream(source) }
-                        } catch (error: InterruptedIOException) {
-                            throw error
-                        } catch (error: IOException) {
-                            diagnostic("Mirror copy-up unavailable; update open is read-only", error)
-                            return@withFileLock readSource(key, source)
-                        }
+                    try {
+                        state.copyUp(file, sourceSize(source), { before, after ->
+                            diagnostic("Mirror source size changed: indexed=$before actual=$after", null)
+                        }) { sourceStream(source) }
+                    } catch (error: InterruptedIOException) {
+                        throw error
+                    } catch (error: IOException) {
+                        diagnostic("Mirror copy-up unavailable; mutating open fails", error)
+                        return@withFileLock FAILED
                     }
                     openLocal(key, file, intent, state)
                 }
@@ -55,18 +57,6 @@ internal class KrMirrorOpenRouter<T>(
         } catch (error: InterruptedIOException) {
             throw error
         } catch (error: Exception) {
-            if (intent == Intent.UPDATE && error is IOException &&
-                !runCatching { session.isLocal(key, file) }.getOrDefault(true) && file.length() == 0L
-            ) {
-                diagnostic("Mirror copy-up unavailable; update open is read-only", error)
-                try {
-                    return readSource(key, source)
-                } catch (readError: Exception) {
-                    session.recordRead(key, false)
-                    diagnostic("Mirror read-only fallback failed", readError)
-                    return FAILED
-                }
-            }
             session.recordRead(key, false)
             diagnostic("Mirror open failed", error)
             FAILED

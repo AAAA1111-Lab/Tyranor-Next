@@ -20,7 +20,7 @@ import org.junit.rules.TemporaryFolder
 /**
  * Pure-JVM tests for KrSafMirror preparation policies and index/path conversion (no SAF/Context/Android
  * stubs). Covers the #129 index v2 size column, v1 compatibility, document-id conversion
- * and the write→parse round trip via [KrSafMirror.buildIndexText]/[KrSafMirror.parseIndexLines]
+ * and the write→parse round trip via [KrSafMirror.writeIndexText]/[KrSafMirror.parseIndexLines]
  * (uri construction is injected as identity to bypass the android.net.Uri JVM stub).
  */
 class KrSafMirrorTest {
@@ -34,7 +34,7 @@ class KrSafMirrorTest {
         listOf("krkr-saf-index-v1") + lines.toList()
 
     private fun v2Line(path: String, uri: String, size: Long): String =
-        KrSafMirror.buildIndexText(listOf(Triple(path, uri, size))).lineSequence().drop(1).first()
+        buildString { KrSafMirror.writeIndexText(this, listOf(Triple(path, uri, size))) }.lineSequence().drop(1).first()
 
     private fun v1Line(path: String, uri: String): String =
         v2Line(path, uri, 0L).substringBeforeLast('\t')
@@ -134,15 +134,15 @@ class KrSafMirrorTest {
     }
 
     @Test
-    fun buildIndexTextRoundTripsThroughParser() {
-        // Real write→parse round trip: buildIndexText (the writeIndex serializer) feeds
+    fun writeIndexTextRoundTripsThroughParser() {
+        // Real write→parse round trip: writeIndexText (the writeIndex serializer) feeds
         // parseIndexLines (the loadIndex parser), locking the on-disk format from both sides
         val entries = listOf(
             Triple("/a/b.xp3", "content://t/d", 42L),
             Triple("/plugin/gamepad.dll", "content://t/e", 241664L),
             Triple("/全cg存档/datasu.ksd", "content://t/f", -1L),
         )
-        val text = KrSafMirror.buildIndexText(entries)
+        val text = buildString { KrSafMirror.writeIndexText(this, entries) }
         val index = KrSafMirror.parseIndexLines(text.lineSequence().filter { it.isNotBlank() }.toList()) { it }
         assertEquals(3, index.size)
         assertEquals(42L, index["/a/b.xp3"]?.size)
@@ -151,8 +151,8 @@ class KrSafMirrorTest {
     }
 
     @Test
-    fun buildIndexTextStartsWithV2Header() {
-        val text = KrSafMirror.buildIndexText(emptyList())
+    fun writeIndexTextStartsWithV2Header() {
+        val text = buildString { KrSafMirror.writeIndexText(this, emptyList()) }
         assertEquals("krkr-saf-index-v2", text.lineSequence().first())
     }
 
@@ -170,7 +170,7 @@ class KrSafMirrorTest {
     @Test
     fun productionSerializerRetainsTheLiteralV2WireFormat() {
         assertEquals("krkr-saf-index-v2\nL3g\tY29udGVudDovL2EvYg\t41\n",
-            KrSafMirror.buildIndexText(listOf(Triple("/x", "content://a/b", 41L))))
+            buildString { KrSafMirror.writeIndexText(this, listOf(Triple("/x", "content://a/b", 41L))) })
     }
 
     @Test
@@ -386,9 +386,29 @@ class KrSafMirrorTest {
     }
 
     @Test
-    fun localOverridesCannotSubstituteForAnObservedSourceResource() {
-        assertFalse(KrSafMirror.hasObservedSourceFiles(0))
-        assertTrue(KrSafMirror.hasObservedSourceFiles(1))
+    fun mirrorSourceDecisionCoversAllCompletenessStates() {
+        // Fresh listing, no failures: full rebuild.
+        assertEquals(KrSafMirror.MirrorSourceDecision.REBUILD_FRESH,
+            KrSafMirror.decideMirrorSources(observed = 10, previousCount = 5, queryFailures = 0, localOverrideCount = 0))
+        // Partial listing failure: rebuild but carry previous rows.
+        assertEquals(KrSafMirror.MirrorSourceDecision.REBUILD_MERGED,
+            KrSafMirror.decideMirrorSources(observed = 3, previousCount = 10, queryFailures = 2, localOverrideCount = 1))
+        // Total listing failure with a usable previous index: keep it and launch anyway.
+        assertEquals(KrSafMirror.MirrorSourceDecision.KEEP_EXISTING,
+            KrSafMirror.decideMirrorSources(observed = 0, previousCount = 10, queryFailures = 3, localOverrideCount = 0))
+        assertEquals(KrSafMirror.MirrorSourceDecision.KEEP_EXISTING,
+            KrSafMirror.decideMirrorSources(observed = 0, previousCount = 0, queryFailures = 1, localOverrideCount = 2))
+        // Nothing observed and nothing to fall back on: typed failure (EMPTY_MIRROR).
+        assertEquals(KrSafMirror.MirrorSourceDecision.FAIL_EMPTY,
+            KrSafMirror.decideMirrorSources(observed = 0, previousCount = 0, queryFailures = 1, localOverrideCount = 0))
+    }
+
+    @Test
+    fun mirrorSourceDecisionTreatsLocalOverridesAsNonObservations() {
+        // Local copies alone (0 observed source entries) do not satisfy the freshness
+        // requirement; the decision still consults previous index availability.
+        assertEquals(KrSafMirror.MirrorSourceDecision.KEEP_EXISTING,
+            KrSafMirror.decideMirrorSources(observed = 0, previousCount = 0, queryFailures = 0, localOverrideCount = 3))
     }
 
     @Test
@@ -411,9 +431,9 @@ class KrSafMirrorTest {
         helper.markOverridden(local)
         val key = asset.absolutePath.lowercase(Locale.ROOT)
         val index = File(temporary.root, "alias.idx")
-        index.writeText(KrSafMirror.buildIndexText(listOf(Triple(key, "content://source/plugin", 4L))))
+        index.writeText(buildString { KrSafMirror.writeIndexText(this, listOf(Triple(key, "content://source/plugin", 4L))) })
         val loaded = KrSafMirror.retainSourceEntries(KrSafMirror.readIndexFile(index) { it },
-            helper.snapshotOverrideKeys())
+            helper, helper.snapshotOverrideKeys())
         assertEquals("content://source/plugin", loaded[key]?.uri)
         assertEquals(asset.canonicalFile, helper.fileForIndexKey(key)?.canonicalFile)
         assertEquals(1, KrSafMirror.removeStaleSavePlaceholders(alias,
@@ -432,7 +452,7 @@ class KrSafMirrorTest {
         helper.ownershipMarker(local).writeBytes(byteArrayOf(1))
         val key = local.absolutePath.lowercase(Locale.ROOT)
         val entries = mapOf(key to KrSafMirror.MirrorEntryHolder("content://source/patch", 123L))
-        assertTrue(KrSafMirror.retainSourceEntries(entries, helper.snapshotOverrideKeys(entries.keys)).isEmpty())
+        assertTrue(KrSafMirror.retainSourceEntries(entries, helper, helper.snapshotOverrideKeys(entries.keys)).isEmpty())
         assertEquals(0L, local.length())
     }
 

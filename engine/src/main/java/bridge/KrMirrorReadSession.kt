@@ -38,16 +38,28 @@ internal class KrMirrorReadSession<T>(
         val state = localFiles ?: return
         // rename(path, path) succeeds but does not replace a source placeholder.
         if (from != null && to != null && (from == to || fromKey == toKey)) return
-        // A successful ordinary-file rename is authoritative even for a new,
-        // unindexed, zero-byte temporary file (including one outside the root).
+        // Each step is fault-isolated: a failed marker write must not prevent the
+        // tombstone for the removed/renamed source, or the old file resurrects for
+        // the rest of this launch.
         if (to != null && to.isFile) {
-            state.markOverridden(to)
+            // The libc rename already succeeded, so in-session reads must target the
+            // local file even if the cross-launch marker write fails.
             promote(requireNotNull(toKey))
+            try {
+                state.markOverridden(to)
+            } catch (error: Exception) {
+                // Marker failure only loses cross-launch ownership; the next copy-up
+                // or prepare cleanup repairs it.
+            }
         }
-        // A concurrent recreation is a new local file and keeps its marker.
         if (from != null && fromKey != null && !from.exists()) {
-            state.removeOverride(from)
+            // The source is gone: tombstone first so it cannot resurrect in-session.
             remove(fromKey)
+            try {
+                state.removeOverride(from)
+            } catch (error: Exception) {
+                // Marker delete failure is retried by the next prepare's cleanup.
+            }
         }
     }
 
