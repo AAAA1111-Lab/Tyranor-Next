@@ -553,46 +553,20 @@ fun PerGameSettingsScreen(game: ScanGame) {
             PerGameSettingsStore.F_XSYS4_MSGSKIP_DELAY,
             xs4Msgskip?.toIntOrNull()?.takeIf { it in EngineSettingsStore.XSYS4_MSGSKIP_DELAY_VALUES }?.toString(),
         )
-        // 按模式落盘：跟随全局不留任何 Winlator 参数（降级到 1.61 或模式键丢失时不会复活旧值）；
-        // 跟随容器只保留容器 ID/名称，六个参数与 save 清空；自定义写全部。
-        val winlatorParamKeys = listOf(
-            PerGameSettingsStore.F_WINLATOR_GRAPHICS_DRIVER,
-            PerGameSettingsStore.F_WINLATOR_DXWRAPPER,
-            PerGameSettingsStore.F_WINLATOR_SCREEN_SIZE,
-            PerGameSettingsStore.F_WINLATOR_LC_ALL,
-            PerGameSettingsStore.F_WINLATOR_TZ,
-            PerGameSettingsStore.F_WINLATOR_BOX64_PRESET,
-        )
-        when (winlatorMode) {
-            PerGameSettingsStore.WINLATOR_MODE_GLOBAL -> {
-                PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_CONTAINER_ID, null)
-                PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_CONTAINER_NAME, null)
-                winlatorParamKeys.forEach { PerGameSettingsStore.setStr(ctx, gid, it, null) }
-                PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_WINLATOR_SAVE, null)
-            }
-
-            PerGameSettingsStore.WINLATOR_MODE_CONTAINER -> {
-                PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_CONTAINER_ID, winlatorContainerId)
-                PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_CONTAINER_NAME, winlatorContainerName)
-                winlatorParamKeys.forEach { PerGameSettingsStore.setStr(ctx, gid, it, null) }
-                PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_WINLATOR_SAVE, null)
-            }
-
-            else -> {
-                PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_CONTAINER_ID, winlatorContainerId)
-                PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_CONTAINER_NAME, winlatorContainerName)
-                PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_GRAPHICS_DRIVER, winlatorGraphicsDriver)
-                PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_DXWRAPPER, winlatorDxwrapper)
-                PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_SCREEN_SIZE, winlatorScreenSize)
-                PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_LC_ALL, winlatorLcAll)
-                PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_TZ, winlatorTz)
-                PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_BOX64_PRESET, winlatorBox64Preset)
-                PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_WINLATOR_SAVE, winlatorSave)
-            }
+        // 覆盖值按原样落盘：切换模式不删除另一种模式的已填值，切回来还能恢复。
+        // 模式键先写且总是写——它才是生效依据，否则「把六个下拉改回空」会让推断翻转。
+        if (game.engine in WINLATOR_LAUNCH_ENGINES) {
+            PerGameSettingsStore.setWinlatorMode(ctx, gid, winlatorMode)
+            PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_CONTAINER_ID, winlatorContainerId)
+            PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_CONTAINER_NAME, winlatorContainerName)
+            PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_GRAPHICS_DRIVER, winlatorGraphicsDriver)
+            PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_DXWRAPPER, winlatorDxwrapper)
+            PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_SCREEN_SIZE, winlatorScreenSize)
+            PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_LC_ALL, winlatorLcAll)
+            PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_TZ, winlatorTz)
+            PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_WINLATOR_BOX64_PRESET, winlatorBox64Preset)
+            PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_WINLATOR_SAVE, winlatorSave)
         }
-        // 模式键总是落盘：否则「把六个下拉改回空」后推断会翻转成 CONTAINER，
-        // 用户看到的模式与实际生效值不一致（save 还会被静默忽略）。
-        PerGameSettingsStore.setWinlatorMode(ctx, gid, winlatorMode)
         val onsObj = JSONObject()
         putIfNotNull(onsObj, "scopedsavedir", onsScoped)
         putIfNotNull(onsObj, "strechfull", onsStretch)
@@ -1343,7 +1317,7 @@ fun PerGameSettingsScreen(game: ScanGame) {
                             },
                         )
                         if (winlatorMode == PerGameSettingsStore.WINLATOR_MODE_GLOBAL) {
-                            ArrowPreference(
+                            AppNavItem(
                                 title = stringResource(R.string.engine_settings_winlator_global_entry),
                                 summary = stringResource(R.string.engine_settings_winlator_global_entry_summary),
                                 onClick = {
@@ -1360,7 +1334,7 @@ fun PerGameSettingsScreen(game: ScanGame) {
                 if (game.engine in WINLATOR_LAUNCH_ENGINES &&
                     winlatorMode == PerGameSettingsStore.WINLATOR_MODE_CONTAINER
                 ) item {
-                    SectionCard("Winlator") {
+                    SectionCard(stringResource(R.string.engine_settings_winlator_group_container)) {
                         WinlatorContainerRows(
                             globalContainerName = globalWinlator.containerName,
                             effectiveContainerIdLabel = winlatorEffectiveContainerIdLabel,
@@ -1376,7 +1350,7 @@ fun PerGameSettingsScreen(game: ScanGame) {
                 if (game.engine in WINLATOR_LAUNCH_ENGINES &&
                     winlatorMode == PerGameSettingsStore.WINLATOR_MODE_CUSTOM
                 ) item {
-                    SectionCard("Winlator") {
+                    SectionCard(stringResource(R.string.engine_settings_winlator_group_container)) {
                         WinlatorContainerRows(
                             globalContainerName = globalWinlator.containerName,
                             effectiveContainerIdLabel = winlatorEffectiveContainerIdLabel,
@@ -1724,8 +1698,10 @@ private fun WinlatorContainerRows(
         override = containerName,
         hint = stringResource(R.string.engine_settings_winlator_container_name_summary_per_game),
         // 容器名参与 Winlator 端匹配：限制长度并过滤控制字符，避免零宽字符导致匹配失败。
-        sanitize = { it.filter { ch -> !ch.isISOControl() }.take(64) },
-        validate = { it.length <= 64 },
+        // 控制字符与零宽格式字符都会破坏 Winlator 端名称匹配，一并过滤。
+        sanitize = {
+            it.filterNot { ch -> ch.isISOControl() || ch.category == CharCategory.FORMAT }.take(64)
+        },
     ) { onContainerNameChange(it?.takeIf { value -> value.isNotBlank() }) }
 }
 

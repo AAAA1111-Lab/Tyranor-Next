@@ -412,6 +412,7 @@
     <string name="engine_settings_fvp_font_import_failed">フォントの読み込みに失敗しました：ttf/otf/ttc を選択してください</string>
     <string name="engine_settings_winlator_title">Winlator 外部起動</string>
     <string name="engine_settings_winlator_follow_container">コンテナ設定を使用</string>
+    <string name="engine_settings_winlator_group_container">コンテナマッチング</string>
     <string name="engine_settings_winlator_container_id_title">コンテナ ID</string>
     <string name="engine_settings_winlator_container_id_summary">0 または空欄 = 自動（最近使用 / 唯一 / 最初のコンテナ）</string>
     <string name="engine_settings_winlator_mode_title">実行モード</string>
@@ -421,7 +422,7 @@
     <string name="engine_settings_winlator_global_entry">Winlator の全体設定を表示・変更</string>
     <string name="engine_settings_winlator_global_entry_summary">エンジン設定の Winlator 外部起動を開く</string>
     <string name="engine_settings_winlator_container_id_auto_by_name">自動（コンテナ名が優先）</string>
-    <string name="engine_settings_winlator_container_id_summary_per_game">コンテナ ID が空または 0：このゲームに名前があれば名前で照合し、グローバル ID を継承しません。名前がなければグローバルを継承します。</string>
+    <string name="engine_settings_winlator_container_id_summary_per_game">空欄（未指定）はグローバル ID を継承します。明示的な 0 は ID を送信しません（コンテナ名または Winlator が選択）。名前のみ指定時は継承 ID を無視します</string>
     <string name="engine_settings_winlator_container_name_summary_per_game">空欄 = 名前未指定。両方入力時はコンテナ ID を優先。名前のみの場合はグローバルコンテナ ID を継承しません。</string>
     <string name="engine_settings_winlator_container_name_title">コンテナ名</string>
     <string name="engine_settings_winlator_container_name_summary">空欄 = 自動。コンテナ ID がコンテナ名より優先されます</string>
