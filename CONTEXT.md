@@ -215,7 +215,7 @@ _Avoid_: 存档路径
 
 **SD 强制镜像存档（Mirror-Forced Save）**:
 可移动存储上的 Kirikiri 游戏将存档固定在应用专属 SAF 镜像目录，独立存档开关不改变位置，游戏目录内手动放置的存档须经存档管理导入。此处镜像指源游戏文件的 SAF 镜像目录，与「存档镜像（Save Mirror，ZIP 导入导出）」不同，用户可见文案使用「SAF 镜像目录」限定语境。
-_Avoid_: SD 卡存档互通、自动迁移、与存档镜像（ZIP）混用"镜像"一词
+_Avoid_: SD 卡存档互通、自动迁移、ZIP 存档镜像
 
 **存档镜像（Save Mirror）**:
 将游戏存档目录导出 / 导入为 zip 的备份能力（exportToZip / importFromZip），含文件数与体积上限保护。
