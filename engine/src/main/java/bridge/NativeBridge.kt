@@ -10,14 +10,12 @@ import android.util.Log
 import androidx.documentfile.provider.DocumentFile
 import com.core.engine.LaunchContract
 import java.io.File
+import java.io.IOException
 import java.io.RandomAccessFile
 import java.util.Locale
 import org.tvp.kirikiri2.KR2Activity
 
 object NativeBridge {
-    /** Java/native ABI sentinel: authoritative mirror failure, never retry its placeholder. */
-    private const val MIRROR_OPEN_FAILED = -2
-
     @Volatile
     private var safMirror = KrMirrorReadSession<KrSafMirror.MirrorEntry>(emptyMap())
     @Volatile
@@ -57,13 +55,13 @@ object NativeBridge {
     fun configureSafMirror(indexPath: String?, mirrorRoot: String? = null) {
         val root = mirrorRoot?.takeIf { it.isNotBlank() }?.let { File(it) }
         val documents = try {
-            KrSafMirror.loadIndex(indexPath, root)
+            KrSafMirror.loadIndex(indexPath)
         } catch (t: Throwable) {
             Log.e("NativeBridge", "load SAF mirror index failed path=$indexPath", t)
             emptyMap()
         }
         val localFiles = root?.let { KrMirrorLocalFiles(it) }
-        safMirror = KrMirrorReadSession(documents, localFiles)
+        safMirror = KrMirrorReadSession(documents, localFiles, localFiles?.snapshotOverrideKeys().orEmpty())
         val sized = documents.values.count { it.size >= 0 }
         Log.i("NativeBridge", "SAF mirror index entries=${documents.size} sized=$sized")
     }
@@ -124,52 +122,32 @@ object NativeBridge {
         }
         val session = safMirror
         val key = target.lowercase(Locale.ROOT)
-        val mirror = session.entry(key)
-        if (mirror != null) {
-            try {
-                val local = File(target)
-                val localFiles = session.localFiles ?: throw java.io.IOException("Missing mirror local state")
-                return localFiles.withFileLock(local) {
-                    if (session.entry(key) == null || localFiles.isOverridden(local) || local.length() > 0L) {
-                        return@withFileLock openMirrorLocalFile(session, key, localFiles, path, target, mode)
-                    }
-                    val readIntent = mirrorReadAllowed(
-                        openAccess(mode),
-                        append = (mode and OsConstants.O_APPEND) != 0,
-                        truncate = (mode and OsConstants.O_TRUNC) != 0,
-                    )
-                    if (readIntent && openAccess(mode) == FileAccess.READ_WRITE) {
-                        // Preserve r+/O_RDWR semantics without ever granting a writable
-                        // source fd. Complete copy-up and its durable marker before
-                        // exposing the local fd; concurrent opens share this key lock.
-                        localFiles.copyUp(local, mirror.size) {
-                            val activity = KrPathUtils.currentActivity()
-                                ?: throw java.io.IOException("Missing mirror activity")
-                            activity.contentResolver.openInputStream(mirror.uri)
-                                ?: throw java.io.IOException("Cannot open mirror source")
-                        }
-                        session.promote(key)
-                        return@withFileLock openDirectFile(path, target, mode, "mirror copy-up")
-                            .takeIf { it >= 0 } ?: MIRROR_OPEN_FAILED
-                    }
-                    if (readIntent) {
-                        val fd = openDocumentUri(mirror.uri, OsConstants.O_RDONLY)
-                        session.recordRead(key, succeeded = fd >= 0)
-                        if (fd >= 0) fd else MIRROR_OPEN_FAILED
-                    } else {
-                        // Explicit write intent stays local. Persist ownership even if
-                        // the user later truncates it to zero; prepare must not restore
-                        // original source bytes over that intentional empty override.
-                        openMirrorLocalFile(session, key, localFiles, path, target, mode)
-                    }
-                }
-            } catch (error: java.util.concurrent.CancellationException) {
-                throw error
-            } catch (error: Exception) {
-                session.recordRead(key, succeeded = false)
-                Log.w("NativeBridge", "mirror open failed path=$path flags=$mode", error)
-                return MIRROR_OPEN_FAILED
+        if (session.sourceEntry(key) != null) {
+            val router = KrMirrorOpenRouter(
+                session = session,
+                sourceSize = { it.size },
+                sourceStream = { entry ->
+                    val activity = KrPathUtils.currentActivity()
+                        ?: throw IOException("Missing mirror activity")
+                    activity.contentResolver.openInputStream(entry.uri)
+                        ?: throw IOException("Cannot open mirror source")
+                },
+                sourceDescriptor = { entry -> openDocumentUri(entry.uri, OsConstants.O_RDONLY) },
+                localDescriptor = { file, _ -> openDirectFile(path, file.path, mode, "mirror local") },
+                closeDescriptor = { fd -> ParcelFileDescriptor.adoptFd(fd).close() },
+                diagnostic = { message, error -> Log.w("NativeBridge", "$message path=$path flags=$mode", error) },
+            )
+            val readIntent = mirrorReadAllowed(
+                openAccess(mode),
+                append = (mode and OsConstants.O_APPEND) != 0,
+                truncate = (mode and OsConstants.O_TRUNC) != 0,
+            )
+            val intent = when {
+                !readIntent -> KrMirrorOpenRouter.Intent.WRITE
+                openAccess(mode) == FileAccess.READ_WRITE -> KrMirrorOpenRouter.Intent.UPDATE
+                else -> KrMirrorOpenRouter.Intent.READ_ONLY
             }
+            return router.open(key, File(target), intent)
         }
         return try {
             openDirectFile(path, target, mode, diagnosticPrefix = if (redirected != null) "redirect" else null)
@@ -187,24 +165,20 @@ object NativeBridge {
         }
     }
 
-    /** Publish local ownership only after a usable fd exists, before exposing it to native. */
-    private fun openMirrorLocalFile(
-        session: KrMirrorReadSession<KrSafMirror.MirrorEntry>,
-        key: String,
-        localFiles: KrMirrorLocalFiles,
-        path: String?,
-        target: String,
-        mode: Int,
-    ): Int {
-        val fd = openDirectFile(path, target, mode, "mirror local")
-        if (fd < 0) return MIRROR_OPEN_FAILED
+    /** Called after existing libc unlink/remove/rename hooks succeed, never for failed operations. */
+    @JvmStatic
+    fun onMirrorFileMutation(fromPath: String?, toPath: String?) {
+        val session = safMirror
+        val state = session.localFiles ?: return
+        val fromKey = fromPath?.lowercase(Locale.ROOT)
+        val from = fromKey?.let { state.fileForIndexKey(it) }
+        val toKey = toPath?.lowercase(Locale.ROOT)
+        val to = toKey?.let { state.fileForIndexKey(it) }
+        if (from == null && to == null) return
         try {
-            localFiles.markOverridden(File(target))
-            session.promote(key)
-            return fd
+            session.synchronizeMutation(fromKey.takeIf { from != null }, from, toKey, to)
         } catch (error: Exception) {
-            runCatching { ParcelFileDescriptor.adoptFd(fd).close() }
-            throw error
+            Log.w("NativeBridge", "Mirror ownership mutation failed from=$fromPath to=$toPath", error)
         }
     }
 
@@ -267,8 +241,10 @@ object NativeBridge {
         val key = normalized.lowercase(Locale.ROOT)
         val session = safMirror
         val entry = session.entry(key) ?: return -1L
-        if (session.localFiles?.isOverridden(File(normalized)) == true) return -1L
-        return mirrorMetadataSize(entry.size, File(normalized).length(), session.readFailed(key))
+        if (session.isLocal(key, File(normalized))) return -1L
+        // Native calls this only for a successful stat of a zero-byte regular file.
+        // Ownership path derivation is cached by the session; do not canonicalize/hash here.
+        return mirrorMetadataSize(entry.size, 0L, session.readFailed(key))
     }
 
     /** A local overwrite or failed source read always wins over indexed placeholder metadata. */

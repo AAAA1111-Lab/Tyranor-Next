@@ -1396,7 +1396,7 @@ object EngineLauncher {
         } else {
             safMirror?.let { createKrMirrorOverlayReader(context, it) }
         }
-        val patchOverlay = prepareKrPatchOverlay(context, engineRoot, settings.krPatchOverlayMode, mirrorOverlayReader)
+        val patchOverlay = prepareKrPatchOverlay(context, engineRoot, settings.krPatchOverlayMode, mirrorOverlayReader, isMirror = safMirror != null)
         val steamConfigOverlay = prepareKrSteamConfigOverlay(context, engineRoot, settings.krPatchOverlayMode, mirrorOverlayReader)
         return Intent(context, activity).apply {
             // KR2 引擎把 path 视为“启动条目”，gamedir = path 的父目录。
@@ -1425,6 +1425,7 @@ object EngineLauncher {
                 putExtra(LaunchContract.SAF_MIRROR_ROOT, it.mirrorRoot.absolutePath)
                 putExtra(LaunchContract.SAF_MIRROR_INDEX, it.indexFile.absolutePath)
                 putExtra(LaunchContract.SAF_MIRROR_FILES, it.fileCount)
+                Log.i(TAG, "KRKR SAF mirror files=${it.fileCount} diagnostics=${it.diagnostics}")
             }
             putExtra(LaunchContract.ORIENTATION, 6)
             putExtra(LaunchContract.SCOPED_SAVE_DIR, effectiveScoped)
@@ -1902,8 +1903,13 @@ object EngineLauncher {
      * SAF 索引读真实内容，否则会把游戏自带的 patch.tjs（含插件引导）误判为不存在、
      * 用基础 overlay 顶掉，游戏插件链失效（issue #129 的 GamepadPort 崩溃）。
      */
-    private fun prepareKrPatchOverlay(context: Context, engineRoot: String, mode: String, mirrorReader: KrMirrorOverlayReader?): KrPatchOverlay? {
-        if (mode == EngineSettingsStore.KR_PATCH_OVERLAY_OFF) return null
+    private fun prepareKrPatchOverlay(context: Context, engineRoot: String, mode: String, mirrorReader: KrMirrorOverlayReader?, isMirror: Boolean): KrPatchOverlay? {
+        if (mode == EngineSettingsStore.KR_PATCH_OVERLAY_OFF) {
+            // Preserve legacy local managed-block cleanup when overlays are disabled.
+            // Mirror placeholders must never be inspected as source patch contents here.
+            if (!isMirror) cleanupTyranorManagedKrPatchScript(File(engineRoot), null)
+            return null
+        }
         val root = File(engineRoot)
         if (!root.isDirectory || engineRoot.startsWith("content://")) return null
         val cleanup = cleanupTyranorManagedKrPatchScript(root, mirrorReader)

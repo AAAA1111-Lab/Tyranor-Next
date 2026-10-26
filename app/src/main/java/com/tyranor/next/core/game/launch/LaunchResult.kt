@@ -7,7 +7,7 @@ import com.tyranor.next.core.engine.plugin.EnginePluginBootstrap
 /**
  * KRKR 可移动存储镜像准备的失败阶段（app 侧视图模型）。
  *
- * 是 engine 侧 `KrSafMirror.Stage`按**用户处置方式**的收窄映射，
+ * 是 engine 侧 `KrSafMirror.Stage` 按**用户处置方式**的收窄映射，
  * 不复用其类型：ui 层按三层架构不得 import `bridge` 包，core 负责在这一层做映射
  * （见 `EngineLauncher`）。
  */

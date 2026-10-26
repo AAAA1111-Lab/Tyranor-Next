@@ -42,21 +42,6 @@ class NativeBridgeMirrorPolicyTest {
     }
 
     @Test
-    fun `new launch state is isolated from late old read completions and promotions`() {
-        val old = KrMirrorReadSession(mapOf("plugin" to "old"))
-        old.recordRead("plugin", false)
-        assertTrue(old.readFailed("plugin"))
-        old.recordRead("plugin", true)
-        assertFalse(old.readFailed("plugin"))
-        val current = KrMirrorReadSession(mapOf("plugin" to "new"))
-        old.recordRead("plugin", false)
-        old.promote("plugin")
-        assertFalse(current.readFailed("plugin"))
-        assertEquals("new", current.entry("plugin"))
-        assertEquals(null, old.entry("plugin"))
-    }
-
-    @Test
     fun `mirror asset case folding matches ROOT locale including Unicode`() {
         assertEquals("plugin/gamepad.dll", NativeBridge.normalizeMirrorCase("Plugin/GamePad.dll"))
         assertEquals("äset/σcript.dll", NativeBridge.normalizeMirrorCase("Äset/Σcript.DLL"))

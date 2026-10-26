@@ -722,6 +722,16 @@ int fopenModeToFlags(const char* mode) {
     }
 }
 
+// A bounded/failed update copy-up may deliberately return a read-only SAF fd.
+// Match FILE permissions to that fd; subsequent writes fail rather than touch SD.
+const char* compatibleStreamMode(int fd, int flags, const char* requestedMode) {
+    if ((flags & O_ACCMODE) == O_RDWR) {
+        const int actual = fcntl(fd, F_GETFL);
+        if (actual >= 0 && (actual & O_ACCMODE) == O_RDONLY) return "r";
+    }
+    return requestedMode;
+}
+
 FILE* hookFopenCommon(FopenFn original, const char* rawPath, const char* mode) {
     const std::string resolved = resolveEnginePath(rawPath);
     const char* path = resolved.c_str();
@@ -739,7 +749,7 @@ FILE* hookFopenCommon(FopenFn original, const char* rawPath, const char* mode) {
             return nullptr;
         }
         if (fd >= 0) {
-            FILE* stream = fdopen(fd, mode);
+            FILE* stream = fdopen(fd, compatibleStreamMode(fd, flags, mode));
             if (stream != nullptr) return stream;
             const int streamError = errno;
             close(fd);
@@ -821,7 +831,8 @@ FILE* hookedFreopenCommon(const char* path, const char* mode, FILE* stream, Freo
             // flags, so a mode mismatch would return a FILE* with stale flags. Compare
             // the underlying fd access mode via fcntl(F_GETFL) first.
             const int target = fileno(stream);
-            const int wantAccess = flags & O_ACCMODE;
+            const char* streamMode = compatibleStreamMode(fd, flags, mode);
+            const int wantAccess = fopenModeToFlags(streamMode) & O_ACCMODE;
             const int haveAccess = target >= 0 ? fcntl(target, F_GETFL) : -1;
             const bool accessMatches = haveAccess >= 0 && (haveAccess & O_ACCMODE) == wantAccess;
             if (accessMatches) {
@@ -847,7 +858,7 @@ FILE* hookedFreopenCommon(const char* path, const char* mode, FILE* stream, Freo
             char fdPath[64];
             std::snprintf(fdPath, sizeof(fdPath), "/proc/self/fd/%d", fd);
             if (original != nullptr) {
-                FILE* rebuilt = original(fdPath, mode, stream);
+                FILE* rebuilt = original(fdPath, streamMode, stream);
                 const int reopenError = errno;
                 close(fd);
                 if (rebuilt != nullptr) return rebuilt;
@@ -933,6 +944,39 @@ int hookedAccess(const char* rawPath, int mode) {
     return gOriginalAccess(redirected.empty() ? path : redirected.c_str(), mode);
 }
 
+// Existing mutation hooks notify Java only after libc succeeds. Preserve syscall errno.
+void notifyMirrorMutation(const char* from, const char* to) {
+    if (!gMirrorActive.load(std::memory_order_acquire) || gVm == nullptr || from == nullptr) return;
+    const int operationErrno = errno;
+    JNIEnv* env = nullptr;
+    bool attached = false;
+    if (gVm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        if (gVm->AttachCurrentThread(&env, nullptr) != JNI_OK) {
+            errno = operationErrno;
+            return;
+        }
+        attached = true;
+    }
+    jclass clazz = env->FindClass("bridge/NativeBridge");
+    if (clazz != nullptr) {
+        jmethodID method = env->GetStaticMethodID(clazz, "onMirrorFileMutation",
+                "(Ljava/lang/String;Ljava/lang/String;)V");
+        if (method != nullptr) {
+            jstring javaFrom = env->NewStringUTF(from);
+            jstring javaTo = to == nullptr ? nullptr : env->NewStringUTF(to);
+            if (javaFrom != nullptr && (to == nullptr || javaTo != nullptr)) {
+                env->CallStaticVoidMethod(clazz, method, javaFrom, javaTo);
+            }
+            if (javaFrom != nullptr) env->DeleteLocalRef(javaFrom);
+            if (javaTo != nullptr) env->DeleteLocalRef(javaTo);
+        }
+        env->DeleteLocalRef(clazz);
+    }
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    if (attached) gVm->DetachCurrentThread();
+    errno = operationErrno;
+}
+
 int hookedRename(const char* rawFrom, const char* rawTo) {
     if (gOriginalRename == nullptr) return -1;
     const std::string resolvedFrom = resolveEnginePath(rawFrom);
@@ -941,17 +985,31 @@ int hookedRename(const char* rawFrom, const char* rawTo) {
     const char* to = resolvedTo.c_str();
     const std::string redirectedFrom = pathMatchesPrefix(from) ? callJavaRedirect(from) : std::string();
     const std::string redirectedTo = pathMatchesPrefix(to) ? callJavaRedirect(to) : std::string();
-    return gOriginalRename(
-            redirectedFrom.empty() ? from : redirectedFrom.c_str(),
-            redirectedTo.empty() ? to : redirectedTo.c_str());
+    const char* actualFrom = redirectedFrom.empty() ? from : redirectedFrom.c_str();
+    const char* actualTo = redirectedTo.empty() ? to : redirectedTo.c_str();
+    const int result = gOriginalRename(actualFrom, actualTo);
+    if (result == 0) notifyMirrorMutation(actualFrom, actualTo);
+    return result;
+}
+
+template<typename Fn>
+int hookRemoveFile(Fn original, const char* rawPath) {
+    if (original == nullptr) return -1;
+    const std::string resolved = resolveEnginePath(rawPath);
+    const char* path = resolved.c_str();
+    const std::string redirected = pathMatchesPrefix(path) ? callJavaRedirect(path) : std::string();
+    const char* actual = redirected.empty() ? path : redirected.c_str();
+    const int result = original(actual);
+    if (result == 0) notifyMirrorMutation(actual, nullptr);
+    return result;
 }
 
 int hookedUnlink(const char* path) {
-    return hookSinglePath(gOriginalUnlink, path);
+    return hookRemoveFile(gOriginalUnlink, path);
 }
 
 int hookedRemove(const char* path) {
-    return hookSinglePath(gOriginalRemove, path);
+    return hookRemoveFile(gOriginalRemove, path);
 }
 
 int hookedMkdir(const char* path, mode_t mode) {

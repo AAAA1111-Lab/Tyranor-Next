@@ -320,69 +320,23 @@ class GameSaveManager(private val context: Context) {
         val location = resolveSaveLocation(game)
         val destination = location.directory ?: throw GameSaveException(SaveErrorCode.RESOLVE_SAVE_DIR_FAILED)
 
-        // 与目标目录同文件系统的暂存/备份目录：解压+复制阶段完全不触碰原存档；
-        // 提交阶段用两次 rename 原子交换（旧目录改名留作备份 → 暂存目录顶替），
-        // 任一步失败即从备份回滚。Artemis 的引擎资源在交换完成后再从备份移回，
-        // 移回全部成功才清理备份——任何失败路径下备份都保有完整恢复数据。
-        val staging = File(destination.parentFile, destination.name + ".import_staging")
-        val backup = File(destination.parentFile, destination.name + ".import_backup")
-        // 上次导入的遗留备份恢复：必须在创建 destination 前完成，否则前一次
-        // 在 destination.renameTo(backup) 与 staging.renameTo(destination) 之间
-        // 中断会导致 destination 缺失；若先 mkdirs 会得到空目录并跳过恢复，
-        // 随后提交阶段又删除仍含旧存档的 backup，造成永久丢档。
-        // Artemis 资源移回中断则逐个移回剩余资源。恢复完成备份里只剩可丢弃的旧存档。
-        // 注意 temp 延后创建：备份恢复抛异常时不泄漏 cacheDir 临时目录
-        if (backup.isDirectory) {
-            when {
-                !destination.exists() ->
-                    if (!backup.renameTo(destination)) throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
-                restoresExcludedFromBackup(game.engine) ->
-                    restoreExcludedFromBackup(backup, destination, game.engine)
-            }
-        }
-        if (!destination.exists() && !destination.mkdirs()) throw GameSaveException(SaveErrorCode.CREATE_SAVE_DIR)
-        if (!destination.isDirectory) throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
-        val temp = createTemporaryDirectory()
-        var committed = false
-        var backupConsumed = false
+        var temp: File? = null
         try {
-            val extracted = extractZip(sourceUri, temp)
-            if (extracted == 0) throw GameSaveException(SaveErrorCode.NO_FILES_IN_ZIP)
-            staging.deleteRecursively()
-            if (!staging.mkdirs()) throw GameSaveException(SaveErrorCode.CREATE_SAVE_DIR)
-            // 过滤引擎资源后可能一件存档都没有（如纯资源 ZIP）：必须在交换前拦截，
-            // 否则会用空目录顶替目标并删掉备份，旧存档全部丢失
-            // 外部备份包常整包为多层外层文件夹（save/、Save/、www/save/ 等），
-            // 需先剥掉再复制，否则会落成 savedata/save/... 多套一层导致引擎读不到。
-            // 仅 RPG Maker MV/MZ 生效（见 unwrapOuterDirs，其它引擎原样返回）。
-            val source = unwrapOuterDirs(temp, game.engine)
-            val copied = stageImportContents(source, staging, excludeFor(game.engine), location.mirrorForced)
-            if (destination.exists()) {
-                // 走到这里备份必已被开头恢复步骤消费（只剩旧存档或不存在），可安全删除
-                if (backup.exists() && !backup.deleteRecursively()) {
-                    throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
+            val restoreExcluded: ((File, File) -> Unit)? = if (restoresExcludedFromBackup(game.engine)) {
+                { backup, target -> restoreExcludedFromBackup(backup, target, game.engine) }
+            } else {
+                null
+            }
+            return importSaveDirectory(destination, excludeFor(game.engine), location.mirrorForced, restoreExcluded) {
+                // Recovery completes before extraction creates a cache directory.
+                val extractedDirectory = createTemporaryDirectory().also { temp = it }
+                if (extractZip(sourceUri, extractedDirectory) == 0) {
+                    throw GameSaveException(SaveErrorCode.NO_FILES_IN_ZIP)
                 }
-                if (!destination.renameTo(backup)) throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
+                unwrapOuterDirs(extractedDirectory, game.engine)
             }
-            if (!staging.renameTo(destination)) {
-                if (backup.exists()) backup.renameTo(destination)
-                throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
-            }
-            committed = true
-            // Artemis 目标即游戏根：被排除的引擎资源（system/、*.pfs 等）不参与导入，
-            // 交换后从备份移回；全部移回前备份绝不清理，失败可再次恢复
-            // Artemis 引擎资源、MV/MZ 的 original/（互通留底）被排除在导入之外，
-            // 交换后从备份移回；全部移回前备份绝不清理，失败可再次恢复
-            if (restoresExcludedFromBackup(game.engine)) {
-                restoreExcludedFromBackup(backup, destination, game.engine)
-            }
-            backupConsumed = true
-            return copied
         } finally {
-            temp.deleteRecursively()
-            staging.deleteRecursively()
-            // 仅在交换成功且备份内容已消费完毕后清理备份；否则保留备份数据供下次恢复
-            if (committed && backupConsumed) backup.deleteRecursively()
+            temp?.deleteRecursively()
         }
     }
 
@@ -688,6 +642,60 @@ class GameSaveManager(private val context: Context) {
         localizedContext.getString(id, *args)
 
     companion object {
+        /** Shared filesystem transaction used by ZIP import; no live save changes before staging passes. */
+        @Throws(IOException::class)
+        internal fun importSaveDirectory(
+            destination: File,
+            exclude: (String) -> Boolean,
+            mirrorForced: Boolean,
+            restoreExcluded: ((File, File) -> Unit)? = null,
+            rename: (File, File) -> Boolean = { from, to -> from.renameTo(to) },
+            sourceProvider: () -> File,
+        ): Int {
+            val staging = File(destination.parentFile, destination.name + ".import_staging")
+            val backup = File(destination.parentFile, destination.name + ".import_backup")
+            // Recover an interrupted exchange before making an empty destination. Otherwise
+            // the next import could discard the sole remaining copy of the previous saves.
+            if (backup.isDirectory) {
+                when {
+                    !destination.exists() -> if (!rename(backup, destination)) {
+                        throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
+                    }
+                    restoreExcluded != null -> restoreExcluded(backup, destination)
+                }
+            }
+            if (!destination.exists() && !destination.mkdirs()) throw GameSaveException(SaveErrorCode.CREATE_SAVE_DIR)
+            if (!destination.isDirectory) throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
+            var committed = false
+            var backupConsumed = false
+            try {
+                val source = sourceProvider()
+                if (staging.exists() && !staging.deleteRecursively()) {
+                    throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
+                }
+                if (!staging.mkdirs()) throw GameSaveException(SaveErrorCode.CREATE_SAVE_DIR)
+                val copied = stageImportContents(source, staging, exclude, mirrorForced)
+                if (backup.exists() && !backup.deleteRecursively()) {
+                    throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
+                }
+                if (!rename(destination, backup)) throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
+                if (!rename(staging, destination)) {
+                    // Failed rollback retains backup for the recovery above on the next import.
+                    if (backup.exists()) rename(backup, destination)
+                    throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
+                }
+                committed = true
+                // Artemis resources and RPG Maker interop originals stay excluded from
+                // imported saves. Retain backup until all those resources are restored.
+                restoreExcluded?.invoke(backup, destination)
+                backupConsumed = true
+                return copied
+            } finally {
+                staging.deleteRecursively()
+                if (committed && backupConsumed) backup.deleteRecursively()
+            }
+        }
+
         /** Filter and count imported saves before the caller can exchange the live directory. */
         internal fun stageImportContents(
             source: File,

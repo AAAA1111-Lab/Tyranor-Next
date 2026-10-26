@@ -4,6 +4,7 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
+import java.nio.file.Files
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -13,6 +14,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
+import org.junit.Assume.assumeNoException
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -80,16 +82,106 @@ class KrMirrorLocalFilesTest {
     }
 
     @Test
-    fun `incomplete and oversized source copies leave placeholder and no marker`() {
+    fun `changed source size publishes complete actual content and reports mismatch`() {
         val root = temporary.newFolder("mismatch")
         val local = KrMirrorLocalFiles(root)
         for ((name, expected) in listOf("short" to 9L, "long" to 2L)) {
             val target = File(root, name).apply { createNewFile() }
-            expectIOException { local.copyUp(target, expected) { ByteArrayInputStream("data".toByteArray()) } }
-            assertEquals(0L, target.length())
-            assertFalse(local.isOverridden(target))
+            var reported: Pair<Long, Long>? = null
+            local.copyUp(target, expected, { before, after -> reported = before to after }) {
+                ByteArrayInputStream("data".toByteArray())
+            }
+            assertEquals("data", target.readText())
+            assertEquals(expected to 4L, reported)
+            assertTrue(local.isOverridden(target))
         }
+    }
+
+    @Test
+    fun `known oversized source is refused before source IO`() {
+        val root = temporary.newFolder("known-limit")
+        val target = File(root, "asset").apply { createNewFile() }
+        val local = KrMirrorLocalFiles(root)
+        expectIOException {
+            local.copyUp(target, KrMirrorLocalFiles.MAX_COPY_BYTES + 1) {
+                fail("Oversized source must not be opened")
+                ByteArrayInputStream(byteArrayOf())
+            }
+        }
+        assertEquals(0L, target.length())
+        assertFalse(local.isOverridden(target))
+    }
+
+    @Test
+    fun `unknown oversized source leaves no partial copy or ownership marker`() {
+        val root = temporary.newFolder("unknown-limit")
+        val target = File(root, "asset").apply { createNewFile() }
+        val local = KrMirrorLocalFiles(root)
+        expectIOException {
+            local.copyUp(target, -1) {
+                object : InputStream() {
+                    var remaining = KrMirrorLocalFiles.MAX_COPY_BYTES + 1
+                    override fun read(): Int = if (remaining-- > 0) 0 else -1
+                    override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                        if (remaining <= 0) return -1
+                        val count = minOf(length.toLong(), remaining).toInt()
+                        remaining -= count
+                        return count
+                    }
+                }
+            }
+        }
+        assertEquals(0L, target.length())
+        assertFalse(local.isOverridden(target))
         assertFalse(root.listFiles().orEmpty().any { it.name.startsWith(".mirror-copy-") })
+    }
+
+    @Test
+    fun `index alias resolves through symlink root and rejects traversal`() {
+        val root = temporary.newFolder("real-root")
+        val target = File(root, "config.ksd").apply { createNewFile() }
+        val alias = File(temporary.root, "alias-root")
+        try {
+            Files.createSymbolicLink(alias.toPath(), root.toPath())
+        } catch (error: Exception) {
+            assumeNoException("Symbolic links unavailable on this host", error)
+        }
+        val local = KrMirrorLocalFiles(alias)
+        local.markOverridden(target)
+        val aliasKey = File(alias, target.name).absolutePath.lowercase(java.util.Locale.ROOT)
+        val realKey = target.absolutePath.lowercase(java.util.Locale.ROOT)
+        assertEquals(target.canonicalFile, local.fileForIndexKey(aliasKey)?.canonicalFile)
+        assertEquals(target.canonicalFile, local.fileForIndexKey(realKey)?.canonicalFile)
+        assertTrue(aliasKey.replace(File.separatorChar, '/') in local.snapshotOverrideKeys())
+        assertTrue(realKey.replace(File.separatorChar, '/') in local.snapshotOverrideKeys())
+        assertEquals(null, local.fileForIndexKey(alias.absolutePath + "/../outside"))
+    }
+
+    @Test
+    fun `missing target clears ownership but live empty override remains`() {
+        val root = temporary.newFolder("deleted-override")
+        val target = File(root, "asset").apply { createNewFile() }
+        val local = KrMirrorLocalFiles(root)
+        local.markOverridden(target)
+        assertFalse(local.clearMissingOverride(target))
+        assertTrue(local.isOverridden(target))
+        assertTrue(target.delete())
+        assertTrue(local.clearMissingOverride(target))
+        target.createNewFile()
+        assertFalse(local.isOverridden(target))
+    }
+
+    @Test
+    fun `legacy marker snapshot preserves empty overrides with candidate index keys`() {
+        val root = temporary.newFolder("legacy-marker")
+        val target = File(root, "asset").apply { createNewFile() }
+        val local = KrMirrorLocalFiles(root)
+        val marker = local.ownershipMarker(target)
+        marker.parentFile!!.mkdirs()
+        marker.writeBytes(byteArrayOf(1))
+        val key = target.absolutePath.lowercase(java.util.Locale.ROOT)
+        assertTrue(local.isOverridden(target))
+        assertTrue(key.replace(File.separatorChar, '/') in local.snapshotOverrideKeys(listOf(key)))
     }
 
     @Test

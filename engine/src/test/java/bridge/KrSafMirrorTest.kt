@@ -1,6 +1,7 @@
 package bridge
 
 import java.io.File
+import java.nio.file.Files
 import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -11,17 +12,18 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
+import org.junit.Assume.assumeNoException
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 
 /**
- * Pure-JVM tests for the KrSafMirror index and path conversion (no SAF/Context/Android
+ * Pure-JVM tests for KrSafMirror preparation policies and index/path conversion (no SAF/Context/Android
  * stubs). Covers the #129 index v2 size column, v1 compatibility, document-id conversion
  * and the write→parse round trip via [KrSafMirror.buildIndexText]/[KrSafMirror.parseIndexLines]
  * (uri construction is injected as identity to bypass the android.net.Uri JVM stub).
  */
-class KrSafMirrorIndexTest {
+class KrSafMirrorTest {
     @get:Rule
     val temporary = TemporaryFolder()
 
@@ -367,6 +369,71 @@ class KrSafMirrorIndexTest {
         assertEquals(1, KrSafMirror.removeStaleSavePlaceholders(root, keys, emptySet(), state::isOverridden))
         assertFalse(stale.exists())
         assertTrue(local.exists())
+    }
+
+    @Test
+    fun missingBootstrapRequiresBothAnAbsentDocumentAndACompleteRootListing() {
+        assertEquals(KrSafMirror.BootstrapFileState.ABSENT,
+            KrSafMirror.bootstrapProbeFailureState("patch.tjs", true, true, setOf("data.xp3")))
+        assertEquals(KrSafMirror.BootstrapFileState.UNAVAILABLE,
+            KrSafMirror.bootstrapProbeFailureState("patch.tjs", true, false, emptySet()))
+        assertEquals(KrSafMirror.BootstrapFileState.UNAVAILABLE,
+            KrSafMirror.bootstrapProbeFailureState("patch.tjs", false, true, emptySet()))
+        assertEquals(KrSafMirror.BootstrapFileState.UNAVAILABLE,
+            KrSafMirror.bootstrapProbeFailureState("patch.tjs", true, true, setOf("patch.tjs")))
+        assertEquals(KrSafMirror.BootstrapFileState.ABSENT,
+            KrSafMirror.bootstrapProbeFailureState("PATCH.TJS", true, true, setOf("data.xp3")))
+    }
+
+    @Test
+    fun localOverridesCannotSubstituteForAnObservedSourceResource() {
+        assertFalse(KrSafMirror.hasObservedSourceFiles(0))
+        assertTrue(KrSafMirror.hasObservedSourceFiles(1))
+    }
+
+    @Test
+    fun symlinkMirrorRootRetainsIndexedSourcesAndCleansOnlyOldPlaceholders() {
+        val realRoot = temporary.newFolder("real-OldTitle")
+        val alias = File(temporary.root, "alias-OldTitle")
+        try {
+            Files.createSymbolicLink(alias.toPath(), realRoot.toPath())
+        } catch (error: Exception) {
+            assumeNoException("Symbolic links require platform support", error)
+            return
+        }
+        val asset = File(alias, "plugin.dll").apply { createNewFile() }
+        val stale = File(alias, "savedata/stale.ksd").apply {
+            requireNotNull(parentFile).mkdirs()
+            createNewFile()
+        }
+        val local = File(alias, "savedata/local.ksd").apply { createNewFile() }
+        val helper = KrMirrorLocalFiles(alias)
+        helper.markOverridden(local)
+        val key = asset.absolutePath.lowercase(Locale.ROOT)
+        val index = File(temporary.root, "alias.idx")
+        index.writeText(KrSafMirror.buildIndexText(listOf(Triple(key, "content://source/plugin", 4L))))
+        val loaded = KrSafMirror.retainSourceEntries(KrSafMirror.readIndexFile(index) { it },
+            helper.snapshotOverrideKeys())
+        assertEquals("content://source/plugin", loaded[key]?.uri)
+        assertEquals(asset.canonicalFile, helper.fileForIndexKey(key)?.canonicalFile)
+        assertEquals(1, KrSafMirror.removeStaleSavePlaceholders(alias,
+            setOf(stale.path.lowercase(Locale.ROOT), local.path.lowercase(Locale.ROOT)), emptySet(), helper::isOverridden))
+        assertFalse(stale.exists())
+        assertTrue(local.exists())
+        assertTrue(asset.exists())
+    }
+
+    @Test
+    fun legacyEmptyOverrideStillWinsWhenFilteringAnExistingIndex() {
+        val root = temporary.newFolder("legacy-marker")
+        val local = File(root, "patch.tjs").apply { createNewFile() }
+        val helper = KrMirrorLocalFiles(root)
+        helper.markOverridden(local)
+        helper.ownershipMarker(local).writeBytes(byteArrayOf(1))
+        val key = local.absolutePath.lowercase(Locale.ROOT)
+        val entries = mapOf(key to KrSafMirror.MirrorEntryHolder("content://source/patch", 123L))
+        assertTrue(KrSafMirror.retainSourceEntries(entries, helper.snapshotOverrideKeys(entries.keys)).isEmpty())
+        assertEquals(0L, local.length())
     }
 
 }

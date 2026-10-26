@@ -10,42 +10,84 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
 
 /** App-private copy-up state. Markers survive an intentionally empty local override. */
-class KrMirrorLocalFiles(mirrorRoot: File) {
+internal class KrMirrorLocalFiles(mirrorRoot: File) {
+    private val absoluteRoot = mirrorRoot.absoluteFile
     private val root = mirrorRoot.canonicalFile
+    private val rootPrefixes = listOf(absoluteRoot, root).map {
+        it.path.replace(File.separatorChar, '/').lowercase(Locale.ROOT).trimEnd('/') + "/"
+    }.distinct()
     private val stateDirectory = File(root, ".tyranor-mirror-state")
 
-    /** Index keys fold the entire absolute path; restore the selected root's real case. */
+    /** Accept the selected root's absolute alias and canonical path (for example /var on macOS). */
     fun fileForIndexKey(indexKey: String): File? {
-        val prefix = root.path.replace(File.separatorChar, '/').lowercase(Locale.ROOT) + "/"
         val normalized = indexKey.replace(File.separatorChar, '/').lowercase(Locale.ROOT)
-        if (!normalized.startsWith(prefix)) return null
+        val prefix = rootPrefixes.firstOrNull { normalized.startsWith(it) } ?: return null
         val relative = normalized.substring(prefix.length)
-        if (relative.isEmpty()) return null
-        val file = File(root, relative)
-        return try {
-            localKey(file)
-            file
-        } catch (_: IOException) {
-            null
+        if (!safeRelativePath(relative)) return null
+        return File(absoluteRoot, relative)
+    }
+
+    /** New markers contain relative keys; old one-byte markers remain readable on first use. */
+    fun snapshotOverrideKeys(indexKeys: Collection<String> = emptyList()): Set<String> {
+        val directory = File(stateDirectory, "local-overrides")
+        val result = HashSet<String>()
+        val legacyHashes = HashSet<String>()
+        directory.listFiles().orEmpty().filter { it.isFile }.forEach { marker ->
+            val relative = try { marker.readText(Charsets.UTF_8) } catch (_: IOException) { return@forEach }
+            if (relative == "\u0001") {
+                legacyHashes.add(marker.name)
+            } else if (safeRelativePath(relative) && marker.name == digest(relative)) {
+                rootPrefixes.forEach { result.add(it + relative) }
+            }
+        }
+        // Only pre-upgrade markers lack a relative payload. Keep intentional empty
+        // overrides during upgrade without hashing every asset in the normal path.
+        if (legacyHashes.isNotEmpty()) {
+            indexKeys.forEach { key ->
+                val file = fileForIndexKey(key) ?: return@forEach
+                val relative = try { localKey(file) } catch (_: IOException) { return@forEach }
+                if (digest(relative) in legacyHashes) rootPrefixes.forEach { result.add(it + relative) }
+            }
+        }
+        return result
+    }
+
+    fun isOverridden(file: File): Boolean = ownershipMarker(file).isFile
+
+    /** A session caches this path, avoiding canonicalization and SHA on every stat. */
+    fun ownershipMarker(file: File): File =
+        File(File(stateDirectory, "local-overrides"), digest(localKey(file)))
+
+    /** Called before recreating an absent placeholder; never discard a live empty override. */
+    fun clearMissingOverride(file: File): Boolean {
+        if (file.exists()) return false
+        val marker = ownershipMarker(file)
+        if (!marker.exists()) return false
+        return withFileLock(file) {
+            if (file.exists() || !marker.exists()) return@withFileLock false
+            if (!marker.delete()) throw IOException("Cannot clear missing mirror override")
+            true
         }
     }
 
-    fun isOverridden(file: File): Boolean = marker(file).isFile
+    fun removeOverride(file: File) = withFileLock(file) {
+        val marker = ownershipMarker(file)
+        if (marker.exists() && !marker.delete()) throw IOException("Cannot remove mirror override")
+    }
 
     fun markOverridden(file: File) {
         withFileLock(file) {
-            val destination = marker(file)
-            if (destination.isFile) return@withFileLock
+            val destination = ownershipMarker(file)
+            val relative = localKey(file)
+            if (destination.isFile && destination.readText(Charsets.UTF_8) == relative) return@withFileLock
             val directory = destination.parentFile ?: throw IOException("Missing override directory")
-            if (!directory.isDirectory && !directory.mkdirs() && !directory.isDirectory) throw IOException("Cannot create override directory")
-            if (!directory.canonicalPath.startsWith(root.path + File.separator)) throw IOException("Mirror state escaped root")
+            ensureStateDirectory(directory)
             val temporary = File.createTempFile(".override-", ".tmp", directory)
             try {
                 FileOutputStream(temporary).use { output ->
-                    output.write(1)
+                    output.write(relative.toByteArray(Charsets.UTF_8))
                     output.fd.sync()
                 }
                 replaceAtomically(temporary, destination)
@@ -55,32 +97,39 @@ class KrMirrorLocalFiles(mirrorRoot: File) {
         }
     }
 
-    /** Serialize this key both across engine threads and separate native processes. */
+    /** Only modifying opens take an OS lock; at most 64 files exist per mirror. */
     fun <T> withFileLock(file: File, action: () -> T): T {
-        val key = root.path + "/" + localKey(file)
-        return synchronized(FILE_LOCKS.computeIfAbsent(key) { Any() }) {
+        localKey(file) // Enforce canonical containment before any writable filesystem operation.
+        val stripe = stripe(file)
+        return synchronized(PROCESS_LOCKS[stripe]) {
+            val lockKey = root.path + "/" + stripe
             val held = requireNotNull(HELD_LOCKS.get())
-            if (key in held) return@synchronized action()
+            if (lockKey in held) return@synchronized action()
             val lockDirectory = File(stateDirectory, "locks")
-            if (!lockDirectory.isDirectory && !lockDirectory.mkdirs() && !lockDirectory.isDirectory) throw IOException("Cannot create mirror lock directory")
-            if (!lockDirectory.canonicalPath.startsWith(root.path + File.separator)) throw IOException("Mirror state escaped root")
-            RandomAccessFile(File(lockDirectory, digest(localKey(file)) + ".lock"), "rw").use { lockFile ->
+            ensureStateDirectory(lockDirectory)
+            RandomAccessFile(File(lockDirectory, "$stripe.lock"), "rw").use { lockFile ->
                 lockFile.channel.lock().use {
-                    held.add(key)
-                    try { action() } finally { held.remove(key) }
+                    held.add(lockKey)
+                    try { action() } finally { held.remove(lockKey) }
                 }
             }
         }
     }
 
-    /** Stream source bytes into a sibling temporary file; publish only complete content. */
-    fun copyUp(file: File, expectedSize: Long, openSource: () -> InputStream): File = withFileLock(file) {
+    /** Stream complete source bytes, bounded in disk use, and atomically publish ownership. */
+    fun copyUp(
+        file: File,
+        expectedSize: Long,
+        onSizeChanged: (Long, Long) -> Unit = { _, _ -> },
+        openSource: () -> InputStream,
+    ): File = withFileLock(file) {
         if (isOverridden(file)) return@withFileLock file
         if (file.isDirectory) throw IOException("Mirror target is a directory")
         if (file.length() > 0L) {
             markOverridden(file)
             return@withFileLock file
         }
+        if (expectedSize > MAX_COPY_BYTES) throw IOException("Mirror copy exceeds 64 MiB")
         val parent = file.parentFile ?: throw IOException("Missing mirror parent")
         if (!parent.isDirectory) throw IOException("Missing mirror directory")
         val temporary = File.createTempFile(".mirror-copy-", ".tmp", parent)
@@ -96,26 +145,36 @@ class KrMirrorLocalFiles(mirrorRoot: File) {
                         val count = input.read(buffer)
                         if (count < 0) break
                         if (count == 0) continue
-                        output.write(buffer, 0, count)
                         copied += count
-                        if (expectedSize >= 0L && copied > expectedSize) throw IOException("Mirror source size changed")
+                        if (copied > MAX_COPY_BYTES) throw IOException("Mirror copy exceeds 64 MiB")
+                        output.write(buffer, 0, count)
                     }
-                    if (expectedSize >= 0L && copied != expectedSize) throw IOException("Incomplete mirror source")
                     output.fd.sync()
                 }
             }
+            if (expectedSize >= 0L && copied != expectedSize) onSizeChanged(expectedSize, copied)
             checkInterrupted()
             replaceAtomically(temporary, file)
             published = true
             markOverridden(file)
             file
         } catch (error: Exception) {
-            // Readers of this key use the same lock. No writable fd is handed out
-            // until the durable marker exists, so restoring the original empty
-            // placeholder cannot discard an engine write from this operation.
+            // No writable fd is exposed until ownership is durable.
             if (published && !isOverridden(file)) {
                 try {
-                    if (existed) FileOutputStream(file).use { it.fd.sync() } else file.delete()
+                    if (existed) {
+                        // Readers can hold the published inode without the write lock.
+                        // Replace the path atomically instead of truncating that inode.
+                        val rollback = File.createTempFile(".mirror-rollback-", ".tmp", parent)
+                        try {
+                            FileOutputStream(rollback).use { it.fd.sync() }
+                            replaceAtomically(rollback, file)
+                        } finally {
+                            rollback.delete()
+                        }
+                    } else {
+                        file.delete()
+                    }
                 } catch (rollbackError: Exception) {
                     error.addSuppressed(rollbackError)
                 }
@@ -126,10 +185,29 @@ class KrMirrorLocalFiles(mirrorRoot: File) {
         }
     }
 
-    private fun marker(file: File): File = File(File(stateDirectory, "local-overrides"), digest(localKey(file)))
+    private fun stripe(file: File): Int =
+        (root.path.hashCode() xor file.name.lowercase(Locale.ROOT).hashCode()) and (LOCK_STRIPES - 1)
 
-    private fun digest(value: String): String = MessageDigest.getInstance("SHA-256")
-        .digest(value.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+    private fun ensureStateDirectory(directory: File) {
+        if (!directory.isDirectory && !directory.mkdirs() && !directory.isDirectory) {
+            throw IOException("Cannot create mirror state directory")
+        }
+        if (!directory.canonicalPath.startsWith(root.path + File.separator)) {
+            throw IOException("Mirror state escaped root")
+        }
+    }
+
+    private fun digest(value: String): String {
+        val bytes = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
+        val hex = "0123456789abcdef"
+        return buildString(bytes.size * 2) {
+            for (byte in bytes) {
+                val value = byte.toInt() and 0xff
+                append(hex[value ushr 4])
+                append(hex[value and 15])
+            }
+        }
+    }
 
     private fun localKey(file: File): String {
         val path = file.canonicalPath
@@ -137,6 +215,10 @@ class KrMirrorLocalFiles(mirrorRoot: File) {
         if (!path.startsWith(prefix)) throw IOException("Mirror local file escaped root")
         return path.substring(prefix.length).replace(File.separatorChar, '/').lowercase(Locale.ROOT)
     }
+
+    private fun safeRelativePath(path: String): Boolean =
+        path.isNotEmpty() && !path.startsWith('/') && !path.contains('\\') && !path.contains('\u0000') &&
+            path.split('/').all { it.isNotEmpty() && it != "." && it != ".." }
 
     private fun replaceAtomically(from: File, to: File) {
         Files.move(from.toPath(), to.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
@@ -146,9 +228,11 @@ class KrMirrorLocalFiles(mirrorRoot: File) {
         if (Thread.currentThread().isInterrupted) throw InterruptedIOException("Mirror copy interrupted")
     }
 
-    private companion object {
-        const val COPY_BUFFER_SIZE = 64 * 1024
-        val FILE_LOCKS = ConcurrentHashMap<String, Any>()
-        val HELD_LOCKS = ThreadLocal.withInitial { HashSet<String>() }
+    internal companion object {
+        const val MAX_COPY_BYTES = 64L * 1024 * 1024
+        private const val COPY_BUFFER_SIZE = 64 * 1024
+        private const val LOCK_STRIPES = 64
+        private val PROCESS_LOCKS = Array(LOCK_STRIPES) { Any() }
+        private val HELD_LOCKS = ThreadLocal.withInitial { HashSet<String>() }
     }
 }
