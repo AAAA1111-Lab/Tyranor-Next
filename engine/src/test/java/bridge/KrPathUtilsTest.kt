@@ -81,6 +81,26 @@ class KrPathUtilsTest {
         assertNull(KrPathUtils.resolveScopedSavePath("savedata/slot.ksd", null, null, target.path))
     }
 
+    @Test
+    fun storageRootAliasesExpandForEngineMountSpellings() {
+        // R9-#14: the engine may spell the primary volume as /sdcard or
+        // /storage/self/primary while the launch intent reports /storage/emulated/0;
+        // anchor matching must cover all three spellings.
+        assertEquals(
+            setOf(
+                "/storage/emulated/0/game/savedata",
+                "/sdcard/game/savedata",
+                "/storage/self/primary/game/savedata",
+            ),
+            KrPathUtils.expandStorageRootAliases("/storage/emulated/0/game/savedata").toSet(),
+        )
+        assertEquals(
+            setOf("/sdcard/game/savedata", "/storage/emulated/0/game/savedata", "/storage/self/primary/game/savedata"),
+            KrPathUtils.expandStorageRootAliases("/sdcard/game/savedata/").toSet(),
+        )
+        assertEquals(listOf("/data/local/game"), KrPathUtils.expandStorageRootAliases("/data/local/game"))
+    }
+
     private fun resolve(request: File, source: File, target: File): File? =
         KrPathUtils.resolveScopedSavePath(request.path, source.path, null, target.path)
 }

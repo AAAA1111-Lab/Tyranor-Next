@@ -389,18 +389,28 @@ class KrSafMirrorTest {
     fun mirrorSourceDecisionCoversAllCompletenessStates() {
         // Fresh listing, no failures: full rebuild.
         assertEquals(KrSafMirror.MirrorSourceDecision.REBUILD_FRESH,
-            KrSafMirror.decideMirrorSources(observed = 10, previousCount = 5, queryFailures = 0, localOverrideCount = 0))
+            KrSafMirror.decideMirrorSources(observed = 10, previousCount = 5, queryFailures = 0,
+                localOverrideCount = 0, rootListingComplete = true))
+        // A root listing that was not observed complete must not rebuild-fresh: a
+        // silently truncated provider response would otherwise delete old rows.
+        assertEquals(KrSafMirror.MirrorSourceDecision.REBUILD_MERGED,
+            KrSafMirror.decideMirrorSources(observed = 10, previousCount = 5, queryFailures = 0,
+                localOverrideCount = 0, rootListingComplete = false))
         // Partial listing failure: rebuild but carry previous rows.
         assertEquals(KrSafMirror.MirrorSourceDecision.REBUILD_MERGED,
-            KrSafMirror.decideMirrorSources(observed = 3, previousCount = 10, queryFailures = 2, localOverrideCount = 1))
+            KrSafMirror.decideMirrorSources(observed = 3, previousCount = 10, queryFailures = 2,
+                localOverrideCount = 1, rootListingComplete = true))
         // Total listing failure with a usable previous index: keep it and launch anyway.
         assertEquals(KrSafMirror.MirrorSourceDecision.KEEP_EXISTING,
-            KrSafMirror.decideMirrorSources(observed = 0, previousCount = 10, queryFailures = 3, localOverrideCount = 0))
+            KrSafMirror.decideMirrorSources(observed = 0, previousCount = 10, queryFailures = 3,
+                localOverrideCount = 0, rootListingComplete = true))
         assertEquals(KrSafMirror.MirrorSourceDecision.KEEP_EXISTING,
-            KrSafMirror.decideMirrorSources(observed = 0, previousCount = 0, queryFailures = 1, localOverrideCount = 2))
+            KrSafMirror.decideMirrorSources(observed = 0, previousCount = 0, queryFailures = 1,
+                localOverrideCount = 2, rootListingComplete = true))
         // Nothing observed and nothing to fall back on: typed failure (EMPTY_MIRROR).
         assertEquals(KrSafMirror.MirrorSourceDecision.FAIL_EMPTY,
-            KrSafMirror.decideMirrorSources(observed = 0, previousCount = 0, queryFailures = 1, localOverrideCount = 0))
+            KrSafMirror.decideMirrorSources(observed = 0, previousCount = 0, queryFailures = 1,
+                localOverrideCount = 0, rootListingComplete = true))
     }
 
     @Test
@@ -564,7 +574,8 @@ class KrSafMirrorTest {
         val entries = mutableListOf(Triple(key(startup), "content://source/startup", 50L))
         val known = entries.mapTo(HashSet()) { it.first }
         val sources = KrSafMirror.assemblePreparationSources(root, previous.keys, entries,
-            observed = 1, queryFailures = bootstrap.count { it.state == KrSafMirror.BootstrapFileState.UNAVAILABLE })
+            observed = 1, queryFailures = bootstrap.count { it.state == KrSafMirror.BootstrapFileState.UNAVAILABLE },
+            rootListingComplete = true)
 
         assertEquals(KrSafMirror.MirrorSourceDecision.REBUILD_FRESH, sources.decision)
         assertEquals(0, KrSafMirror.reconcilePreparedIndex(root, previous, entries, known,
@@ -637,6 +648,63 @@ class KrSafMirrorTest {
         assertEquals("older", oldSave.readText())
         assertEquals("newer", newSave.readText())
         assertEquals("newest staged", staged.readText())
+    }
+
+    @Test
+    fun bootstrapMissingResolutionConfirmsAbsenceOnlyFromCompleteListings() {
+        // R9-#1: null/FNF responses (AOSP returns null for missing documents) only prove
+        // absence with a complete root listing — with or without a previous row.
+        assertEquals(KrSafMirror.BootstrapMissingResolution.CONFIRMED_ABSENT,
+            KrSafMirror.resolveBootstrapMissing("patch.tjs", true, true, setOf("data.xp3"), true))
+        assertEquals(KrSafMirror.BootstrapMissingResolution.CONFIRMED_ABSENT,
+            KrSafMirror.resolveBootstrapMissing("patch.tjs", true, true, setOf("data.xp3"), false))
+        // Incomplete listing: a previous index row is durable evidence the source existed.
+        assertEquals(KrSafMirror.BootstrapMissingResolution.CARRY_PREVIOUS,
+            KrSafMirror.resolveBootstrapMissing("patch.tjs", true, false, emptySet(), true))
+        assertEquals(KrSafMirror.BootstrapMissingResolution.CARRY_PREVIOUS,
+            KrSafMirror.resolveBootstrapMissing("patch.tjs", true, true, setOf("patch.tjs"), true))
+        // Same evidence without a previous row: untrusted provider state.
+        assertEquals(KrSafMirror.BootstrapMissingResolution.UNAVAILABLE,
+            KrSafMirror.resolveBootstrapMissing("patch.tjs", true, false, emptySet(), false))
+        assertEquals(KrSafMirror.BootstrapMissingResolution.UNAVAILABLE,
+            KrSafMirror.resolveBootstrapMissing("patch.tjs", false, true, emptySet(), true))
+    }
+
+    @Test
+    fun stickyRootSelectionPersistsReusesAndInvalidatesTheMarker() {
+        val games = temporary.newFolder("games")
+        val key = "0123456789abcdef"
+        val stable = File(games, "game-$key").apply { mkdirs() }
+        val legacy = File(games, "Legacy-Title-$key").apply { mkdirs() }
+        val selection = File(temporary.newFolder("sel"), "root-$key.txt")
+        // First choice is persisted.
+        assertEquals(legacy, KrSafMirror.withStickyRootSelection(games, selection, key) { legacy })
+        assertEquals(legacy.name, selection.readText().trim())
+        // A later newer save in another root must not rebind the key.
+        val stableSave = File(stable, "savedata/slot.ksd").apply {
+            requireNotNull(parentFile).mkdirs(); writeText("fresh")
+        }
+        assertEquals(legacy, KrSafMirror.withStickyRootSelection(games, selection, key) {
+            throw AssertionError("sticky marker must not re-choose while valid")
+        })
+        // A path-injected or foreign marker name is rejected and re-chosen.
+        selection.writeText("../escape-$key")
+        assertEquals(stable, KrSafMirror.withStickyRootSelection(games, selection, key) { stable })
+        assertEquals(stable.name, selection.readText().trim())
+        // A marker pointing at a vanished directory is invalidated.
+        legacy.deleteRecursively()
+        assertEquals(stable, KrSafMirror.withStickyRootSelection(games, selection, key) { stable })
+    }
+
+    @Test
+    fun stickyRootMarkerWriteIsAtomicAndNeverObservedEmpty() {
+        val games = temporary.newFolder("games")
+        val root = File(games, "game-k").apply { mkdirs() }
+        val selection = File(temporary.newFolder("sel"), "root-k.txt")
+        KrSafMirror.writeRootSelection(selection, root.name)
+        assertTrue(selection.isFile)
+        assertEquals(root.name, selection.readText().trim())
+        assertFalse(File(selection.parentFile, selection.name + ".tmp").exists())
     }
 
 }

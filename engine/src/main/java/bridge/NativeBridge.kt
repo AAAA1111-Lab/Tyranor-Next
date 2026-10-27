@@ -54,6 +54,14 @@ object NativeBridge {
     @JvmOverloads
     fun configureSafMirror(indexPath: String?, mirrorRoot: String? = null) {
         val root = mirrorRoot?.takeIf { it.isNotBlank() }?.let { File(it) }
+        if (root == null) {
+            // A session without a root cannot route opens (the router fails closed for
+            // every key) nor resolve ownership markers: load nothing instead of turning
+            // all opens into EIO when a caller omits the root extra (review round 9, #16).
+            safMirror = KrMirrorReadSession<KrSafMirror.MirrorEntry>(emptyMap(), null)
+            Log.i("NativeBridge", "SAF mirror index skipped: mirror root missing path=$indexPath")
+            return
+        }
         val documents = try {
             KrSafMirror.loadIndex(indexPath)
         } catch (t: Throwable) {

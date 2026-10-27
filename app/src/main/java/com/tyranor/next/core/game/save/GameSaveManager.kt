@@ -395,9 +395,16 @@ class GameSaveManager(private val context: Context) {
                     if (GamePathUtils.isRemovableStoragePath(root)) {
                         // 可移动存储走 KrSafMirror：清理镜像树与 SAF 索引，避免内部存储持续膨胀
                         targetList += bridge.KrSafMirror.mirrorRootFor(appContext, game.uri, root)
+                        val mirrorKey = bridge.KrSafMirror.mirrorKey(game.uri, root)
                         targetList += File(
                             File(appContext.noBackupFilesDir, "krkr_saf_index"),
-                            "${bridge.KrSafMirror.mirrorKey(game.uri, root)}.idx",
+                            "$mirrorKey.idx",
+                        )
+                        // sticky root 选择标记必须随游戏一起删除，否则同名 key 的旧标记
+                        // 会让重新添加的游戏绑定到已删除的目录名（校验失效后重选）
+                        targetList += File(
+                            File(appContext.noBackupFilesDir, "krkr_saf_index"),
+                            "root-$mirrorKey.txt",
                         )
                     }
                     targetList
@@ -681,6 +688,7 @@ class GameSaveManager(private val context: Context) {
                         }
                     }
                     restoreExcluded != null -> restoreExcluded(backup, destination)
+                    else -> parkLeftoverBackup(destination, backup, rename)
                 }
             }
             if (!destination.exists() && !destination.mkdirs()) throw GameSaveException(SaveErrorCode.CREATE_SAVE_DIR)
@@ -707,12 +715,57 @@ class GameSaveManager(private val context: Context) {
                 // Artemis resources and RPG Maker interop originals stay excluded from
                 // imported saves. Retain backup until all those resources are restored.
                 restoreExcluded?.invoke(backup, destination)
-                backupConsumed = true
+                // An all-empty import (the user chose a zero-byte ZIP) replaces a possibly
+                // non-empty live directory: keep the previous saves in the backup until the
+                // next import resolves it, so an accidental clear stays recoverable on disk.
+                // The published content now lives at destination (staging was renamed).
+                backupConsumed = !isDirectoryContentEmpty(destination)
                 return copied
             } finally {
                 staging.deleteRecursively()
                 if (committed && backupConsumed) backup.deleteRecursively()
             }
+        }
+
+        /**
+         * A leftover backup with a non-empty destination means gameplay already wrote new
+         * saves after an interrupted exchange: the backup is the only copy of the previous
+         * saves and must never be destroyed to free the exchange slot. Park it under a
+         * retained name (bounded slots) instead of deleting it.
+         */
+        private fun parkLeftoverBackup(
+            destination: File,
+            backup: File,
+            rename: (File, File) -> Boolean,
+        ) {
+            val parent = destination.parentFile ?: throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
+            val slots = listOf(
+                destination.name + ".import_backup_retained",
+                destination.name + ".import_backup_retained1",
+                destination.name + ".import_backup_retained2",
+            )
+            for (suffix in slots) {
+                val target = File(parent, suffix)
+                if (!target.exists() && rename(backup, target)) return
+            }
+            // All retention slots are taken: the oldest retained copy is superseded by
+            // two newer unique copies, so reusing its slot keeps the mechanism bounded.
+            val oldest = File(parent, slots[0])
+            if (!oldest.deleteRecursively() || !rename(backup, oldest)) {
+                throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
+            }
+        }
+
+        /** True when [directory] holds at least one regular file and all of them are 0 bytes. */
+        private fun isDirectoryContentEmpty(directory: File): Boolean {
+            var sawFile = false
+            directory.walkTopDown().forEach { file ->
+                if (file.isFile) {
+                    sawFile = true
+                    if (file.length() > 0L) return false
+                }
+            }
+            return sawFile
         }
 
         /** Filter and count imported saves before the caller can exchange the live directory. */

@@ -225,6 +225,25 @@ class KrMirrorOpenRouterTest {
         assertEquals(0, fixture.streamOpens)
     }
 
+    @Test
+    fun `tombstoned pure read falls back to native ENOENT instead of EIO`() {
+        // R9-#11: after a successful unlink, a read-only open of the missing file is a
+        // plain miss — the router must not report FAILED/EIO for games probing deleted
+        // optional resources; native open reports ENOENT as base did.
+        val fixture = fixture()
+        fixture.session.runMutation(fixture.key, fixture.file) {
+            check(fixture.file.delete())
+            0L
+        }
+        assertTrue(fixture.session.shouldRoute(fixture.key))
+        assertEquals(KrMirrorOpenRouter.NOT_ROUTED,
+            fixture.router().open(fixture.key, fixture.file, KrMirrorOpenRouter.Intent.READ_ONLY))
+        assertFalse(fixture.file.exists())
+        assertTrue(fixture.sourceOpens.isEmpty())
+        assertTrue(fixture.localOpens.isEmpty())
+        assertFalse(fixture.session.readFailed(fixture.key))
+    }
+
     private fun assertPendingOpenAfterUnlink(intent: KrMirrorOpenRouter.Intent, allowCreate: Boolean) {
         val fixture = fixture()
         val entered = CountDownLatch(1)

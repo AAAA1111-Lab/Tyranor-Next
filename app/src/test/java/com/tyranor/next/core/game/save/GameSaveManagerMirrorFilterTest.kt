@@ -89,7 +89,10 @@ class GameSaveManagerMirrorFilterTest {
         val listed = mutableListOf<File>()
         GameSaveManager.collectFiles(live, listed, { false }, mirrorForced = true)
         assertTrue(listed.isEmpty())
-        assertTransactionClean(live)
+        // An all-empty import replaces a non-empty live directory: the previous saves
+        // stay recoverable in the backup until the next import resolves it (R9-#8).
+        assertEquals("existing save", transactionPath(live, "backup").resolve("slot.sav").readText())
+        assertFalse(transactionPath(live, "staging").exists())
     }
 
     @Test
@@ -180,7 +183,7 @@ class GameSaveManagerMirrorFilterTest {
     }
 
     @Test
-    fun ordinaryEmptyOnlyImportExchangesAndCountsTheLiveDirectory() {
+    fun ordinaryEmptyOnlyImportExchangesAndKeepsTheRecoveryBackup() {
         val source = temporaryFolder.newFolder()
         source.resolve("empty.marker").createNewFile()
         val live = liveSaves()
@@ -188,7 +191,8 @@ class GameSaveManagerMirrorFilterTest {
         assertTrue(live.resolve("empty.marker").isFile)
         assertEquals(0L, live.resolve("empty.marker").length())
         assertFalse(live.resolve("slot.sav").exists())
-        assertTransactionClean(live)
+        assertEquals("existing save", transactionPath(live, "backup").resolve("slot.sav").readText())
+        assertFalse(transactionPath(live, "staging").exists())
     }
 
     @Test
@@ -200,15 +204,35 @@ class GameSaveManagerMirrorFilterTest {
         val emptyImport = temporaryFolder.newFolder()
         emptyImport.resolve("empty.ksd").createNewFile()
         // The empty import now succeeds (R5-#D); backup recovery runs first. After the
-        // committed exchange the backup is consumed; the empty file is preserved on disk
-        // (list/export filter it, per the mirrorForced rule).
+        // committed exchange the recovered saves land in the new backup slot (the empty
+        // import must not destroy them); the empty file is preserved on disk.
         assertEquals(1, GameSaveManager.importSaveDirectory(live, { false }) {
             assertFalse(backup.exists())
             emptyImport
         })
         assertTrue(live.resolve("empty.ksd").isFile)
         assertEquals(0L, live.resolve("empty.ksd").length())
-        assertTransactionClean(live)
+        assertEquals("existing save", transactionPath(live, "backup").resolve("slot.sav").readText())
+        assertFalse(transactionPath(live, "staging").exists())
+    }
+
+    @Test
+    fun interruptedExchangeWithGameplaySavesParksTheBackupInsteadOfDeletingIt() {
+        // R9-#3: crash inside the exchange window, then the user plays and saves into a
+        // recreated directory, then imports again — the leftover backup is the only copy
+        // of the previous saves and must be parked, never deleted.
+        val live = liveSaves()
+        val backup = transactionPath(live, "backup")
+        assertTrue(live.renameTo(backup))
+        assertTrue(live.mkdir())
+        live.resolve("slot.sav").writeText("post-crash save")
+        val source = saveTree()
+        assertEquals(3, GameSaveManager.importSaveDirectory(live, { false }) { source })
+        assertEquals("save contents", live.resolve("slot/data.sav").readText())
+        val retained = File(live.parentFile, live.name + ".import_backup_retained")
+        assertEquals("existing save", retained.resolve("slot.sav").readText())
+        assertFalse(transactionPath(live, "backup").exists())
+        assertFalse(transactionPath(live, "staging").exists())
     }
 
     @Test

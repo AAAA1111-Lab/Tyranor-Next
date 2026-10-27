@@ -15,6 +15,7 @@ import java.io.IOException
 import java.io.OutputStreamWriter
 import java.io.RandomAccessFile
 import java.nio.channels.FileLockInterruptionException
+import java.nio.channels.OverlappingFileLockException
 import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.Locale
@@ -193,15 +194,10 @@ object KrSafMirror {
         if (!mirrorRoot.isDirectory && !mirrorRoot.mkdirs()) {
             throw PrepareException(Stage.MIRROR_DIR, mirrorRoot.name)
         }
-        // Keep the persisted selection in sync with the prepared root (identical today,
-        // but the mirrorRootFor/GameSaveManager path must observe the same choice).
-        runCatching {
-            val selection = File(rootSelectionDirectory(context), "root-$key.txt")
-            if (!selection.isFile) {
-                selection.parentFile?.mkdirs()
-                selection.writeText(mirrorRoot.name, Charsets.UTF_8)
-            }
-        }
+        // The prepared root is authoritative: rewrite the selection unconditionally so a
+        // diverged or stale marker converges to this run's choice (withStickyRootSelection
+        // only publishes on first selection; this corrects any leftover disagreement).
+        writeRootSelection(File(rootSelectionDirectory(context), "root-$key.txt"), mirrorRoot.name)
 
         val indexFile = File(indexDir, "$key.idx")
         val localFiles = KrMirrorLocalFiles(mirrorRoot)
@@ -225,7 +221,8 @@ object KrSafMirror {
         val preparationSources = assemblePreparationSources(
             mirrorRoot, previousIndex.keys, entries, diagnostics.observedSourceFiles,
             diagnostics.queryFailures, bootstrapLocalOverrides,
-            diagnostics.skippedEntries, diagnostics.depthLimitedDirectories, diagnostics.rootListingInvalid,
+            diagnostics.skippedEntries, diagnostics.depthLimitedDirectories,
+            diagnostics.rootListingInvalid, diagnostics.rootListingComplete,
         )
         val localOverrides = preparationSources.localOverrides
         entries.removeAll { it.first in localOverrides }
@@ -286,6 +283,7 @@ object KrSafMirror {
         skippedEntries: Int = 0,
         depthLimitedDirectories: Int = 0,
         rootListingInvalid: Boolean = false,
+        rootListingComplete: Boolean = false,
     ): PreparationSources {
         val localFiles = KrMirrorLocalFiles(mirrorRoot)
         val candidateKeys = previousIndexKeys + entries.map { it.first }
@@ -324,7 +322,7 @@ object KrSafMirror {
         }
         return PreparationSources(overrides, decideMirrorSources(
             observed, previousIndexKeys.size, queryFailures, overrides.size,
-            skippedEntries, depthLimitedDirectories, rootListingInvalid,
+            skippedEntries, depthLimitedDirectories, rootListingInvalid, rootListingComplete,
         ))
     }
 
@@ -339,9 +337,11 @@ object KrSafMirror {
         skippedEntries: Int = 0,
         depthLimitedDirectories: Int = 0,
         rootListingInvalid: Boolean = false,
+        rootListingComplete: Boolean = false,
     ): MirrorSourceDecision = when {
         observed > 0 && queryFailures == 0 && skippedEntries == 0 &&
-            depthLimitedDirectories == 0 && !rootListingInvalid -> MirrorSourceDecision.REBUILD_FRESH
+            depthLimitedDirectories == 0 && !rootListingInvalid &&
+            rootListingComplete -> MirrorSourceDecision.REBUILD_FRESH
         observed > 0 -> MirrorSourceDecision.REBUILD_MERGED
         previousCount > 0 || localOverrideCount > 0 -> MirrorSourceDecision.KEEP_EXISTING
         else -> MirrorSourceDecision.FAIL_EMPTY
@@ -364,6 +364,9 @@ object KrSafMirror {
         val current = (known + localOverrides).mapNotNullTo(HashSet(), ::identity)
         val confirmedAbsent = confirmedAbsentKeys.mapNotNullTo(HashSet(), ::identity)
         val missing = if (decision == MirrorSourceDecision.REBUILD_FRESH) {
+            // REBUILD_FRESH now requires a complete root listing (decideMirrorSources),
+            // so absence here is second-confirmed by that listing; a silently truncated
+            // provider response degrades to REBUILD_MERGED and keeps every old row.
             previousIndex.keys.mapNotNullTo(HashSet(), ::identity).apply { removeAll(current) }
         } else {
             confirmedAbsent
@@ -412,8 +415,42 @@ object KrSafMirror {
         val dataRoot = context.filesDir.parentFile ?: context.filesDir
         val gamesRoot = File(dataRoot, "games")
         val key = mirrorKey(sourceReference, logicalPath)
-        return withStickyRootSelection(context, gamesRoot, key) {
+        // Serialize marker read-modify-write with concurrent prepares when the lock is
+        // free within a bounded wait; a slow prepare in this or another process must
+        // not block the save-management UI indefinitely, so fall back to the tolerant
+        // (atomic-marker) path instead.
+        val indexDirectory = File(context.noBackupFilesDir, "krkr_saf_index")
+        return tryStickySelectionLock(indexDirectory, key) {
+            withStickyRootSelection(context, gamesRoot, key) {
+                findMirrorRoot(gamesRoot, key)
+            }
+        } ?: withStickyRootSelection(context, gamesRoot, key) {
             findMirrorRoot(gamesRoot, key)
+        }
+    }
+
+    /** Bounded per-key lock for the sticky marker; null = lock busy, caller falls back. */
+    private fun <T> tryStickySelectionLock(indexDirectory: File, key: String, action: () -> T): T? {
+        val lockFile = File(indexDirectory, "prepare-${(key.hashCode() and Int.MAX_VALUE) % PREPARATION_LOCK_SHARDS}.lock")
+        val mutex = preparationLocks.getOrPut(lockFile.absolutePath) { ReentrantLock() }
+        if (!mutex.tryLock(500, TimeUnit.MILLISECONDS)) return null
+        val file = RandomAccessFile(lockFile, "rw")
+        try {
+            val held = try {
+                file.channel.tryLock()
+            } catch (_: OverlappingFileLockException) {
+                null
+            } catch (_: IOException) {
+                null
+            } ?: return null
+            try {
+                return action()
+            } finally {
+                held.release()
+            }
+        } finally {
+            file.close()
+            mutex.unlock()
         }
     }
 
@@ -429,24 +466,47 @@ object KrSafMirror {
         gamesRoot: File,
         key: String,
         choose: () -> File,
+    ): File = withStickyRootSelection(gamesRoot, File(rootSelectionDirectory(context), "root-$key.txt"), key, choose)
+
+    /** File-injected core so JVM tests can cover persist/reuse/invalidate without Android. */
+    internal fun withStickyRootSelection(
+        gamesRoot: File,
+        selection: File,
+        key: String,
+        choose: () -> File,
     ): File {
-        val selection = File(rootSelectionDirectory(context), "root-$key.txt")
         if (selection.isFile) {
             val name = runCatching { selection.readText(Charsets.UTF_8).trim() }.getOrNull().orEmpty()
-            if (name.isNotEmpty()) {
-                val persisted = File(gamesRoot, name)
-                if (persisted.isDirectory && persisted.name.endsWith("-$key")) return persisted
+            if (isValidRootSelection(gamesRoot, name, key)) {
+                return File(gamesRoot, name)
             }
             runCatching { selection.delete() }
         }
         val chosen = choose()
-        if (chosen.isDirectory) {
-            runCatching {
-                selection.parentFile?.mkdirs()
-                selection.writeText(chosen.name, Charsets.UTF_8)
-            }
-        }
+        if (chosen.isDirectory) writeRootSelection(selection, chosen.name)
         return chosen
+    }
+
+    /** The marker must name one plain directory directly under [gamesRoot] (canonical check). */
+    internal fun isValidRootSelection(gamesRoot: File, name: String, key: String): Boolean {
+        if (name.isEmpty() || name == "." || name == "..") return false
+        if (name.contains('/') || name.contains('\\') || name.contains(File.separatorChar)) return false
+        if (!name.endsWith("-$key")) return false
+        val persisted = File(gamesRoot, name)
+        if (!persisted.isDirectory) return false
+        return runCatching {
+            persisted.canonicalFile.parentFile == gamesRoot.canonicalFile
+        }.getOrDefault(false)
+    }
+
+    /** Publish atomically: readers never observe a truncated marker mid-write. */
+    internal fun writeRootSelection(selection: File, name: String) {
+        runCatching {
+            selection.parentFile?.mkdirs()
+            val temp = File(selection.parentFile, selection.name + ".tmp")
+            temp.writeText(name, Charsets.UTF_8)
+            if (!temp.renameTo(selection)) temp.delete()
+        }
     }
 
     internal fun rootSelectionDirectory(context: Context): File =
@@ -626,28 +686,14 @@ object KrSafMirror {
                     context, uri,
                     arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID,
                         DocumentsContract.Document.COLUMN_MIME_TYPE, DocumentsContract.Document.COLUMN_SIZE),
-                ) ?: run {
-                    val bootstrap = bootstrapFromMissingResponse(name, true,
-                        diagnostics.rootListingComplete, diagnostics.rootNames)
-                    if (bootstrap.state == BootstrapFileState.UNAVAILABLE) diagnostics.queryFailures++
-                    return@associateWith bootstrap
-                }
+                ) ?: return@associateWith bootstrapFromMissingOrPrevious(
+                    name, key, local, true, diagnostics, previousIndex[key], entries, known,
+                )
                 cursor.use {
                     if (!it.moveToFirst()) {
-                        // An empty by-ID response is ambiguous: under KEEP_EXISTING (the
-                        // listing failed entirely) the previous index is durable evidence
-                        // the source existed — treat it as PRESENT via the old row, so a
-                        // flaky provider cannot turn ABSENT into a basic overlay that
-                        // shadows the real patch.tjs (main review, high #1).
-                        previousIndex[key]?.let { previous ->
-                            entries += Triple(key, previous.uri, previous.size)
-                            known.add(key)
-                            diagnostics.observedSourceFiles++
-                            return@associateWith BootstrapFile(
-                                BootstrapFileState.PRESENT, previous.uri, previous.size, localOverride = false,
-                            )
-                        }
-                        return@associateWith BootstrapFile(BootstrapFileState.ABSENT, null, -1L, localOverride = false)
+                        return@associateWith bootstrapFromMissingOrPrevious(
+                            name, key, local, true, diagnostics, previousIndex[key], entries, known,
+                        )
                     }
                     val mimeColumn = it.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
                     if (mimeColumn >= 0 && it.getString(mimeColumn) == DocumentsContract.Document.MIME_TYPE_DIR) {
@@ -668,13 +714,60 @@ object KrSafMirror {
                 }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
-                val bootstrap = bootstrapFromMissingResponse(name, error is FileNotFoundException,
-                    diagnostics.rootListingComplete, diagnostics.rootNames)
+                val bootstrap = bootstrapFromMissingOrPrevious(name, key, local,
+                    error is FileNotFoundException, diagnostics, previousIndex[key], entries, known)
                 if (bootstrap.state == BootstrapFileState.UNAVAILABLE) {
-                    diagnostics.queryFailures++
                     Log.w(TAG, "bootstrap document probe unavailable: $name", error)
                 }
                 bootstrap
+            }
+        }
+    }
+
+    /**
+     * Shared null-cursor / empty-cursor / FNF handler. Absence is only proven when the
+     * root listing is complete and does not contain the name; every other missing
+     * response is untrustworthy, so a previous index row is durable evidence the source
+     * existed and is carried as PRESENT (a flaky provider must not turn into a basic
+     * overlay that shadows the real patch.tjs). Carried rows join entries/known so a
+     * REBUILD_FRESH index keeps them, but never count as observed sources — otherwise
+     * an empty listing would flip KEEP_EXISTING into a rebuilding run that erases the
+     * whole placeholder tree.
+     */
+    private fun bootstrapFromMissingOrPrevious(
+        name: String,
+        key: String,
+        local: File,
+        missingResponse: Boolean,
+        diagnostics: BuildDiagnostics,
+        previous: KrSafMirror.MirrorEntryHolder<String>?,
+        entries: MutableList<Triple<String, String, Long>>,
+        known: MutableSet<String>,
+    ): BootstrapFile {
+        return when (resolveBootstrapMissing(
+            name, missingResponse, diagnostics.rootListingComplete, diagnostics.rootNames, previous != null,
+        )) {
+            BootstrapMissingResolution.CONFIRMED_ABSENT ->
+                BootstrapFile(BootstrapFileState.ABSENT, null, -1L, localOverride = false)
+            BootstrapMissingResolution.CARRY_PREVIOUS -> {
+                val row = requireNotNull(previous)
+                val placeholderReady = try {
+                    !local.isDirectory && (local.exists() || local.createNewFile())
+                } catch (error: IOException) {
+                    false
+                }
+                if (!placeholderReady) {
+                    diagnostics.queryFailures++
+                    BootstrapFile(BootstrapFileState.UNAVAILABLE, null, -1L, localOverride = false)
+                } else {
+                    entries += Triple(key, row.uri, row.size)
+                    known.add(key)
+                    BootstrapFile(BootstrapFileState.PRESENT, row.uri, row.size, localOverride = false)
+                }
+            }
+            BootstrapMissingResolution.UNAVAILABLE -> {
+                diagnostics.queryFailures++
+                BootstrapFile(BootstrapFileState.UNAVAILABLE, null, -1L, localOverride = false)
             }
         }
     }
@@ -704,18 +797,40 @@ object KrSafMirror {
         null, -1L, localOverride = false,
     )
 
+    /**
+     * Pure missing-response resolution (review round 9, #1/#2): absence is confirmed
+     * only by a complete root listing without the name; a previous index row is
+     * durable evidence of an existing source and is carried otherwise; without a row
+     * the provider state is untrusted and fails unavailable.
+     */
+    internal enum class BootstrapMissingResolution { CONFIRMED_ABSENT, CARRY_PREVIOUS, UNAVAILABLE }
+
+    internal fun resolveBootstrapMissing(
+        name: String,
+        missingResponse: Boolean,
+        listingComplete: Boolean,
+        listedNames: Set<String>,
+        hasPreviousRow: Boolean,
+    ): BootstrapMissingResolution = when {
+        missingResponse && listingComplete && name.lowercase(Locale.ROOT) !in listedNames ->
+            BootstrapMissingResolution.CONFIRMED_ABSENT
+        // Only a missing response (null cursor / empty cursor / FNF) may carry the
+        // previous row as evidence; a non-FNF exception is a provider failure and
+        // must count as a query failure (UNAVAILABLE) instead of asserting presence.
+        missingResponse && hasPreviousRow -> BootstrapMissingResolution.CARRY_PREVIOUS
+        else -> BootstrapMissingResolution.UNAVAILABLE
+    }
+
     /** Null/FNF missing-document responses need a complete root listing before proving absence. */
     internal fun bootstrapProbeFailureState(
         name: String,
         notFound: Boolean,
         listingComplete: Boolean,
         listedNames: Set<String>,
-    ): BootstrapFileState =
-        if (notFound && listingComplete && name.lowercase(Locale.ROOT) !in listedNames) {
-            BootstrapFileState.ABSENT
-        } else {
-            BootstrapFileState.UNAVAILABLE
-        }
+    ): BootstrapFileState = when (resolveBootstrapMissing(name, notFound, listingComplete, listedNames, false)) {
+        BootstrapMissingResolution.CONFIRMED_ABSENT -> BootstrapFileState.ABSENT
+        else -> BootstrapFileState.UNAVAILABLE
+    }
 
     internal fun childDocumentId(parentDocumentId: String, name: String): String =
         parentDocumentId + (if (parentDocumentId.endsWith(':') || parentDocumentId.endsWith('/')) "" else "/") + name
@@ -890,26 +1005,41 @@ object KrSafMirror {
             val uri = DocumentsContract.buildDocumentUriUsingTree(treeUri, dllDocumentId)
             // A present row with unknown size (-1) joins the index like the main
             // traversal does; only an exhausted cursor proves the source absent, and
-            // absence is a fact — not an incompleteness signal for the decision.
-            val rowSize: Long? = runCatching {
-                context.contentResolver.query(
+            // absence is a fact — not an incompleteness signal for the decision. A
+            // null cursor is a provider failure, not absence: count it as a query
+            // failure so a transient hiccup degrades to REBUILD_MERGED instead of
+            // silently dropping the DLL row (review round 9, #15).
+            var absent = false
+            var rowSize: Long? = null
+            var queryFailed = false
+            try {
+                val cursor = context.contentResolver.query(
                     uri,
                     arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_SIZE),
                     null, null, null,
-                )?.use { cursor ->
-                    if (!cursor.moveToFirst()) {
-                        null
+                )
+                if (cursor == null) {
+                    queryFailed = true
+                } else cursor.use {
+                    if (!it.moveToFirst()) {
+                        absent = true
                     } else {
-                        val sizeColumn = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
-                        if (sizeColumn >= 0 && !cursor.isNull(sizeColumn)) cursor.getLong(sizeColumn) else -1L
+                        val sizeColumn = it.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
+                        rowSize = if (sizeColumn >= 0 && !it.isNull(sizeColumn)) it.getLong(sizeColumn) else -1L
                     }
                 }
-            }.onFailure { error ->
-                if (error is CancellationException) throw error
-                diagnostics.queryFailures++
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                queryFailed = true
                 Log.w(TAG, "sig sibling metadata unavailable path=$dllSourcePath", error)
-            }.getOrNull()
-            val size = rowSize ?: continue
+            }
+            if (queryFailed) {
+                diagnostics.queryFailures++
+                continue
+            }
+            if (absent) continue
+            val size = rowSize ?: -1L
             val local = localFiles.fileForIndexKey(dllMirrorKey)
             if (local == null) {
                 diagnostics.skippedEntries++

@@ -8,6 +8,13 @@ import java.io.File
 object KrPathUtils {
     private const val TAG = "KrPathUtils"
 
+    /** Mount spellings of the emulated primary volume the engine may use interchangeably. */
+    private val STORAGE_ROOT_ALIASES = listOf(
+        "/storage/emulated/0",
+        "/sdcard",
+        "/storage/self/primary",
+    )
+
     @JvmStatic
     fun currentActivity(): KR2Activity? {
         return KR2Activity.getInstance() ?: KR2Activity.GetInstance()
@@ -104,7 +111,7 @@ object KrPathUtils {
             // Already redirected paths are idempotent. Only the game's top-level
             // savedata is a source; resources such as data/savedata stay untouched.
             for (anchor in listOfNotNull(destination, source).distinct()) {
-                for (alias in listOf(anchor.absoluteFile, anchor.canonicalFile).distinct()) {
+                for (alias in anchorSpellings(anchor).distinct()) {
                     val prefix = alias.path.replace(File.separatorChar, '/').trimEnd('/')
                     val relative = when {
                         requested.equals(prefix, ignoreCase = true) -> ""
@@ -124,5 +131,36 @@ object KrPathUtils {
         } catch (_: SecurityException) {
             null
         }
+    }
+
+    /**
+     * The engine may spell the same storage root through its mount aliases
+     * (`/sdcard`, `/storage/self/primary`, `/storage/emulated/0`). Anchor matching
+     * must cover them or internal saves silently stop redirecting (review round 9,
+     * #14). Only the leading mount segment is swapped; the game-relative remainder
+     * and the containment check stay unchanged. Pure string expansion for JVM tests.
+     */
+    internal fun expandStorageRootAliases(path: String): List<String> {
+        val normalized = path.replace(File.separatorChar, '/').trimEnd('/')
+        val result = LinkedHashSet<String>()
+        result += normalized
+        for (alias in STORAGE_ROOT_ALIASES) {
+            if (normalized.startsWith("$alias/")) {
+                val remainder = normalized.substring(alias.length)
+                for (other in STORAGE_ROOT_ALIASES) {
+                    if (other != alias) result += other + remainder
+                }
+            }
+        }
+        return result.toList()
+    }
+
+    private fun anchorSpellings(anchor: File): List<File> {
+        val spellings = LinkedHashSet<String>()
+        spellings += expandStorageRootAliases(anchor.path)
+        spellings += runCatching {
+            expandStorageRootAliases(anchor.canonicalFile.path)
+        }.getOrDefault(emptyList())
+        return spellings.map(::File)
     }
 }

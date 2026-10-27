@@ -31,7 +31,11 @@ internal class KrMirrorOpenRouter<T>(
                 } else if (source != null) {
                     readSource(key, source)
                 } else {
-                    FAILED
+                    // Unlinked this session with no local file left: a pure read is a
+                    // plain miss. Return NOT_ROUTED so native open reports ENOENT the
+                    // way base did — games probe deleted optional files and would
+                    // misread FAILED/EIO as a broken resource (review round 9, #11).
+                    NOT_ROUTED
                 }
             } else {
                 // Materialize the complete source before handing out a writable fd.

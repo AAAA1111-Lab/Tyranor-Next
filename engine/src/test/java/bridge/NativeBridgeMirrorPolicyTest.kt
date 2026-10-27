@@ -1,11 +1,17 @@
 package bridge
 
+import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 
 class NativeBridgeMirrorPolicyTest {
+    @get:Rule
+    val temporary = TemporaryFolder()
+
     @Test
     fun `mirror source reads exclude explicit writes while update mode requires copy up`() {
         assertTrue(NativeBridge.mirrorReadAllowed(NativeBridge.FileAccess.READ_ONLY, false, false))
@@ -45,5 +51,15 @@ class NativeBridgeMirrorPolicyTest {
     fun `mirror asset case folding matches ROOT locale including Unicode`() {
         assertEquals("plugin/gamepad.dll", NativeBridge.normalizeMirrorCase("Plugin/GamePad.dll"))
         assertEquals("äset/σcript.dll", NativeBridge.normalizeMirrorCase("Äset/Σcript.DLL"))
+    }
+
+    @Test
+    fun `missing mirror root loads an empty session instead of a fail-closed router`() {
+        // R9-#16: a caller omitting the mirror root extra must not arm a session whose
+        // router fails closed for every key — that would turn all opens (savedata too)
+        // into EIO. The guard loads nothing, so opens fall through to normal routing.
+        // (A positive routing case needs android.net.Uri and stays device-verified.)
+        NativeBridge.configureSafMirror(null, null)
+        assertEquals(-1L, NativeBridge.metadataSize("/data/user/0/x/games/game-k/data.xp3"))
     }
 }

@@ -678,13 +678,15 @@ fun PerGameSettingsScreen(game: ScanGame) {
                                 ) { krSkipStartupDialogs = it }
                                 OverrideChoice(stringResource(R.string.engine_settings_engine_version), krVersionMap, globalKrVersion, krVersion) { krVersion = it }
                                 // SD 卡镜像在运行时强制 KR2 内核（EffectiveEngineSettings.resolveKrKernel），
-                                // 下拉保留存储值展示但置灰，避免用户选择实际不生效的 krkrsdl3
+                                // 下拉保留存储值展示但置灰，避免用户选择实际不生效的 krkrsdl3；
+                                // 存档位置解析失败不得禁用内核行：改回 KR2 正是解除失败的
+                                // 手段，禁用会形成 krkrsdl3 自锁（审查第九轮 #10）
                                 OverrideChoice(
                                     stringResource(R.string.engine_settings_engine_kernel),
                                     krKernelMap,
                                     globalKrKernel,
                                     krKernel,
-                                    enabled = saveLocationReady && !saveLocationLoadFailed && !krMirrorForced,
+                                    enabled = saveLocationReady && !krMirrorForced,
                                 ) { krKernel = it }
                                 if (!isSdl3) {
                                     OverrideChoice(stringResource(R.string.engine_settings_krkr_patch_overlay), krPatchOverlayMap, globalKrPatchOverlayMode, krPatchOverlayMode) { krPatchOverlayMode = it }
