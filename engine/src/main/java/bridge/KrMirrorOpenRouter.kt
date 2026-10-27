@@ -34,10 +34,10 @@ internal class KrMirrorOpenRouter<T>(
                     FAILED
                 }
             } else {
-                // Every mutating open materializes the source first (copy-up), so a
-                // crash or ENOSPC mid-write cannot leave a 0-byte local file with an
-                // ownership marker permanently shadowing the real document. Append
-                // opens copy up as well; their content is then preserved locally.
+                // Materialize the complete source before handing out a writable fd.
+                // This protects copy-up preparation/publication, not later writes:
+                // legitimate truncation, crashes or ENOSPC after fd handoff may leave
+                // an empty/partial local override. Append opens copy up as well.
                 state.withFileLock(file) {
                     // A successful unlink/rename may have completed while this open
                     // waited. Never publish source bytes captured before the lock.
