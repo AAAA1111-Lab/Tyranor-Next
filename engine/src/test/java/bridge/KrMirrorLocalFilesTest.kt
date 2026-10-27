@@ -24,6 +24,88 @@ class KrMirrorLocalFilesTest {
     val temporary = TemporaryFolder()
 
     @Test
+    fun `savedata paths bypass resource mutation state but nested asset names do not`() {
+        val root = temporary.newFolder("resource-classification")
+        val state = KrMirrorLocalFiles(root)
+        assertEquals(null, state.resourceFileForPath(File(root, "savedata/slot.ksd").path))
+        assertEquals(null, state.resourceFileForPath(File(root, "SAVEDATA").path))
+        assertEquals(null, state.resourceFileForPath(temporary.newFolder("external-save").path))
+        assertEquals(File(root, "data/savedata/asset"), state.resourceFileForPath(File(root, "data/savedata/asset").path))
+        assertEquals(File(root, "asset"), state.resourceFileForPath(File(root, "asset").path))
+        assertFalse(File(root, ".tyranor-mirror-state").exists())
+    }
+
+    @Test
+    fun `resource lock failure never executes unprotected filesystem mutation`() {
+        val root = temporary.newFolder("lock-failure")
+        val file = File(root, "asset").apply { writeText("keep") }
+        File(root, ".tyranor-mirror-state").writeText("blocks resource lock directory")
+        var syscallExecuted = false
+        expectIOException {
+            KrMirrorLocalFiles(root).withFileLocks(listOf(file)) {
+                syscallExecuted = true
+                Files.delete(file.toPath())
+            }
+        }
+        assertFalse(syscallExecuted)
+        assertEquals("keep", file.readText())
+    }
+
+    @Test
+    fun `copy temporary stays in private state and same stripe retry cleans orphan`() {
+        val root = temporary.newFolder("temporary-state")
+        val target = File(root, "asset").apply { createNewFile() }
+        val state = KrMirrorLocalFiles(root)
+        var temporaryFile: File? = null
+        state.copyUp(target, 4) {
+            temporaryFile = File(root, ".tyranor-mirror-state/tmp").walkTopDown()
+                .first { it.isFile && it.name.startsWith("copy-") }
+            assertFalse(root.listFiles().orEmpty().any { it.name.startsWith("copy-") })
+            ByteArrayInputStream("data".toByteArray())
+        }
+        val completed = requireNotNull(temporaryFile)
+        assertFalse(completed.exists())
+        assertTrue(target.delete())
+        assertTrue(state.clearMissingOverride(target))
+        assertTrue(target.createNewFile())
+        val orphan = File(completed.parentFile, "copy-crashed.tmp").apply { writeText("partial") }
+        val legacy = File(root, ".mirror-copy-legacy.tmp").apply { writeText("retain conservatively") }
+
+        state.copyUp(target, 4) { ByteArrayInputStream("next".toByteArray()) }
+
+        assertFalse(orphan.exists())
+        assertTrue(legacy.exists())
+        assertEquals("next", target.readText())
+    }
+
+    @Test
+    fun `same stripe nested copy cannot clean a live outer temporary`() {
+        val root = temporary.newFolder("active-temporary")
+        val outer = File(root, "outer").apply { createNewFile() }
+        val stripeBits = outer.name.hashCode() and 63
+        val name = (0..1000).map { "inner-$it" }.first { (it.hashCode() and 63) == stripeBits }
+        val inner = File(root, name).apply { createNewFile() }
+        val state = KrMirrorLocalFiles(root)
+
+        state.copyUp(outer, 5) {
+            object : ByteArrayInputStream("outer".toByteArray()) {
+                var copiedInner = false
+                override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                    if (!copiedInner) {
+                        copiedInner = true
+                        state.copyUp(inner, 5) { ByteArrayInputStream("inner".toByteArray()) }
+                    }
+                    return super.read(buffer, offset, length)
+                }
+            }
+        }
+
+        assertEquals("outer", outer.readText())
+        assertEquals("inner", inner.readText())
+        assertFalse(File(root, ".tyranor-mirror-state/tmp").walkTopDown().any { it.isFile })
+    }
+
+    @Test
     fun `copy up publishes complete source before writable local access`() {
         val root = temporary.newFolder("mirror")
         val target = File(root, "plugin.dll").apply { createNewFile() }
@@ -133,7 +215,7 @@ class KrMirrorLocalFilesTest {
         }
         assertEquals(0L, target.length())
         assertFalse(local.isOverridden(target))
-        assertFalse(root.listFiles().orEmpty().any { it.name.startsWith(".mirror-copy-") })
+        assertFalse(File(root, ".tyranor-mirror-state/tmp").walkTopDown().any { it.isFile })
     }
 
     @Test

@@ -15,6 +15,9 @@ internal class KrMirrorReadSession<T>(
     private val removedKeys = ConcurrentHashMap.newKeySet<String>()
     private val ownershipMarkers = ConcurrentHashMap<String, File>()
 
+    /** Known resources remain routed after unlink; falling back could recreate a placeholder. */
+    fun shouldRoute(key: String): Boolean = key in documents || key in removedKeys || key in localOverrides
+
     fun sourceEntry(key: String): T? = if (key in removedKeys) null else documents[key]
 
     fun entry(key: String): T? = if (key in localOverrides || key in removedKeys) null else documents[key]

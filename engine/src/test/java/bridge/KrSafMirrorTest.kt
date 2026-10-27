@@ -540,4 +540,103 @@ class KrSafMirrorTest {
         assertEquals("legacy startup contents", startup.readText())
     }
 
+    @Test
+    fun nullMissingBootstrapResponsesAllowFreshPreparationAndRemoveOnlyProvenPlaceholders() {
+        val root = temporary.newFolder("missing-bootstrap-fresh")
+        val startup = File(root, "startup.tjs").apply { createNewFile() }
+        val removed = File(root, "old-resource.xp3").apply { createNewFile() }
+        val unknown = File(root, "user-empty").apply { createNewFile() }
+        val edited = File(root, "edited.cfg").apply { writeText("local contents") }
+        val markedEmpty = File(root, "local-empty.cfg").apply { createNewFile() }
+        KrMirrorLocalFiles(root).markOverridden(markedEmpty)
+        val key: (File) -> String = { it.absolutePath.lowercase(Locale.ROOT) }
+        val previousFile = File(temporary.root, "previous-deleted.idx")
+        previousFile.writeText(buildString { KrSafMirror.writeIndexText(this, listOf(
+            Triple(key(removed), "content://source/old-resource", 100L),
+            Triple(key(edited), "content://source/edited", 100L),
+            Triple(key(markedEmpty), "content://source/local-empty", 100L),
+        )) })
+        val previous = KrSafMirror.readIndexFile(previousFile) { it }
+        val bootstrap = KrSafMirror.BOOTSTRAP_FILE_NAMES.map { name ->
+            KrSafMirror.bootstrapFromMissingResponse(name, true, true, setOf("startup.tjs"))
+        }
+        assertTrue(bootstrap.all { it.state == KrSafMirror.BootstrapFileState.ABSENT && !it.localOverride })
+        val entries = mutableListOf(Triple(key(startup), "content://source/startup", 50L))
+        val known = entries.mapTo(HashSet()) { it.first }
+        val sources = KrSafMirror.assemblePreparationSources(root, previous.keys, entries,
+            observed = 1, queryFailures = bootstrap.count { it.state == KrSafMirror.BootstrapFileState.UNAVAILABLE })
+
+        assertEquals(KrSafMirror.MirrorSourceDecision.REBUILD_FRESH, sources.decision)
+        assertEquals(0, KrSafMirror.reconcilePreparedIndex(root, previous, entries, known,
+            sources.localOverrides, sources.decision))
+        assertFalse(removed.exists())
+        assertTrue(unknown.exists())
+        assertTrue(markedEmpty.exists())
+        assertEquals("local contents", edited.readText())
+        assertEquals(setOf(key(startup)), entries.map { it.first }.toSet())
+    }
+
+    @Test
+    fun skippedDepthLimitedOrInvalidRootListingsCarryPreviousRowsInsteadOfPublishingAFreshSubset() {
+        for ((index, flags) in listOf(Triple(1, 0, false), Triple(0, 1, false), Triple(0, 0, true)).withIndex()) {
+            val (skipped, depth, invalidRoot) = flags
+            val root = temporary.newFolder("partial-$index")
+            val startup = File(root, "startup.tjs").apply { createNewFile() }
+            val old = File(root, "deep/resource.xp3").apply { requireNotNull(parentFile).mkdirs(); createNewFile() }
+            val key: (File) -> String = { it.absolutePath.lowercase(Locale.ROOT) }
+            val previous = mapOf(key(old) to KrSafMirror.MirrorEntryHolder("content://source/deep", 999L))
+            val entries = mutableListOf(Triple(key(startup), "content://source/startup", 1L))
+            val known = entries.mapTo(HashSet()) { it.first }
+            val sources = KrSafMirror.assemblePreparationSources(root, previous.keys, entries,
+                observed = 1, queryFailures = 0, skippedEntries = skipped,
+                depthLimitedDirectories = depth, rootListingInvalid = invalidRoot)
+            assertEquals(KrSafMirror.MirrorSourceDecision.REBUILD_MERGED, sources.decision)
+            assertEquals(1, KrSafMirror.reconcilePreparedIndex(root, previous, entries, known,
+                sources.localOverrides, sources.decision))
+            assertTrue(old.exists())
+            assertTrue(entries.any { it.first == key(old) && it.second == "content://source/deep" && it.third == 999L })
+        }
+    }
+
+    @Test
+    fun partialPreparationDoesNotCarryAConfirmedAbsentBootstrapButKeepsUnknownResources() {
+        val root = temporary.newFolder("partial-absent-bootstrap")
+        val patch = File(root, "patch.tjs").apply { createNewFile() }
+        val unknown = File(root, "unknown.xp3").apply { createNewFile() }
+        val key: (File) -> String = { it.absolutePath.lowercase(Locale.ROOT) }
+        val previous = mapOf(key(patch) to KrSafMirror.MirrorEntryHolder("content://source/patch", 30L),
+            key(unknown) to KrSafMirror.MirrorEntryHolder("content://source/unknown", 70L))
+        val missing = KrSafMirror.bootstrapFromMissingResponse("patch.tjs", true, true, setOf("data"))
+        val absent = if (missing.state == KrSafMirror.BootstrapFileState.ABSENT) setOf(key(patch)) else emptySet()
+        val entries = mutableListOf<Triple<String, String, Long>>()
+        val known = hashSetOf<String>()
+        assertEquals(1, KrSafMirror.reconcilePreparedIndex(root, previous, entries, known,
+            emptySet(), KrSafMirror.MirrorSourceDecision.REBUILD_MERGED, absent))
+        assertFalse(patch.exists())
+        assertTrue(unknown.exists())
+        assertEquals(setOf(key(unknown)), entries.map { it.first }.toSet())
+    }
+
+    @Test
+    fun latestSaveTimestampWinsBeforeStableRootAndDirectoryNames() {
+        val games = temporary.newFolder("timestamp-roots")
+        val key = "0123456789abcdef"
+        val stable = File(games, "game-$key").apply { mkdirs() }
+        val recent = File(games, "z-renamed-$key").apply { mkdirs() }
+        val oldSave = File(stable, "savedata/slot.ksd").apply {
+            requireNotNull(parentFile).mkdirs(); writeText("older"); assertTrue(setLastModified(1_600_000_000_000L))
+        }
+        val newSave = File(recent, "savedata/slot.ksd").apply {
+            requireNotNull(parentFile).mkdirs(); writeText("newer"); assertTrue(setLastModified(1_700_000_000_000L))
+        }
+        assertEquals(recent, KrSafMirror.findMirrorRoot(games, key))
+        val staged = File(stable, "savedata.import_backup/slot.ksd").apply {
+            requireNotNull(parentFile).mkdirs(); writeText("newest staged"); assertTrue(setLastModified(1_800_000_000_000L))
+        }
+        assertEquals(stable, KrSafMirror.findMirrorRoot(games, key))
+        assertEquals("older", oldSave.readText())
+        assertEquals("newer", newSave.readText())
+        assertEquals("newest staged", staged.readText())
+    }
+
 }

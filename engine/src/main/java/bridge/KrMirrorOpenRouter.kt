@@ -18,17 +18,20 @@ internal class KrMirrorOpenRouter<T>(
 ) {
     enum class Intent { READ_ONLY, UPDATE, WRITE }
 
-    fun open(key: String, file: File, intent: Intent): Int {
-        val source = session.sourceEntry(key) ?: return NOT_ROUTED
+    fun open(key: String, file: File, intent: Intent, allowCreate: Boolean = false): Int {
+        if (!session.shouldRoute(key)) return NOT_ROUTED
         val state = session.localFiles ?: return FAILED
         return try {
             if (intent == Intent.READ_ONLY) {
                 // Copy-up publishes with atomic rename. Do not hold a write mutex
                 // across provider I/O: an old launch must not block a new launch read.
-                if (session.isLocal(key, file) || file.length() > 0L) {
+                val source = session.sourceEntry(key)
+                if (session.isLocal(key, file) || file.length() > 0L || (source == null && file.isFile)) {
                     localDescriptor(file, intent).takeIf { it >= 0 } ?: FAILED
-                } else {
+                } else if (source != null) {
                     readSource(key, source)
+                } else {
+                    FAILED
                 }
             } else {
                 // Every mutating open materializes the source first (copy-up), so a
@@ -36,8 +39,20 @@ internal class KrMirrorOpenRouter<T>(
                 // ownership marker permanently shadowing the real document. Append
                 // opens copy up as well; their content is then preserved locally.
                 state.withFileLock(file) {
-                    if (session.isLocal(key, file) || file.length() > 0L) {
+                    // A successful unlink/rename may have completed while this open
+                    // waited. Never publish source bytes captured before the lock.
+                    val source = session.sourceEntry(key)
+                    if (file.isFile && (session.isLocal(key, file) || file.length() > 0L || source == null)) {
                         return@withFileLock openLocal(key, file, intent, state)
+                    }
+                    if (source == null) {
+                        // O_CREAT may intentionally make a new empty local file. A
+                        // plain r+/O_RDWR or write-only open must fail after unlink.
+                        return@withFileLock if (allowCreate && !file.exists()) {
+                            openLocal(key, file, intent, state)
+                        } else {
+                            FAILED
+                        }
                     }
                     try {
                         state.copyUp(file, sourceSize(source), { before, after ->

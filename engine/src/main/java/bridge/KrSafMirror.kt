@@ -102,6 +102,7 @@ object KrSafMirror {
         val mergeFailures: Int = 0,
         val scannerTimeouts: Int = 0,
         val observedSourceFiles: Int = 0,
+        val rootListingInvalid: Boolean = false,
     )
 
     private class BuildDiagnostics {
@@ -122,6 +123,7 @@ object KrSafMirror {
             mergeFailures = mergeFailures,
             scannerTimeouts = scannerTimeouts,
             observedSourceFiles = observedSourceFiles,
+            rootListingInvalid = rootListingInvalid,
         )
     }
 
@@ -211,6 +213,7 @@ object KrSafMirror {
         val preparationSources = assemblePreparationSources(
             mirrorRoot, previousIndex.keys, entries, diagnostics.observedSourceFiles,
             diagnostics.queryFailures, bootstrapLocalOverrides,
+            diagnostics.skippedEntries, diagnostics.depthLimitedDirectories, diagnostics.rootListingInvalid,
         )
         val localOverrides = preparationSources.localOverrides
         entries.removeAll { it.first in localOverrides }
@@ -220,11 +223,11 @@ object KrSafMirror {
         if (decision == MirrorSourceDecision.FAIL_EMPTY) {
             throw PrepareException(Stage.EMPTY_MIRROR, mirrorRoot.name)
         }
-        if (decision != MirrorSourceDecision.KEEP_EXISTING) {
-            removeStaleSavePlaceholders(mirrorRoot, previousIndex.keys, known) { localFiles.isOverridden(it) }
-        }
+        val confirmedAbsentKeys = bootstrapFiles.filterValues { it.state == BootstrapFileState.ABSENT }
+            .keys.mapTo(HashSet()) { File(mirrorRoot, it).absolutePath.lowercase(Locale.ROOT) }
+        val carried = reconcilePreparedIndex(mirrorRoot, previousIndex, entries, known,
+            localOverrides, decision, confirmedAbsentKeys)
         if (decision == MirrorSourceDecision.REBUILD_MERGED) {
-            val carried = carryPreviousIndexRows(previousIndex, entries, known, localOverrides)
             Log.w(TAG, "mirror listing incomplete; carried $carried previous index rows (queryFailures=${diagnostics.queryFailures})")
         }
         val fileCount = when (decision) {
@@ -268,6 +271,9 @@ object KrSafMirror {
         observed: Int,
         queryFailures: Int,
         bootstrapLocalOverrides: Set<String> = emptySet(),
+        skippedEntries: Int = 0,
+        depthLimitedDirectories: Int = 0,
+        rootListingInvalid: Boolean = false,
     ): PreparationSources {
         val localFiles = KrMirrorLocalFiles(mirrorRoot)
         val candidateKeys = previousIndexKeys + entries.map { it.first }
@@ -306,6 +312,7 @@ object KrSafMirror {
         }
         return PreparationSources(overrides, decideMirrorSources(
             observed, previousIndexKeys.size, queryFailures, overrides.size,
+            skippedEntries, depthLimitedDirectories, rootListingInvalid,
         ))
     }
 
@@ -317,25 +324,62 @@ object KrSafMirror {
         previousCount: Int,
         queryFailures: Int,
         localOverrideCount: Int,
+        skippedEntries: Int = 0,
+        depthLimitedDirectories: Int = 0,
+        rootListingInvalid: Boolean = false,
     ): MirrorSourceDecision = when {
-        observed > 0 && queryFailures == 0 -> MirrorSourceDecision.REBUILD_FRESH
+        observed > 0 && queryFailures == 0 && skippedEntries == 0 &&
+            depthLimitedDirectories == 0 && !rootListingInvalid -> MirrorSourceDecision.REBUILD_FRESH
         observed > 0 -> MirrorSourceDecision.REBUILD_MERGED
         previousCount > 0 || localOverrideCount > 0 -> MirrorSourceDecision.KEEP_EXISTING
         else -> MirrorSourceDecision.FAIL_EMPTY
     }
 
-    /** Re-add previous rows whose subtrees failed this run; returns the carried row count. */
-    private fun carryPreviousIndexRows(
-        previousIndex: Map<String, KrSafMirror.MirrorEntryHolder<String>>,
+    /** Reconcile old rows only after the completeness/absence evidence has been assembled. */
+    internal fun reconcilePreparedIndex(
+        mirrorRoot: File,
+        previousIndex: Map<String, MirrorEntryHolder<String>>,
         entries: MutableList<Triple<String, String, Long>>,
         known: MutableSet<String>,
         localOverrides: Set<String>,
+        decision: MirrorSourceDecision,
+        confirmedAbsentKeys: Set<String> = emptySet(),
     ): Int {
+        if (decision == MirrorSourceDecision.KEEP_EXISTING || decision == MirrorSourceDecision.FAIL_EMPTY) return 0
+        val localFiles = KrMirrorLocalFiles(mirrorRoot)
+        fun identity(key: String): String? = localFiles.relativeForIndexKey(key)
+            ?: localFiles.fileForIndexKey(key)?.let { localFiles.relativeForIndexKey(it.path) }
+        val current = (known + localOverrides).mapNotNullTo(HashSet(), ::identity)
+        val confirmedAbsent = confirmedAbsentKeys.mapNotNullTo(HashSet(), ::identity)
+        val missing = if (decision == MirrorSourceDecision.REBUILD_FRESH) {
+            previousIndex.keys.mapNotNullTo(HashSet(), ::identity).apply { removeAll(current) }
+        } else {
+            confirmedAbsent
+        }
+        removeStaleSavePlaceholders(mirrorRoot, previousIndex.keys, known, localFiles::isOverridden)
+        val canonicalRoot = mirrorRoot.canonicalFile
+        for (key in previousIndex.keys) {
+            val relative = identity(key) ?: continue
+            if (relative !in missing || relative in current || isSourceEntryExcluded(relative)) continue
+            val local = localFiles.fileForIndexKey(key) ?: continue
+            try {
+                if (!localFiles.isOverridden(local) && local.isFile && local.length() == 0L &&
+                    local.canonicalPath.startsWith(canonicalRoot.path + File.separator)
+                ) {
+                    if (!local.delete()) throw PrepareException(Stage.MIRROR_DIR, local.name)
+                }
+            } catch (error: IOException) {
+                throw PrepareException(Stage.MIRROR_DIR, local.name).also { it.initCause(error) }
+            }
+        }
+        if (decision != MirrorSourceDecision.REBUILD_MERGED) return 0
         var carried = 0
         for ((key, entry) in previousIndex) {
-            if (key in known || key in localOverrides) continue
+            val relative = identity(key) ?: continue
+            if (relative in current || relative in confirmedAbsent || isSourceEntryExcluded(relative)) continue
             entries += Triple(key, entry.uri, entry.size)
             known.add(key)
+            current.add(relative)
             carried++
         }
         return carried
@@ -362,15 +406,18 @@ object KrSafMirror {
         // Prefer actual saves even when an empty stable root already exists. The import
         // transaction's savedata.import_backup counts as staged saves: a crash inside the
         // exchange window must not rebind this key to a different root. Never rename/merge
-        // legacy directories; historical duplicate data stays untouched.
+        // legacy directories; newest real save mtime wins before stable/name tie-breaks.
         return gamesRoot.listFiles()
             ?.filter { it.isDirectory && it.name.endsWith("-$key") }
             ?.map { root ->
-                val hasSaves = File(root, "savedata").walkTopDown().any { it.isFile && it.length() > 0L }
-                val hasStagedBackup = File(root, "savedata.import_backup").walkTopDown().any { it.isFile && it.length() > 0L }
-                root to (hasSaves || hasStagedBackup)
+                val latestSave = sequenceOf(File(root, "savedata"), File(root, "savedata.import_backup"))
+                    .flatMap { it.walkTopDown().asSequence() }
+                    .filter { it.isFile && it.length() > 0L }
+                    .maxOfOrNull { it.lastModified() }
+                root to latestSave
             }
-            ?.sortedWith(compareByDescending<Pair<File, Boolean>> { it.second }
+            ?.sortedWith(compareByDescending<Pair<File, Long?>> { it.second != null }
+                .thenByDescending { it.second ?: Long.MIN_VALUE }
                 .thenByDescending { it.first == stable }.thenBy { it.first.name })
             ?.firstOrNull()?.first ?: stable
     }
@@ -528,8 +575,10 @@ object KrSafMirror {
                     arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID,
                         DocumentsContract.Document.COLUMN_MIME_TYPE, DocumentsContract.Document.COLUMN_SIZE),
                 ) ?: run {
-                    diagnostics.queryFailures++
-                    return@associateWith BootstrapFile(BootstrapFileState.UNAVAILABLE, null, -1L, localOverride = false)
+                    val bootstrap = bootstrapFromMissingResponse(name, true,
+                        diagnostics.rootListingComplete, diagnostics.rootNames)
+                    if (bootstrap.state == BootstrapFileState.UNAVAILABLE) diagnostics.queryFailures++
+                    return@associateWith bootstrap
                 }
                 cursor.use {
                     if (!it.moveToFirst()) {
@@ -537,12 +586,14 @@ object KrSafMirror {
                     }
                     val mimeColumn = it.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
                     if (mimeColumn >= 0 && it.getString(mimeColumn) == DocumentsContract.Document.MIME_TYPE_DIR) {
+                        diagnostics.queryFailures++
                         return@associateWith BootstrapFile(BootstrapFileState.UNAVAILABLE, null, -1L, localOverride = false)
                     }
                     val sizeColumn = it.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
                     val size = if (sizeColumn < 0 || it.isNull(sizeColumn)) -1L else it.getLong(sizeColumn)
                     localFiles.clearMissingOverride(local)
                     if (local.isDirectory || (!local.exists() && !local.createNewFile())) {
+                        diagnostics.queryFailures++
                         return@associateWith BootstrapFile(BootstrapFileState.UNAVAILABLE, null, -1L, localOverride = false)
                     }
                     entries += Triple(key, uri.toString(), size)
@@ -552,11 +603,13 @@ object KrSafMirror {
                 }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
-                diagnostics.queryFailures++
-                Log.w(TAG, "bootstrap document probe unavailable: $name", error)
-                val state = bootstrapProbeFailureState(name, error is FileNotFoundException,
+                val bootstrap = bootstrapFromMissingResponse(name, error is FileNotFoundException,
                     diagnostics.rootListingComplete, diagnostics.rootNames)
-                BootstrapFile(state, null, -1L, localOverride = false)
+                if (bootstrap.state == BootstrapFileState.UNAVAILABLE) {
+                    diagnostics.queryFailures++
+                    Log.w(TAG, "bootstrap document probe unavailable: $name", error)
+                }
+                bootstrap
             }
         }
     }
@@ -575,7 +628,18 @@ object KrSafMirror {
         else -> null
     }
 
-    /** A missing-document exception alone is ambiguous; a complete root listing supplies proof. */
+    /** Shared null/FNF producer used before completeness accounting and app reader assembly. */
+    internal fun bootstrapFromMissingResponse(
+        name: String,
+        missingResponse: Boolean,
+        listingComplete: Boolean,
+        listedNames: Set<String>,
+    ): BootstrapFile = BootstrapFile(
+        bootstrapProbeFailureState(name, missingResponse, listingComplete, listedNames),
+        null, -1L, localOverride = false,
+    )
+
+    /** Null/FNF missing-document responses need a complete root listing before proving absence. */
     internal fun bootstrapProbeFailureState(
         name: String,
         notFound: Boolean,

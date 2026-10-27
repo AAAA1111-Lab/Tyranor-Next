@@ -820,6 +820,15 @@ FILE* hookedFreopenCommon(const char* path, const char* mode, FILE* stream, Freo
     }
     const int flags = fopenModeToFlags(mode);
     if (flags >= 0) {
+        // Flush before opening/truncating the new fd. Otherwise buffered output
+        // from this FILE can be written back after an O_TRUNC open of the same file.
+        // Pure read-only FILEs must not be fflush'ed on Bionic (EOF/EBADF).
+        if (__fwritable(stream) && fflush(stream) != 0) {
+            const int flushError = errno;
+            fclose(stream);
+            errno = flushError;
+            return nullptr;
+        }
         const int fd = callJavaOpen(p, flags);
         if (fd == kMirrorOpenFailed) {
             fclose(stream);
@@ -827,35 +836,9 @@ FILE* hookedFreopenCommon(const char* path, const char* mode, FILE* stream, Freo
             return nullptr;
         }
         if (fd >= 0) {
-            // The dup2 scheme (punching the SAF fd over the stream's fd) is only valid
-            // when the access mode matches: dup2 does not update the FILE's read/write
-            // flags, so a mode mismatch would return a FILE* with stale flags. Compare
-            // the underlying fd access mode via fcntl(F_GETFL) first.
-            const int target = fileno(stream);
+            // Matching O_ACCMODE is insufficient: FILE also owns append state,
+            // buffering, orientation and EOF state. Let libc rebuild all of it.
             const char* streamMode = compatibleStreamMode(fd, flags, mode);
-            const int wantAccess = fopenModeToFlags(streamMode) & O_ACCMODE;
-            const int haveAccess = target >= 0 ? fcntl(target, F_GETFL) : -1;
-            const bool accessMatches = haveAccess >= 0 && (haveAccess & O_ACCMODE) == wantAccess;
-            if (accessMatches) {
-                // Bionic rejects fflush on a pure read-only FILE with EBADF.
-                // Only output/update streams can have pending writes to flush.
-                if ((!__fwritable(stream) || fflush(stream) == 0) && dup2(fd, target) >= 0) {
-                    close(fd);
-                    clearerr(stream);
-                    if ((flags & O_APPEND) == 0) rewind(stream);
-                    return stream;
-                }
-                const int replaceError = errno;
-                close(fd);
-                fclose(stream);
-                errno = replaceError;
-                return nullptr;
-            }
-            // Access mode mismatch: never fall back to the placeholder path (it reads
-            // all zeros, reintroducing the bug this fixes). Rebuild the FILE through
-            // /proc/self/fd/<fd> with the new mode — bionic supports procfs reopen for
-            // SAF/FUSE-backed fds. On failure (provider pipes etc.) return nullptr; the
-            // failed freopen already closed the original stream per C semantics.
             char fdPath[64];
             std::snprintf(fdPath, sizeof(fdPath), "/proc/self/fd/%d", fd);
             if (original != nullptr) {
@@ -869,6 +852,7 @@ FILE* hookedFreopenCommon(const char* path, const char* mode, FILE* stream, Freo
             } else {
                 close(fd);
                 fclose(stream);
+                errno = ENOSYS;
             }
             return nullptr;
         }

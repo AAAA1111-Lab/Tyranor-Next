@@ -10,6 +10,7 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 /** Shared SHA-256 hex helper for mirror-local keying. */
 internal object KrMirrorDigest {
@@ -48,6 +49,13 @@ internal class KrMirrorLocalFiles(mirrorRoot: File) {
         val canonical = runCatching { File(indexKey).canonicalFile.path }.getOrNull()
             ?.replace(File.separatorChar, '/')?.lowercase(Locale.ROOT) ?: return null
         return fileForPrefix(canonical)
+    }
+
+    /** Scoped/local savedata must not acquire resource copy-up locks or create state. */
+    fun resourceFileForPath(path: String): File? {
+        val file = fileForIndexKey(path) ?: return null
+        val relative = relativeForIndexKey(file.path) ?: return null
+        return file.takeUnless { relative == "savedata" || relative.startsWith("savedata/") }
     }
 
     private fun fileForPrefix(normalized: String): File? {
@@ -189,7 +197,7 @@ internal class KrMirrorLocalFiles(mirrorRoot: File) {
         if (expectedSize > MAX_COPY_BYTES) throw IOException("Mirror copy exceeds 64 MiB")
         val parent = file.parentFile ?: throw IOException("Missing mirror parent")
         if (!parent.isDirectory) throw IOException("Missing mirror directory")
-        val temporary = File.createTempFile(".mirror-copy-", ".tmp", parent)
+        val temporary = createCopyTemporary(file, "copy-")
         val existed = file.exists()
         var published = false
         try {
@@ -222,12 +230,12 @@ internal class KrMirrorLocalFiles(mirrorRoot: File) {
                     if (existed) {
                         // Readers can hold the published inode without the write lock.
                         // Replace the path atomically instead of truncating that inode.
-                        val rollback = File.createTempFile(".mirror-rollback-", ".tmp", parent)
+                        val rollback = createCopyTemporary(file, "rollback-")
                         try {
                             FileOutputStream(rollback).use { it.fd.sync() }
                             replaceAtomically(rollback, file)
                         } finally {
-                            rollback.delete()
+                            discardCopyTemporary(rollback)
                         }
                     } else {
                         file.delete()
@@ -238,7 +246,29 @@ internal class KrMirrorLocalFiles(mirrorRoot: File) {
             }
             throw error
         } finally {
-            temporary.delete()
+            discardCopyTemporary(temporary)
+        }
+    }
+
+    /** The caller holds this stripe's thread/process locks for the entire copy. */
+    private fun createCopyTemporary(file: File, prefix: String): File {
+        val directory = File(stateDirectory, "tmp/" + stripe(file))
+        ensureStateDirectory(directory)
+        directory.listFiles().orEmpty().forEach { candidate ->
+            val ownedName = (candidate.name.startsWith("copy-") || candidate.name.startsWith("rollback-")) &&
+                candidate.name.endsWith(".tmp")
+            if (ownedName && candidate.isFile && candidate.path !in ACTIVE_TEMPORARIES) {
+                if (!candidate.delete()) throw IOException("Cannot remove stale mirror temporary")
+            }
+        }
+        return File.createTempFile(prefix, ".tmp", directory).also { ACTIVE_TEMPORARIES.add(it.path) }
+    }
+
+    private fun discardCopyTemporary(file: File) {
+        try {
+            file.delete()
+        } finally {
+            ACTIVE_TEMPORARIES.remove(file.path)
         }
     }
 
@@ -280,6 +310,7 @@ internal class KrMirrorLocalFiles(mirrorRoot: File) {
         private const val COPY_BUFFER_SIZE = 64 * 1024
         private const val LOCK_STRIPES = 64
         private val PROCESS_LOCKS = Array(LOCK_STRIPES) { Any() }
+        private val ACTIVE_TEMPORARIES = ConcurrentHashMap.newKeySet<String>()
         private val HELD_LOCKS = ThreadLocal.withInitial { HashSet<String>() }
     }
 }

@@ -21,6 +21,7 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InputStream
 import java.util.Locale
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
@@ -496,46 +497,9 @@ class GameSaveManager(private val context: Context) {
 
     @Throws(IOException::class)
     private fun extractZip(sourceUri: Uri, destination: File): Int {
-        val rootPath = destination.canonicalPath
-        val entries = mutableSetOf<String>()
-        var extracted = 0
-        var totalBytes = 0L
         val input = appContext.contentResolver.openInputStream(sourceUri)
             ?: throw GameSaveException(SaveErrorCode.READ_IMPORT_ZIP)
-        ZipInputStream(input).use { zip ->
-            var entry = zip.nextEntry
-            val buffer = ByteArray(BUFFER_SIZE)
-            while (entry != null) {
-                val name = safeZipEntryName(entry.name)
-                if (!entries.add(name)) throw GameSaveException(SaveErrorCode.DUPLICATE_ZIP_ENTRY, detail = name)
-                if (entries.size > MAX_SAVE_ZIP_FILES) throw GameSaveException(SaveErrorCode.TOO_MANY_ZIP_FILES)
-                val output = File(destination, name).canonicalFile
-                if (!output.path.startsWith(rootPath + File.separator)) {
-                    throw GameSaveException(SaveErrorCode.ILLEGAL_ZIP_PATH, detail = entry.name)
-                }
-                if (entry.isDirectory) {
-                    if (!output.exists() && !output.mkdirs()) throw GameSaveException(SaveErrorCode.CREATE_SAVE_DIR_NAMED, detail = name)
-                } else {
-                    output.parentFile?.let {
-                        if (!it.exists() && !it.mkdirs()) throw GameSaveException(SaveErrorCode.CREATE_SAVE_DIR_NAMED, detail = name)
-                    }
-                    FileOutputStream(output, false).use { out ->
-                        var read = zip.read(buffer)
-                        while (read != -1) {
-                            totalBytes += read.toLong()
-                            if (totalBytes > MAX_SAVE_ZIP_BYTES) throw GameSaveException(SaveErrorCode.ZIP_TOO_LARGE)
-                            out.write(buffer, 0, read)
-                            read = zip.read(buffer)
-                        }
-                    }
-                    if (entry.time > 0L) output.setLastModified(entry.time)
-                    extracted++
-                }
-                zip.closeEntry()
-                entry = zip.nextEntry
-            }
-        }
-        return extracted
+        return extractZip(input, destination)
     }
 
     /**
@@ -642,6 +606,49 @@ class GameSaveManager(private val context: Context) {
         localizedContext.getString(id, *args)
 
     companion object {
+        /** Parse the actual import stream independently of Android URI acquisition. */
+        @Throws(IOException::class)
+        internal fun extractZip(input: InputStream, destination: File): Int {
+            return ZipInputStream(input).use { zip ->
+                val rootPath = destination.canonicalPath
+                val entries = mutableSetOf<String>()
+                var extracted = 0
+                var totalBytes = 0L
+                var entry = zip.nextEntry
+                val buffer = ByteArray(BUFFER_SIZE)
+                while (entry != null) {
+                    val name = safeZipEntryName(entry.name)
+                    if (!entries.add(name)) throw GameSaveException(SaveErrorCode.DUPLICATE_ZIP_ENTRY, detail = name)
+                    if (entries.size > MAX_SAVE_ZIP_FILES) throw GameSaveException(SaveErrorCode.TOO_MANY_ZIP_FILES)
+                    val output = File(destination, name).canonicalFile
+                    if (!output.path.startsWith(rootPath + File.separator)) {
+                        throw GameSaveException(SaveErrorCode.ILLEGAL_ZIP_PATH, detail = entry.name)
+                    }
+                    if (entry.isDirectory) {
+                        if (!output.exists() && !output.mkdirs()) throw GameSaveException(SaveErrorCode.CREATE_SAVE_DIR_NAMED, detail = name)
+                    } else {
+                        output.parentFile?.let {
+                            if (!it.exists() && !it.mkdirs()) throw GameSaveException(SaveErrorCode.CREATE_SAVE_DIR_NAMED, detail = name)
+                        }
+                        FileOutputStream(output, false).use { out ->
+                            var read = zip.read(buffer)
+                            while (read != -1) {
+                                totalBytes += read.toLong()
+                                if (totalBytes > MAX_SAVE_ZIP_BYTES) throw GameSaveException(SaveErrorCode.ZIP_TOO_LARGE)
+                                out.write(buffer, 0, read)
+                                read = zip.read(buffer)
+                            }
+                        }
+                        if (entry.time > 0L) output.setLastModified(entry.time)
+                        extracted++
+                    }
+                    zip.closeEntry()
+                    entry = zip.nextEntry
+                }
+                extracted
+            }
+        }
+
         /** Shared filesystem transaction used by ZIP import; no live save changes before staging passes. */
         @Throws(IOException::class)
         internal fun importSaveDirectory(
@@ -657,9 +664,22 @@ class GameSaveManager(private val context: Context) {
             // Recover an interrupted exchange before making an empty destination. Otherwise
             // the next import could discard the sole remaining copy of the previous saves.
             if (backup.isDirectory) {
+                val destinationEmpty = if (destination.isDirectory) {
+                    destination.listFiles()?.isEmpty()
+                        ?: throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
+                } else {
+                    false
+                }
                 when {
-                    !destination.exists() -> if (!rename(backup, destination)) {
-                        throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
+                    !destination.exists() || destinationEmpty -> {
+                        // A launcher may recreate savedata during the exchange window.
+                        // Only remove a confirmed empty directory, never user contents.
+                        if (destinationEmpty && !destination.delete()) {
+                            throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
+                        }
+                        if (!rename(backup, destination)) {
+                            throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
+                        }
                     }
                     restoreExcluded != null -> restoreExcluded(backup, destination)
                 }

@@ -191,6 +191,86 @@ class KrMirrorOpenRouterTest {
         assertTrue(fixture.sourceOpens.isEmpty())
     }
 
+    @Test
+    fun `pending update cannot resurrect source after unlink completed under the lock`() {
+        assertPendingOpenAfterUnlink(KrMirrorOpenRouter.Intent.UPDATE, allowCreate = false)
+    }
+
+    @Test
+    fun `pending write without create cannot resurrect source after unlink`() {
+        assertPendingOpenAfterUnlink(KrMirrorOpenRouter.Intent.WRITE, allowCreate = false)
+    }
+
+    @Test
+    fun `pending update with create makes a new empty file instead of restoring deleted source`() {
+        assertPendingOpenAfterUnlink(KrMirrorOpenRouter.Intent.UPDATE, allowCreate = true)
+    }
+
+    @Test
+    fun `pending write with create makes a new empty local file after unlink`() {
+        assertPendingOpenAfterUnlink(KrMirrorOpenRouter.Intent.WRITE, allowCreate = true)
+    }
+
+    @Test
+    fun `already tombstoned update stays routed and fails rather than allowing a direct fallback`() {
+        val fixture = fixture()
+        fixture.session.runMutation(fixture.key, fixture.file) {
+            check(fixture.file.delete())
+            0L
+        }
+        assertTrue(fixture.session.shouldRoute(fixture.key))
+        assertEquals(KrMirrorOpenRouter.FAILED,
+            fixture.router().open(fixture.key, fixture.file, KrMirrorOpenRouter.Intent.UPDATE))
+        assertFalse(fixture.file.exists())
+        assertEquals(0, fixture.streamOpens)
+    }
+
+    private fun assertPendingOpenAfterUnlink(intent: KrMirrorOpenRouter.Intent, allowCreate: Boolean) {
+        val fixture = fixture()
+        val entered = CountDownLatch(1)
+        val result = AtomicReference(Int.MIN_VALUE)
+        val failure = AtomicReference<Throwable>()
+        val router = fixture.router(createLocalOnOpen = allowCreate)
+        val pending = Thread {
+            entered.countDown()
+            try {
+                result.set(router.open(fixture.key, fixture.file, intent, allowCreate))
+            } catch (error: Throwable) {
+                failure.set(error)
+            }
+        }
+        try {
+            fixture.state.withFileLock(fixture.file) {
+                pending.start()
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+                while (pending.state != Thread.State.BLOCKED && System.nanoTime() < deadline) Thread.yield()
+                assertEquals("Open must already be waiting for the mutation lock", Thread.State.BLOCKED, pending.state)
+                // This is the real mutation transaction, nested in the held key lock:
+                // complete unlink and its tombstone before letting UPDATE acquire it.
+                assertEquals(0L, fixture.session.runMutation(fixture.key, fixture.file) {
+                    check(fixture.file.delete())
+                    0L
+                })
+                assertFalse(fixture.file.exists())
+                assertEquals(null, fixture.session.sourceEntry(fixture.key))
+            }
+            pending.join(5000)
+            assertFalse(pending.isAlive)
+            assertEquals(null, failure.get())
+            assertEquals(if (allowCreate) 20 else KrMirrorOpenRouter.FAILED, result.get().toInt())
+            assertEquals(0, fixture.streamOpens)
+            assertTrue(fixture.sourceOpens.isEmpty())
+            assertEquals(allowCreate, fixture.file.exists())
+            if (allowCreate) {
+                assertEquals(0L, fixture.file.length())
+                assertTrue(fixture.state.isOverridden(fixture.file))
+            }
+        } finally {
+            pending.join(5000)
+        }
+    }
+
     private fun fixture(
         size: Long = 6,
         sourceFd: Int = 10,
@@ -215,7 +295,7 @@ class KrMirrorOpenRouterTest {
         val diagnostics = mutableListOf<String>()
         var streamOpens = 0
 
-        fun router(sourceDescriptorOverride: (() -> Int)? = null) = KrMirrorOpenRouter(
+        fun router(createLocalOnOpen: Boolean = false, sourceDescriptorOverride: (() -> Int)? = null) = KrMirrorOpenRouter(
             session = session,
             sourceSize = { size },
             sourceStream = {
@@ -224,7 +304,11 @@ class KrMirrorOpenRouterTest {
                 ByteArrayInputStream("source".toByteArray())
             },
             sourceDescriptor = { source -> sourceOpens.add(source); sourceDescriptorOverride?.invoke() ?: sourceFd },
-            localDescriptor = { _, intent -> localOpens.add(intent); localFd },
+            localDescriptor = { file, intent ->
+                localOpens.add(intent)
+                if (createLocalOnOpen && !file.exists()) file.createNewFile()
+                localFd
+            },
             closeDescriptor = { closed.add(it) },
             diagnostic = { message, _ -> diagnostics.add(message) },
         )

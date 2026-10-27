@@ -132,7 +132,7 @@ object NativeBridge {
         }
         val session = safMirror
         val key = target.lowercase(Locale.ROOT)
-        if (session.sourceEntry(key) != null) {
+        if (session.shouldRoute(key)) {
             val router = KrMirrorOpenRouter(
                 session = session,
                 sourceSize = { it.size },
@@ -157,7 +157,7 @@ object NativeBridge {
                 openAccess(mode) == FileAccess.READ_WRITE -> KrMirrorOpenRouter.Intent.UPDATE
                 else -> KrMirrorOpenRouter.Intent.READ_ONLY
             }
-            return router.open(key, File(target), intent)
+            return router.open(key, File(target), intent, allowCreate = (mode and OsConstants.O_CREAT) != 0)
         }
         return try {
             openDirectFile(path, target, mode, diagnosticPrefix = if (redirected != null) "redirect" else null)
@@ -185,9 +185,9 @@ object NativeBridge {
         val session = safMirror
         val state = session.localFiles ?: return Long.MIN_VALUE
         val fromKey = fromPath?.lowercase(Locale.ROOT)
-        val from = fromKey?.let { state.fileForIndexKey(it) }
+        val from = fromKey?.let { state.resourceFileForPath(it) }
         val toKey = toPath?.lowercase(Locale.ROOT)
-        val to = toKey?.let { state.fileForIndexKey(it) }
+        val to = toKey?.let { state.resourceFileForPath(it) }
         if (fromPath == null || (from == null && to == null)) return Long.MIN_VALUE
         return try {
             session.runMutation(fromKey.takeIf { from != null }, from, toKey, to) {

@@ -1,5 +1,6 @@
 package com.tyranor.next.core.game.save
 
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
@@ -177,6 +178,75 @@ class GameSaveManagerMirrorFilterTest {
         assertTrue(live.resolve("empty.marker").isFile)
         assertEquals(0L, live.resolve("empty.marker").length())
         assertFalse(live.resolve("slot.sav").exists())
+        assertTransactionClean(live)
+    }
+
+    @Test
+    fun recreatedEmptyDestinationRecoversBackupBeforeAFilteredEmptyImport() {
+        val live = liveSaves()
+        val backup = transactionPath(live, "backup")
+        assertTrue(live.renameTo(backup))
+        assertTrue(live.mkdir())
+        val emptyImport = temporaryFolder.newFolder()
+        emptyImport.resolve("empty.ksd").createNewFile()
+        expectImportError(SaveErrorCode.NO_FILES_IN_ZIP) {
+            GameSaveManager.importSaveDirectory(live, { false }, mirrorForced = true) {
+                assertEquals("existing save", live.resolve("slot.sav").readText())
+                assertFalse(backup.exists())
+                emptyImport
+            }
+        }
+        assertEquals("existing save", live.resolve("slot.sav").readText())
+        assertTransactionClean(live)
+    }
+
+    @Test
+    fun recreatedEmptyDestinationRecoversBackupBeforeInvalidZipParsing() {
+        val live = liveSaves()
+        val backup = transactionPath(live, "backup")
+        assertTrue(live.renameTo(backup))
+        assertTrue(live.mkdir())
+        val extracted = temporaryFolder.newFolder()
+        expectImportError(SaveErrorCode.NO_FILES_IN_ZIP) {
+            GameSaveManager.importSaveDirectory(live, { false }, mirrorForced = true) {
+                assertEquals("existing save", live.resolve("slot.sav").readText())
+                val count = GameSaveManager.extractZip(ByteArrayInputStream("not a zip".toByteArray()), extracted)
+                if (count == 0) throw GameSaveException(SaveErrorCode.NO_FILES_IN_ZIP)
+                extracted
+            }
+        }
+        assertEquals("existing save", live.resolve("slot.sav").readText())
+        assertTransactionClean(live)
+    }
+
+    @Test
+    fun recreatedEmptyDestinationKeepsBackupWhenRecoveryRenameFails() {
+        val live = liveSaves()
+        val backup = transactionPath(live, "backup")
+        assertTrue(live.renameTo(backup))
+        assertTrue(live.mkdir())
+        expectImportError(SaveErrorCode.SAVE_DIR_UNAVAILABLE) {
+            GameSaveManager.importSaveDirectory(live, { false }, mirrorForced = true,
+                rename = { from, to -> if (from == backup && to == live) false else from.renameTo(to) }) {
+                error("Do not inspect the new import before backup recovery succeeds")
+            }
+        }
+        assertEquals("existing save", backup.resolve("slot.sav").readText())
+        assertFalse(transactionPath(live, "staging").exists())
+    }
+
+    @Test
+    fun recreatedEmptyDestinationCanCompleteANewImportAfterRecoveringBackup() {
+        val live = liveSaves()
+        val backup = transactionPath(live, "backup")
+        assertTrue(live.renameTo(backup))
+        assertTrue(live.mkdir())
+        val source = saveTree()
+        assertEquals(1, GameSaveManager.importSaveDirectory(live, { false }, mirrorForced = true) {
+            assertEquals("existing save", live.resolve("slot.sav").readText())
+            source
+        })
+        assertEquals("save contents", live.resolve("slot/data.sav").readText())
         assertTransactionClean(live)
     }
 
