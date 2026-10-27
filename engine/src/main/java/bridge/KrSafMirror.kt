@@ -186,9 +186,21 @@ object KrSafMirror {
         val diagnostics = BuildDiagnostics()
         val resolved = resolveDocumentDirectory(context.applicationContext, sourceReference, logicalPath)
             ?: throw PrepareException(Stage.SOURCE_UNRESOLVED, logicalPath)
-        val mirrorRoot = mirrorRootFor(context, sourceReference, logicalPath)
+        val gamesRoot = File(context.filesDir.parentFile ?: context.filesDir, "games")
+        val mirrorRoot = withStickyRootSelection(context, gamesRoot, key) {
+            findMirrorRoot(gamesRoot, key)
+        }
         if (!mirrorRoot.isDirectory && !mirrorRoot.mkdirs()) {
             throw PrepareException(Stage.MIRROR_DIR, mirrorRoot.name)
+        }
+        // Keep the persisted selection in sync with the prepared root (identical today,
+        // but the mirrorRootFor/GameSaveManager path must observe the same choice).
+        runCatching {
+            val selection = File(rootSelectionDirectory(context), "root-$key.txt")
+            if (!selection.isFile) {
+                selection.parentFile?.mkdirs()
+                selection.writeText(mirrorRoot.name, Charsets.UTF_8)
+            }
         }
 
         val indexFile = File(indexDir, "$key.idx")
@@ -207,7 +219,7 @@ object KrSafMirror {
 
         val bootstrapLocalOverrides = HashSet<String>()
         val bootstrapFiles = probeBootstrapFiles(context.applicationContext, resolved, mirrorRoot, entries,
-            known, localFiles, bootstrapLocalOverrides, diagnostics)
+            known, localFiles, bootstrapLocalOverrides, diagnostics, previousIndex)
         // Local fallback must not depend on this run's SAF rows: a failed provider can
         // return no rows even though durable local resource copies still exist.
         val preparationSources = assemblePreparationSources(
@@ -398,8 +410,47 @@ object KrSafMirror {
         logicalPath: String,
     ): File {
         val dataRoot = context.filesDir.parentFile ?: context.filesDir
-        return findMirrorRoot(File(dataRoot, "games"), mirrorKey(sourceReference, logicalPath))
+        val gamesRoot = File(dataRoot, "games")
+        val key = mirrorKey(sourceReference, logicalPath)
+        return withStickyRootSelection(context, gamesRoot, key) {
+            findMirrorRoot(gamesRoot, key)
+        }
     }
+
+    /**
+     * The first root selection is sticky: once a launch has prepared mirrors or an import
+     * has targeted a root, later save mtimes in other same-key roots must not rebind the
+     * key — otherwise a just-imported stable root would be switched away and its
+     * `savedata.import_backup` would be orphaned. The choice is persisted beside the
+     * index and invalidated only when the persisted root directory disappears.
+     */
+    internal fun withStickyRootSelection(
+        context: Context,
+        gamesRoot: File,
+        key: String,
+        choose: () -> File,
+    ): File {
+        val selection = File(rootSelectionDirectory(context), "root-$key.txt")
+        if (selection.isFile) {
+            val name = runCatching { selection.readText(Charsets.UTF_8).trim() }.getOrNull().orEmpty()
+            if (name.isNotEmpty()) {
+                val persisted = File(gamesRoot, name)
+                if (persisted.isDirectory && persisted.name.endsWith("-$key")) return persisted
+            }
+            runCatching { selection.delete() }
+        }
+        val chosen = choose()
+        if (chosen.isDirectory) {
+            runCatching {
+                selection.parentFile?.mkdirs()
+                selection.writeText(chosen.name, Charsets.UTF_8)
+            }
+        }
+        return chosen
+    }
+
+    internal fun rootSelectionDirectory(context: Context): File =
+        File(context.noBackupFilesDir, "krkr_saf_index")
 
     internal fun findMirrorRoot(gamesRoot: File, key: String): File {
         val stable = File(gamesRoot, "game-$key")
@@ -557,6 +608,7 @@ object KrSafMirror {
         localFiles: KrMirrorLocalFiles,
         localOverrides: MutableSet<String>,
         diagnostics: BuildDiagnostics,
+        previousIndex: Map<String, KrSafMirror.MirrorEntryHolder<String>>,
     ): Map<String, BootstrapFile> {
         return BOOTSTRAP_FILE_NAMES.associateWith { name ->
             val local = File(mirrorRoot, name)
@@ -582,6 +634,19 @@ object KrSafMirror {
                 }
                 cursor.use {
                     if (!it.moveToFirst()) {
+                        // An empty by-ID response is ambiguous: under KEEP_EXISTING (the
+                        // listing failed entirely) the previous index is durable evidence
+                        // the source existed — treat it as PRESENT via the old row, so a
+                        // flaky provider cannot turn ABSENT into a basic overlay that
+                        // shadows the real patch.tjs (main review, high #1).
+                        previousIndex[key]?.let { previous ->
+                            entries += Triple(key, previous.uri, previous.size)
+                            known.add(key)
+                            diagnostics.observedSourceFiles++
+                            return@associateWith BootstrapFile(
+                                BootstrapFileState.PRESENT, previous.uri, previous.size, localOverride = false,
+                            )
+                        }
                         return@associateWith BootstrapFile(BootstrapFileState.ABSENT, null, -1L, localOverride = false)
                     }
                     val mimeColumn = it.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
@@ -823,23 +888,28 @@ object KrSafMirror {
         for ((dllMirrorKey, dllSourcePath) in candidates) {
             val dllDocumentId = storagePathToDocumentId(dllSourcePath) ?: continue
             val uri = DocumentsContract.buildDocumentUriUsingTree(treeUri, dllDocumentId)
-            val size = runCatching {
+            // A present row with unknown size (-1) joins the index like the main
+            // traversal does; only an exhausted cursor proves the source absent, and
+            // absence is a fact — not an incompleteness signal for the decision.
+            val rowSize: Long? = runCatching {
                 context.contentResolver.query(
                     uri,
-                    arrayOf(DocumentsContract.Document.COLUMN_SIZE),
+                    arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_SIZE),
                     null, null, null,
                 )?.use { cursor ->
-                    if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0) else -1L
-                } ?: -1L
+                    if (!cursor.moveToFirst()) {
+                        null
+                    } else {
+                        val sizeColumn = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
+                        if (sizeColumn >= 0 && !cursor.isNull(sizeColumn)) cursor.getLong(sizeColumn) else -1L
+                    }
+                }
             }.onFailure { error ->
                 if (error is CancellationException) throw error
                 diagnostics.queryFailures++
                 Log.w(TAG, "sig sibling metadata unavailable path=$dllSourcePath", error)
-            }.getOrDefault(-1L)
-            if (size <= 0) {
-                diagnostics.skippedEntries++
-                continue
-            }
+            }.getOrNull()
+            val size = rowSize ?: continue
             val local = localFiles.fileForIndexKey(dllMirrorKey)
             if (local == null) {
                 diagnostics.skippedEntries++

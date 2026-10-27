@@ -40,21 +40,24 @@ class GameSaveManagerMirrorFilterTest {
     }
 
     @Test
-    fun mirrorForcedImportCountMatchesListedAndExportableFiles() {
+    fun mirrorImportRetainsEveryZipFileThenListFiltersPlaceholders() {
+        // R5-#D: the import source is a user ZIP — the 0-byte filter applies to list and
+        // export of the mirror savedata only, never to what the user chose to import.
         val source = saveTree()
         val staging = temporaryFolder.newFolder()
-        val copied = GameSaveManager.stageImportContents(source, staging, { false }, mirrorForced = true)
-        assertEquals(1, copied)
+        assertEquals(3, GameSaveManager.stageImportContents(source, staging, { false }))
+        assertTrue(staging.resolve("empty.marker").isFile)
+        assertTrue(staging.resolve("slot/empty.sav").isFile)
+        assertTrue(staging.resolve("slot/data.sav").isFile)
+        // After the exchange, the live directory holds everything; list/export filter.
         assertListAndExport(staging, mirrorForced = true, expected = setOf("slot/data.sav"))
-        assertFalse(staging.resolve("empty.marker").exists())
-        assertFalse(staging.resolve("slot/empty.sav").exists())
     }
 
     @Test
     fun ordinaryImportRetainsAndCountsEmptyFiles() {
         val source = saveTree()
         val staging = temporaryFolder.newFolder()
-        val copied = GameSaveManager.stageImportContents(source, staging, { false }, mirrorForced = false)
+        val copied = GameSaveManager.stageImportContents(source, staging, { false })
         assertEquals(3, copied)
         assertListAndExport(staging, mirrorForced = false, expected = setOf("empty.marker", "slot/empty.sav", "slot/data.sav"))
     }
@@ -64,47 +67,54 @@ class GameSaveManagerMirrorFilterTest {
         val source = temporaryFolder.newFolder()
         source.resolve("empty.marker").createNewFile()
         val staging = temporaryFolder.newFolder()
-        assertEquals(1, GameSaveManager.stageImportContents(source, staging, { false }, mirrorForced = false))
+        assertEquals(1, GameSaveManager.stageImportContents(source, staging, { false }))
         assertTrue(staging.resolve("empty.marker").isFile)
         assertEquals(0L, staging.resolve("empty.marker").length())
     }
 
     @Test
-    fun emptyOnlyMirrorImportIsRejectedBeforeLiveSaveExchange() {
+    fun emptyOnlyMirrorImportIsPreservedWithoutRejection() {
+        // R5-#D: an all-empty ZIP is a legitimate import (the user chose it); the
+        // exchange happens and the empty files are preserved on disk.
         val source = temporaryFolder.newFolder()
         source.resolve("empty.sav").createNewFile()
         val live = liveSaves()
-        val renames = mutableListOf<Pair<File, File>>()
-        expectImportError(SaveErrorCode.NO_FILES_IN_ZIP) {
-            GameSaveManager.importSaveDirectory(live, { false }, mirrorForced = true, rename = { from, to ->
-                renames += from to to
-                from.renameTo(to)
-            }) { source }
-        }
-        assertEquals("existing save", live.resolve("slot.sav").readText())
-        assertTrue(renames.isEmpty())
+        assertEquals(1, GameSaveManager.importSaveDirectory(live, { false }, rename = { from, to ->
+            from.renameTo(to)
+        }) { source })
+        assertTrue(live.resolve("empty.sav").isFile)
+        assertEquals(0L, live.resolve("empty.sav").length())
+        assertFalse(live.resolve("slot.sav").exists())
+        // List/export still filter the empty placeholder from the savedata listing.
+        val listed = mutableListOf<File>()
+        GameSaveManager.collectFiles(live, listed, { false }, mirrorForced = true)
+        assertTrue(listed.isEmpty())
         assertTransactionClean(live)
     }
 
     @Test
-    fun mirrorImportStagesFiltersAndExchangesTheLiveDirectory() {
+    fun mirrorImportStagesEverythingAndExchangesTheLiveDirectory() {
         val source = saveTree()
         val live = liveSaves()
         var stagedBeforeExchange = false
-        val copied = GameSaveManager.importSaveDirectory(live, { false }, mirrorForced = true, rename = { from, to ->
+        val copied = GameSaveManager.importSaveDirectory(live, { false }, rename = { from, to ->
             if (from == live) {
                 val staging = transactionPath(live, "staging")
                 assertEquals("existing save", live.resolve("slot.sav").readText())
                 assertEquals("save contents", staging.resolve("slot/data.sav").readText())
-                assertFalse(staging.resolve("empty.marker").exists())
+                assertTrue(staging.resolve("empty.marker").isFile)
                 stagedBeforeExchange = true
             }
             from.renameTo(to)
         }) { source }
         assertTrue(stagedBeforeExchange)
-        assertEquals(1, copied)
+        assertEquals(3, copied)
         assertFalse(live.resolve("slot.sav").exists())
-        assertListAndExport(live, mirrorForced = true, expected = setOf("slot/data.sav"))
+        assertTrue(live.resolve("empty.marker").isFile)
+        // The live list (mirrorForced) filters empties; the files stay on disk.
+        val listed = mutableListOf<File>()
+        GameSaveManager.collectFiles(live, listed, { false }, mirrorForced = true)
+        assertEquals(setOf("slot/data.sav"), listed.map { it.relativeTo(live).invariantSeparatorsPath }.toSet())
         assertTransactionClean(live)
     }
 
@@ -114,7 +124,7 @@ class GameSaveManagerMirrorFilterTest {
         val live = liveSaves()
         val staging = transactionPath(live, "staging")
         expectImportError(SaveErrorCode.SAVE_DIR_UNAVAILABLE) {
-            GameSaveManager.importSaveDirectory(live, { false }, mirrorForced = true, rename = { from, to ->
+            GameSaveManager.importSaveDirectory(live, { false }, rename = { from, to ->
                 if (from == staging && to == live) false else from.renameTo(to)
             }) { source }
         }
@@ -130,14 +140,14 @@ class GameSaveManagerMirrorFilterTest {
         val staging = transactionPath(live, "staging")
         val backup = transactionPath(live, "backup")
         expectImportError(SaveErrorCode.SAVE_DIR_UNAVAILABLE) {
-            GameSaveManager.importSaveDirectory(live, { false }, mirrorForced = true, rename = { from, to ->
+            GameSaveManager.importSaveDirectory(live, { false }, rename = { from, to ->
                 if ((from == staging || from == backup) && to == live) false else from.renameTo(to)
             }) { source }
         }
         assertFalse(live.exists())
         assertEquals("existing save", backup.resolve("slot.sav").readText())
         try {
-            GameSaveManager.importSaveDirectory(live, { false }, mirrorForced = true) {
+            GameSaveManager.importSaveDirectory(live, { false }) {
                 assertEquals("existing save", live.resolve("slot.sav").readText())
                 assertFalse(backup.exists())
                 throw IOException("Source unavailable")
@@ -156,7 +166,7 @@ class GameSaveManagerMirrorFilterTest {
         val live = liveSaves()
         live.resolve("system.pfs").writeText("engine resource")
         try {
-            GameSaveManager.importSaveDirectory(live, { it.endsWith(".pfs") }, mirrorForced = false,
+            GameSaveManager.importSaveDirectory(live, { it.endsWith(".pfs") },
                 restoreExcluded = { _, _ -> throw IOException("Resource restore failed") }) { source }
             fail("Resource restoration failure must be propagated")
         } catch (error: IOException) {
@@ -174,7 +184,7 @@ class GameSaveManagerMirrorFilterTest {
         val source = temporaryFolder.newFolder()
         source.resolve("empty.marker").createNewFile()
         val live = liveSaves()
-        assertEquals(1, GameSaveManager.importSaveDirectory(live, { false }, mirrorForced = false) { source })
+        assertEquals(1, GameSaveManager.importSaveDirectory(live, { false }) { source })
         assertTrue(live.resolve("empty.marker").isFile)
         assertEquals(0L, live.resolve("empty.marker").length())
         assertFalse(live.resolve("slot.sav").exists())
@@ -182,21 +192,22 @@ class GameSaveManagerMirrorFilterTest {
     }
 
     @Test
-    fun recreatedEmptyDestinationRecoversBackupBeforeAFilteredEmptyImport() {
+    fun recreatedEmptyDestinationRecoversBackupBeforeAnEmptyImport() {
         val live = liveSaves()
         val backup = transactionPath(live, "backup")
         assertTrue(live.renameTo(backup))
         assertTrue(live.mkdir())
         val emptyImport = temporaryFolder.newFolder()
         emptyImport.resolve("empty.ksd").createNewFile()
-        expectImportError(SaveErrorCode.NO_FILES_IN_ZIP) {
-            GameSaveManager.importSaveDirectory(live, { false }, mirrorForced = true) {
-                assertEquals("existing save", live.resolve("slot.sav").readText())
-                assertFalse(backup.exists())
-                emptyImport
-            }
-        }
-        assertEquals("existing save", live.resolve("slot.sav").readText())
+        // The empty import now succeeds (R5-#D); backup recovery runs first. After the
+        // committed exchange the backup is consumed; the empty file is preserved on disk
+        // (list/export filter it, per the mirrorForced rule).
+        assertEquals(1, GameSaveManager.importSaveDirectory(live, { false }) {
+            assertFalse(backup.exists())
+            emptyImport
+        })
+        assertTrue(live.resolve("empty.ksd").isFile)
+        assertEquals(0L, live.resolve("empty.ksd").length())
         assertTransactionClean(live)
     }
 
@@ -208,7 +219,7 @@ class GameSaveManagerMirrorFilterTest {
         assertTrue(live.mkdir())
         val extracted = temporaryFolder.newFolder()
         expectImportError(SaveErrorCode.NO_FILES_IN_ZIP) {
-            GameSaveManager.importSaveDirectory(live, { false }, mirrorForced = true) {
+            GameSaveManager.importSaveDirectory(live, { false }) {
                 assertEquals("existing save", live.resolve("slot.sav").readText())
                 val count = GameSaveManager.extractZip(ByteArrayInputStream("not a zip".toByteArray()), extracted)
                 if (count == 0) throw GameSaveException(SaveErrorCode.NO_FILES_IN_ZIP)
@@ -226,7 +237,7 @@ class GameSaveManagerMirrorFilterTest {
         assertTrue(live.renameTo(backup))
         assertTrue(live.mkdir())
         expectImportError(SaveErrorCode.SAVE_DIR_UNAVAILABLE) {
-            GameSaveManager.importSaveDirectory(live, { false }, mirrorForced = true,
+            GameSaveManager.importSaveDirectory(live, { false },
                 rename = { from, to -> if (from == backup && to == live) false else from.renameTo(to) }) {
                 error("Do not inspect the new import before backup recovery succeeds")
             }
@@ -242,7 +253,7 @@ class GameSaveManagerMirrorFilterTest {
         assertTrue(live.renameTo(backup))
         assertTrue(live.mkdir())
         val source = saveTree()
-        assertEquals(1, GameSaveManager.importSaveDirectory(live, { false }, mirrorForced = true) {
+        assertEquals(3, GameSaveManager.importSaveDirectory(live, { false }) {
             assertEquals("existing save", live.resolve("slot.sav").readText())
             source
         })

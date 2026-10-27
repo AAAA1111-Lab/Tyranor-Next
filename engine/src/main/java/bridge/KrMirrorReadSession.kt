@@ -15,8 +15,19 @@ internal class KrMirrorReadSession<T>(
     private val removedKeys = ConcurrentHashMap.newKeySet<String>()
     private val ownershipMarkers = ConcurrentHashMap<String, File>()
 
-    /** Known resources remain routed after unlink; falling back could recreate a placeholder. */
-    fun shouldRoute(key: String): Boolean = key in documents || key in removedKeys || key in localOverrides
+    /**
+     * Known resources remain routed after unlink; falling back could recreate a placeholder.
+     * Top-level `savedata/` rows (only present in pre-upgrade indexes) are excluded: the
+     * standard save directory stays a plain local directory — routing it would run
+     * copy-up/resource locks against local save files and create resource ownership
+     * markers, violating the save-redirect boundary.
+     */
+    fun shouldRoute(key: String): Boolean {
+        if (key !in documents && key !in removedKeys && key !in localOverrides) return false
+        val relative = localFiles?.relativeForIndexKey(key) ?: return true
+        return !relative.equals("savedata", ignoreCase = true) &&
+            !relative.startsWith("savedata/", ignoreCase = true)
+    }
 
     fun sourceEntry(key: String): T? = if (key in removedKeys) null else documents[key]
 

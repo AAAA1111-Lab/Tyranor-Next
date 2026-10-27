@@ -328,7 +328,7 @@ class GameSaveManager(private val context: Context) {
             } else {
                 null
             }
-            return importSaveDirectory(destination, excludeFor(game.engine), location.mirrorForced, restoreExcluded) {
+            return importSaveDirectory(destination, excludeFor(game.engine), restoreExcluded) {
                 // Recovery completes before extraction creates a cache directory.
                 val extractedDirectory = createTemporaryDirectory().also { temp = it }
                 if (extractZip(sourceUri, extractedDirectory) == 0) {
@@ -654,7 +654,6 @@ class GameSaveManager(private val context: Context) {
         internal fun importSaveDirectory(
             destination: File,
             exclude: (String) -> Boolean,
-            mirrorForced: Boolean,
             restoreExcluded: ((File, File) -> Unit)? = null,
             rename: (File, File) -> Boolean = { from, to -> from.renameTo(to) },
             sourceProvider: () -> File,
@@ -694,7 +693,7 @@ class GameSaveManager(private val context: Context) {
                     throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
                 }
                 if (!staging.mkdirs()) throw GameSaveException(SaveErrorCode.CREATE_SAVE_DIR)
-                val copied = stageImportContents(source, staging, exclude, mirrorForced)
+                val copied = stageImportContents(source, staging, exclude)
                 if (backup.exists() && !backup.deleteRecursively()) {
                     throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
                 }
@@ -721,9 +720,11 @@ class GameSaveManager(private val context: Context) {
             source: File,
             staging: File,
             exclude: (String) -> Boolean,
-            mirrorForced: Boolean,
         ): Int {
-            val copied = copyDirectoryContents(source, staging, exclude, mirrorForced)
+            // The import source is a user-provided ZIP, not the mirror target: the
+            // mirrorForced 0-byte filter (a legacy-placeholder rule for list/export of
+            // the mirror savedata) must not silently drop legitimate empty files here.
+            val copied = copyDirectoryContents(source, staging, exclude)
             if (copied == 0) throw GameSaveException(SaveErrorCode.NO_FILES_IN_ZIP)
             return copied
         }
@@ -733,7 +734,6 @@ class GameSaveManager(private val context: Context) {
             source: File,
             destination: File,
             exclude: (String) -> Boolean,
-            mirrorForced: Boolean,
         ): Int {
             var copied = 0
             source.listFiles().orEmpty().forEach { child ->
@@ -741,8 +741,8 @@ class GameSaveManager(private val context: Context) {
                 val target = File(destination, child.name)
                 if (child.isDirectory) {
                     if (!target.exists() && !target.mkdirs()) throw GameSaveException(SaveErrorCode.CREATE_SAVE_DIR_NAMED, detail = child.name)
-                    copied += copyDirectoryContents(child, target, exclude, mirrorForced)
-                } else if (child.isFile && includesSaveFile(child, mirrorForced)) {
+                    copied += copyDirectoryContents(child, target, exclude)
+                } else if (child.isFile) {
                     target.parentFile?.let {
                         if (!it.exists() && !it.mkdirs()) throw GameSaveException(SaveErrorCode.CREATE_SAVE_DIR_NAMED, detail = child.name)
                     }

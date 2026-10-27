@@ -258,6 +258,9 @@ object NativeBridge {
             ?: return -1L
         val key = normalized.lowercase(Locale.ROOT)
         val session = safMirror
+        // Top-level savedata rows (pre-upgrade indexes) stay local: never override their
+        // stat with indexed sizes, or a 0-byte local save reads as N bytes.
+        if (!session.shouldRoute(key)) return -1L
         val entry = session.entry(key) ?: return -1L
         if (session.isLocal(key, File(normalized))) return -1L
         // Native calls this only for a successful stat of a zero-byte regular file.
