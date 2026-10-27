@@ -140,5 +140,28 @@ int main(int argc, char** argv) {
     fclose(stream);
     assert(get(path) == "OLD");
 
-    puts("6 production mirror freopen host regressions passed");
+    // Audit F2: a same-mode swap may reuse the caller's FILE via dup2 — the old
+    // stream's descriptor mode equals the request, so writes keep working.
+    put(path, "ABC");
+    put(second, "123");
+    stream = fopen(path.c_str(), "r+");
+    assert(stream);
+    stream = reopen(stream, second, "r+");
+    assert(fseek(stream, 0, SEEK_SET) == 0);
+    assert(fwrite("X", 1, 1, stream) == 1);
+    assert(fclose(stream) == 0);
+    assert(get(second) == "X23");
+
+    // Audit F2: a mode change (rb -> w) must take the rebuild path; the request is
+    // O_WRONLY while the Java-first fd opens O_RDWR, so reuse is not permissible.
+    const std::string third = std::string(argv[1]) + "/third";
+    put(path, "ABC");
+    stream = fopen(path.c_str(), "rb");
+    assert(stream);
+    stream = reopen(stream, third, "w");
+    assert(fwrite("N", 1, 1, stream) == 1);
+    assert(fclose(stream) == 0);
+    assert(get(third) == "N");
+
+    puts("8 production mirror freopen host regressions passed");
 }

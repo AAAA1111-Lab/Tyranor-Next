@@ -113,11 +113,19 @@ private fun SaveManagementScreen(game: ScanGame) {
 
     // 目录解析与文件递归遍历均为磁盘 IO：统一切到 IO 线程，避免组合期/主线程卡顿
     suspend fun refresh() {
+        // 解析失败（如镜像根暂不可用）按「位置未知」呈现而不是让页面初始化崩溃；
+        // 后续导入/导出走各自已捕获异常的路径（审计 F1 的 UI 侧防线）
         val snapshot = withContext(Dispatchers.IO) {
-            manager.resolveSaveLocation(game) to manager.listSaveFiles(game).size
+            runCatching { manager.resolveSaveLocation(game) to manager.listSaveFiles(game).size }
         }
-        location = snapshot.first
-        fileCount = snapshot.second
+        snapshot.onSuccess {
+            location = it.first
+            fileCount = it.second
+        }.onFailure { error ->
+            location = null
+            fileCount = 0
+            android.util.Log.w("SaveManagement", "save location resolve failed", error)
+        }
     }
 
     LaunchedEffect(game) {

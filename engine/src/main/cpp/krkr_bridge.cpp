@@ -836,22 +836,24 @@ FILE* hookedFreopenCommon(const char* path, const char* mode, FILE* stream, Freo
             return nullptr;
         }
         if (fd >= 0) {
-            // Access-compatible, non-append requests keep the caller's FILE via dup2:
-            // rebinding the underlying fd preserves libc's append/EOF/orientation state,
-            // and dup2's close of the previous target reproduces freopen's own
-            // close-and-rebind semantics. Mode adaptations (read-only SAF fd on an
-            // update request) and append requests still need the procfs rebuild.
+            // The caller's FILE is only reusable when its own access mode provably
+            // equals the request: dup2 rebinds the descriptor but cannot rebuild FILE
+            // flags, and Bionic's __swsetup fails writes on a stream opened without
+            // write access (rb -> w+ would report success yet never write; audit F2).
+            // Compare the old stream's descriptor mode as well, keep both sides
+            // non-append, and let the procfs rebuild handle every mode adaptation.
             const int actualFlags = fcntl(fd, F_GETFL);
-            const bool accessMatches = actualFlags >= 0 &&
-                    (actualFlags & O_ACCMODE) == (flags & O_ACCMODE);
-            if (accessMatches && (flags & O_APPEND) == 0) {
-                const int target = fileno(stream);
-                if (target >= 0 && dup2(fd, target) >= 0) {
-                    close(fd);
-                    clearerr(stream);
-                    if ((flags & O_ACCMODE) != O_WRONLY) rewind(stream);
-                    return stream;
-                }
+            const int streamFd = fileno(stream);
+            const int oldFlags = streamFd >= 0 ? fcntl(streamFd, F_GETFL) : -1;
+            const bool modeReusable = actualFlags >= 0 && oldFlags >= 0 &&
+                    (oldFlags & O_ACCMODE) == (flags & O_ACCMODE) &&
+                    (actualFlags & O_ACCMODE) == (flags & O_ACCMODE) &&
+                    (oldFlags & O_APPEND) == 0;
+            if (modeReusable && streamFd >= 0 && dup2(fd, streamFd) >= 0) {
+                close(fd);
+                clearerr(stream);
+                if ((flags & O_ACCMODE) != O_WRONLY) rewind(stream);
+                return stream;
             }
             // Matching O_ACCMODE is insufficient for the rebuild: FILE also owns append
             // state, buffering, orientation and EOF state. Let libc rebuild all of it.

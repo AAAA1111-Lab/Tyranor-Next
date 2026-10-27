@@ -235,7 +235,9 @@ object KrSafMirror {
         val confirmedAbsentKeys = bootstrapFiles.filterValues { it.state == BootstrapFileState.ABSENT }
             .keys.mapTo(HashSet()) { File(mirrorRoot, it).absolutePath.lowercase(Locale.ROOT) }
         val carried = reconcilePreparedIndex(mirrorRoot, previousIndex, entries, known,
-            localOverrides, decision, confirmedAbsentKeys)
+            localOverrides, decision, confirmedAbsentKeys) { key ->
+            isSourceDocumentGone(context.applicationContext, resolved.treeUri, previousIndex[key])
+        }
         if (decision == MirrorSourceDecision.REBUILD_MERGED) {
             Log.w(TAG, "mirror listing incomplete; carried $carried previous index rows (queryFailures=${diagnostics.queryFailures})")
         }
@@ -329,6 +331,34 @@ object KrSafMirror {
     /** Completeness decision for one prepare run; pure for JVM regression. */
     internal enum class MirrorSourceDecision { REBUILD_FRESH, REBUILD_MERGED, KEEP_EXISTING, FAIL_EMPTY }
 
+    /**
+     * Second-source absence proof for a fresh rebuild (audit F3): cursor EOF alone is
+     * not destructive evidence for a known old row, so removal additionally requires
+     * the row's document to answer a by-ID query with a definitive miss (AOSP returns
+     * a null cursor for missing documents). Provider errors keep the old row.
+     */
+    private fun isSourceDocumentGone(
+        context: Context,
+        treeUri: Uri,
+        previous: MirrorEntryHolder<String>?,
+    ): Boolean {
+        if (previous == null) return false
+        return try {
+            val documentId = DocumentsContract.getDocumentId(Uri.parse(previous.uri))
+            val uri = DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId)
+            val cursor = context.contentResolver.query(
+                uri,
+                arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID),
+                null, null, null,
+            )
+            cursor?.use { !it.moveToFirst() } ?: true
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
+            Log.w(TAG, "fresh rebuild absence check unavailable", error)
+            false
+        }
+    }
+
     internal fun decideMirrorSources(
         observed: Int,
         previousCount: Int,
@@ -356,6 +386,7 @@ object KrSafMirror {
         localOverrides: Set<String>,
         decision: MirrorSourceDecision,
         confirmedAbsentKeys: Set<String> = emptySet(),
+        confirmMissing: ((String) -> Boolean)? = null,
     ): Int {
         if (decision == MirrorSourceDecision.KEEP_EXISTING || decision == MirrorSourceDecision.FAIL_EMPTY) return 0
         val localFiles = KrMirrorLocalFiles(mirrorRoot)
@@ -364,10 +395,13 @@ object KrSafMirror {
         val current = (known + localOverrides).mapNotNullTo(HashSet(), ::identity)
         val confirmedAbsent = confirmedAbsentKeys.mapNotNullTo(HashSet(), ::identity)
         val missing = if (decision == MirrorSourceDecision.REBUILD_FRESH) {
-            // REBUILD_FRESH now requires a complete root listing (decideMirrorSources),
-            // so absence here is second-confirmed by that listing; a silently truncated
-            // provider response degrades to REBUILD_MERGED and keeps every old row.
-            previousIndex.keys.mapNotNullTo(HashSet(), ::identity).apply { removeAll(current) }
+            // Cursor EOF alone is not destructive absence proof (audit F3): a provider
+            // may return a valid subset. A known old row loses its placeholder only
+            // when the second source check independently confirms the document is
+            // gone; everything unconfirmed stays conservative and is carried below.
+            previousIndex.keys.mapNotNullTo(HashSet(), ::identity)
+                .apply { removeAll(current) }
+                .filterTo(HashSet()) { confirmMissing?.invoke(it) == true }
         } else {
             confirmedAbsent
         }
@@ -387,11 +421,12 @@ object KrSafMirror {
                 throw PrepareException(Stage.MIRROR_DIR, local.name).also { it.initCause(error) }
             }
         }
-        if (decision != MirrorSourceDecision.REBUILD_MERGED) return 0
         var carried = 0
         for ((key, entry) in previousIndex) {
             val relative = identity(key) ?: continue
-            if (relative in current || relative in confirmedAbsent || isSourceEntryExcluded(relative)) continue
+            if (relative in current || relative in confirmedAbsent || relative in missing ||
+                isSourceEntryExcluded(relative)
+            ) continue
             entries += Triple(key, entry.uri, entry.size)
             known.add(key)
             current.add(relative)
@@ -429,27 +464,38 @@ object KrSafMirror {
         }
     }
 
-    /** Bounded per-key lock for the sticky marker; null = lock busy, caller falls back. */
-    private fun <T> tryStickySelectionLock(indexDirectory: File, key: String, action: () -> T): T? {
+    /**
+     * Bounded per-key lock for the sticky marker; null = lock busy or unavailable,
+     * caller falls back to the tolerant path. The index directory is otherwise only
+     * created by [prepare]: a first-ever save-management open before any launch used
+     * to throw FileNotFoundException here, and because the file was constructed
+     * outside the finally scope it also leaked the held process mutex — every later
+     * prepare on the shard then blocked until process death (local audit F1).
+     */
+    internal fun <T> tryStickySelectionLock(indexDirectory: File, key: String, action: () -> T): T? {
         val lockFile = File(indexDirectory, "prepare-${(key.hashCode() and Int.MAX_VALUE) % PREPARATION_LOCK_SHARDS}.lock")
         val mutex = preparationLocks.getOrPut(lockFile.absolutePath) { ReentrantLock() }
         if (!mutex.tryLock(500, TimeUnit.MILLISECONDS)) return null
-        val file = RandomAccessFile(lockFile, "rw")
         try {
-            val held = try {
-                file.channel.tryLock()
-            } catch (_: OverlappingFileLockException) {
-                null
-            } catch (_: IOException) {
-                null
-            } ?: return null
+            if (!indexDirectory.isDirectory && !indexDirectory.mkdirs() && !indexDirectory.isDirectory) return null
+            val file = RandomAccessFile(lockFile, "rw")
             try {
-                return action()
+                val held = try {
+                    file.channel.tryLock()
+                } catch (_: OverlappingFileLockException) {
+                    null
+                } catch (_: IOException) {
+                    null
+                } ?: return null
+                try {
+                    return action()
+                } finally {
+                    held.release()
+                }
             } finally {
-                held.release()
+                file.close()
             }
         } finally {
-            file.close()
             mutex.unlock()
         }
     }

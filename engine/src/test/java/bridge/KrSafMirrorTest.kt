@@ -579,12 +579,53 @@ class KrSafMirrorTest {
 
         assertEquals(KrSafMirror.MirrorSourceDecision.REBUILD_FRESH, sources.decision)
         assertEquals(0, KrSafMirror.reconcilePreparedIndex(root, previous, entries, known,
-            sources.localOverrides, sources.decision))
+            sources.localOverrides, sources.decision, confirmMissing = { true }))
         assertFalse(removed.exists())
         assertTrue(unknown.exists())
         assertTrue(markedEmpty.exists())
         assertEquals("local contents", edited.readText())
         assertEquals(setOf(key(startup)), entries.map { it.first }.toSet())
+    }
+
+    @Test
+    fun freshRebuildKeepsSilentlyOmittedResourcesUntilAbsenceIsConfirmed() {
+        // Audit F3: a root cursor that ends normally can still be a valid subset; the
+        // omitted old row keeps its placeholder and index row until the second source
+        // check confirms the document is gone.
+        val root = temporary.newFolder("silent-subset")
+        val listed = File(root, "data.xp3").apply { createNewFile() }
+        val omitted = File(root, "plugin/plugin.dll").apply {
+            requireNotNull(parentFile).mkdirs(); createNewFile()
+        }
+        val key: (File) -> String = { it.absolutePath.lowercase(Locale.ROOT) }
+        val previousFile = File(temporary.root, "previous-subset.idx")
+        previousFile.writeText(buildString { KrSafMirror.writeIndexText(this, listOf(
+            Triple(key(listed), "content://source/data", 10L),
+            Triple(key(omitted), "content://source/plugin", 20L),
+        )) })
+        val previous = KrSafMirror.readIndexFile(previousFile) { it }
+        val sources = KrSafMirror.assemblePreparationSources(root, previous.keys,
+            mutableListOf(Triple(key(listed), "content://source/data", 10L)),
+            observed = 1, queryFailures = 0, rootListingComplete = true)
+        assertEquals(KrSafMirror.MirrorSourceDecision.REBUILD_FRESH, sources.decision)
+
+        // Without confirmation: the omitted row is carried back and stays reachable.
+        val entriesCarried = mutableListOf(Triple(key(listed), "content://source/data", 10L))
+        val knownCarried = entriesCarried.mapTo(HashSet()) { it.first }
+        assertEquals(1, KrSafMirror.reconcilePreparedIndex(root, previous, entriesCarried, knownCarried,
+            sources.localOverrides, sources.decision, confirmMissing = { false }))
+        assertTrue(omitted.exists())
+        assertTrue(entriesCarried.any {
+            it.first == key(omitted) && it.second == "content://source/plugin" && it.third == 20L
+        })
+
+        // With confirmation: placeholder removed and the row dropped from the index.
+        val entriesConfirmed = mutableListOf(Triple(key(listed), "content://source/data", 10L))
+        val knownConfirmed = entriesConfirmed.mapTo(HashSet()) { it.first }
+        assertEquals(0, KrSafMirror.reconcilePreparedIndex(root, previous, entriesConfirmed, knownConfirmed,
+            sources.localOverrides, sources.decision, confirmMissing = { true }))
+        assertFalse(omitted.exists())
+        assertFalse(entriesConfirmed.any { it.first == key(omitted) })
     }
 
     @Test
@@ -705,6 +746,28 @@ class KrSafMirrorTest {
         assertTrue(selection.isFile)
         assertEquals(root.name, selection.readText().trim())
         assertFalse(File(selection.parentFile, selection.name + ".tmp").exists())
+    }
+
+    @Test
+    fun firstStickySelectionLockRunCreatesMissingIndexDirectoryAndReleasesTheMutex() {
+        // Audit F1: the index directory is otherwise only created by prepare(); a
+        // first-ever save-management open used to throw FileNotFoundException here and
+        // leak the held process mutex, so the directory must be established and every
+        // failure path must still unlock.
+        val indexDirectory = File(temporary.newFolder("first-entry"), "no_backup/krkr_saf_index")
+        assertEquals("ok", KrSafMirror.tryStickySelectionLock(indexDirectory, "0123456789abcdef") { "ok" })
+        assertTrue(indexDirectory.isDirectory)
+        assertEquals("ok2", KrSafMirror.tryStickySelectionLock(indexDirectory, "0123456789abcdef") { "ok2" })
+        try {
+            KrSafMirror.tryStickySelectionLock(indexDirectory, "0123456789abcdef") {
+                throw java.io.IOException("boom")
+            }
+            fail("action failure must propagate")
+        } catch (error: java.io.IOException) {
+            assertEquals("boom", error.message)
+        }
+        // The mutex was released despite the failure: an immediate acquisition succeeds.
+        assertEquals("ok3", KrSafMirror.tryStickySelectionLock(indexDirectory, "0123456789abcdef") { "ok3" })
     }
 
 }
