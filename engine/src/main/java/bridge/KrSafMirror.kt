@@ -377,7 +377,10 @@ object KrSafMirror {
         else -> MirrorSourceDecision.FAIL_EMPTY
     }
 
-    /** Reconcile old rows only after the completeness/absence evidence has been assembled. */
+    /**
+     * Reconcile old rows after completeness/absence evidence has been assembled.
+     * [confirmMissing] receives the original key from [previousIndex], not a relative identity.
+     */
     internal fun reconcilePreparedIndex(
         mirrorRoot: File,
         previousIndex: Map<String, MirrorEntryHolder<String>>,
@@ -399,9 +402,10 @@ object KrSafMirror {
             // may return a valid subset. A known old row loses its placeholder only
             // when the second source check independently confirms the document is
             // gone; everything unconfirmed stays conservative and is carried below.
-            previousIndex.keys.mapNotNullTo(HashSet(), ::identity)
-                .apply { removeAll(current) }
-                .filterTo(HashSet()) { confirmMissing?.invoke(it) == true }
+            previousIndex.keys.mapNotNullTo(HashSet()) { key ->
+                val relative = identity(key) ?: return@mapNotNullTo null
+                if (relative !in current && confirmMissing?.invoke(key) == true) relative else null
+            }
         } else {
             confirmedAbsent
         }
@@ -412,10 +416,14 @@ object KrSafMirror {
             if (relative !in missing || relative in current || isSourceEntryExcluded(relative)) continue
             val local = localFiles.fileForIndexKey(key) ?: continue
             try {
-                if (!localFiles.isOverridden(local) && local.isFile && local.length() == 0L &&
-                    local.canonicalPath.startsWith(canonicalRoot.path + File.separator)
-                ) {
-                    if (!local.delete()) throw PrepareException(Stage.MIRROR_DIR, local.name)
+                // Source confirmation may race a running session's copy-up. Recheck
+                // local ownership and emptiness under the same resource lock before deleting.
+                localFiles.withFileLock(local) {
+                    if (!localFiles.isOverridden(local) && local.isFile && local.length() == 0L &&
+                        local.canonicalPath.startsWith(canonicalRoot.path + File.separator)
+                    ) {
+                        if (!local.delete()) throw PrepareException(Stage.MIRROR_DIR, local.name)
+                    }
                 }
             } catch (error: IOException) {
                 throw PrepareException(Stage.MIRROR_DIR, local.name).also { it.initCause(error) }

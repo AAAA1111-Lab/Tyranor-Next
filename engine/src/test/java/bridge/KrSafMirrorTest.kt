@@ -629,6 +629,114 @@ class KrSafMirrorTest {
     }
 
     @Test
+    fun freshRebuildConfirmsMissingDocumentsUsingOriginalAbsoluteIndexKeys() {
+        val root = temporary.newFolder("absolute-absence-check")
+        val listed = File(root, "data.xp3").apply { createNewFile() }
+        val removed = File(root, "plugin/removed.dll").apply {
+            requireNotNull(parentFile).mkdirs()
+            createNewFile()
+        }
+        val unconfirmed = File(root, "plugin/unavailable.dll").apply { createNewFile() }
+        val key: (File) -> String = { it.absolutePath.lowercase(Locale.ROOT) }
+        val removedUri = "content://source/removed"
+        val unavailableUri = "content://source/unavailable"
+        val previousFile = File(temporary.root, "previous-absolute-absence.idx").apply {
+            writeText(buildString { KrSafMirror.writeIndexText(this, listOf(
+                Triple(key(listed), "content://source/data", 10L),
+                Triple(key(removed), removedUri, 20L),
+                Triple(key(unconfirmed), unavailableUri, 30L),
+            )) })
+        }
+        val previous = KrSafMirror.readIndexFile(previousFile) { it }
+        val entries = mutableListOf(Triple(key(listed), "content://source/data", 10L))
+        val known = entries.mapTo(HashSet()) { it.first }
+        val checked = mutableListOf<String>()
+
+        val carried = KrSafMirror.reconcilePreparedIndex(root, previous, entries, known,
+            emptySet(), KrSafMirror.MirrorSourceDecision.REBUILD_FRESH,
+            confirmMissing = { indexKey ->
+                checked += indexKey
+                // Match prepare's real lookup; a relative identity cannot retrieve the row.
+                val entry = requireNotNull(previous[indexKey])
+                entry.uri == removedUri
+            })
+
+        assertEquals(setOf(key(removed), key(unconfirmed)), checked.toSet())
+        assertEquals(2, checked.size)
+        assertFalse(removed.exists())
+        assertTrue(unconfirmed.exists())
+        assertTrue(listed.exists())
+        assertEquals(1, carried)
+        assertEquals(setOf(key(listed), key(unconfirmed)), known)
+        assertEquals(setOf(key(listed), key(unconfirmed)), entries.map { it.first }.toSet())
+        assertTrue(entries.any { it.first == key(unconfirmed) && it.second == unavailableUri && it.third == 30L })
+    }
+
+    @Test
+    fun freshCleanupPreservesConcurrentNonEmptyCopyUp() {
+        assertFreshCleanupPreservesConcurrentCopyUp("local resource")
+    }
+
+    @Test
+    fun freshCleanupPreservesConcurrentIntentionallyEmptyCopyUp() {
+        assertFreshCleanupPreservesConcurrentCopyUp("")
+    }
+
+    private fun assertFreshCleanupPreservesConcurrentCopyUp(contents: String) {
+        val root = temporary.newFolder("cleanup-copy-up-race")
+        val listed = File(root, "data.xp3").apply { createNewFile() }
+        val resource = File(root, "plugin/removed.dll").apply {
+            requireNotNull(parentFile).mkdirs()
+            createNewFile()
+        }
+        val key: (File) -> String = { it.absolutePath.lowercase(Locale.ROOT) }
+        val previous = mapOf(key(resource) to KrSafMirror.MirrorEntryHolder("content://source/removed", 50L))
+        val entries = mutableListOf(Triple(key(listed), "content://source/data", 10L))
+        val known = entries.mapTo(HashSet()) { it.first }
+        val localFiles = KrMirrorLocalFiles(root)
+        val confirmed = CountDownLatch(1)
+        val failure = AtomicReference<Throwable>()
+        val carried = AtomicReference<Int>()
+        val cleanup = Thread {
+            try {
+                carried.set(KrSafMirror.reconcilePreparedIndex(root, previous, entries, known,
+                    emptySet(), KrSafMirror.MirrorSourceDecision.REBUILD_FRESH,
+                    confirmMissing = { indexKey ->
+                        assertEquals(key(resource), indexKey)
+                        confirmed.countDown()
+                        true
+                    }))
+            } catch (error: Throwable) {
+                failure.set(error)
+            }
+        }
+        try {
+            localFiles.withFileLock(resource) {
+                cleanup.start()
+                assertTrue(confirmed.await(5, TimeUnit.SECONDS))
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+                while (cleanup.state != Thread.State.BLOCKED && System.nanoTime() < deadline) Thread.yield()
+                assertEquals("Cleanup must wait for the resource lock", Thread.State.BLOCKED, cleanup.state)
+                // A running session publishes after source confirmation but before
+                // cleanup acquires the resource lock; even a deliberate empty override survives.
+                val bytes = contents.toByteArray(Charsets.UTF_8)
+                localFiles.copyUp(resource, bytes.size.toLong()) { bytes.inputStream() }
+                assertTrue(localFiles.isOverridden(resource))
+            }
+            cleanup.join(5000)
+            assertFalse(cleanup.isAlive)
+            assertNull(failure.get())
+            assertEquals(0, carried.get().toInt())
+            assertTrue(resource.isFile)
+            assertEquals(contents, resource.readText())
+            assertTrue(localFiles.isOverridden(resource))
+            assertFalse(entries.any { it.first == key(resource) })
+        } finally {
+            cleanup.join(5000)
+        }
+    }
+
+    @Test
     fun skippedDepthLimitedOrInvalidRootListingsCarryPreviousRowsInsteadOfPublishingAFreshSubset() {
         for ((index, flags) in listOf(Triple(1, 0, false), Triple(0, 1, false), Triple(0, 0, true)).withIndex()) {
             val (skipped, depth, invalidRoot) = flags
