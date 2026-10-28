@@ -343,6 +343,86 @@ class GameSaveManagerMirrorFilterTest {
         assertTransactionClean(live)
     }
 
+    @Test
+    fun failedResourceImportThenDeletePreservesTheSoleGameResource() {
+        val live = liveSaves()
+        live.resolve("foo").mkdirs()
+        live.resolve("foo/data.pfs").writeText("sole game resource")
+        val source = temporaryFolder.newFolder().apply {
+            resolve("foo").writeText("conflicting imported file")
+            resolve("slot.sav").writeText("imported save")
+        }
+        val exclude: (String) -> Boolean = { it.endsWith(".pfs") }
+        val restore: (File, File) -> Unit = { backup, destination ->
+            GameSaveManager.restoreExcludedContents(backup, destination, exclude, rejectExisting = true)
+        }
+        expectImportError(SaveErrorCode.SAVE_DIR_UNAVAILABLE) {
+            GameSaveManager.importSaveDirectory(live, exclude, restoreExcluded = restore) { source }
+        }
+        val backup = transactionPath(live, "backup")
+        assertFalse(live.resolve("foo/data.pfs").exists())
+        assertEquals("sole game resource", backup.resolve("foo/data.pfs").readText())
+        expectImportError(SaveErrorCode.SAVE_DIR_UNAVAILABLE) {
+            GameSaveManager.deleteSaveDirectory(live, exclude, restore)
+        }
+        assertEquals("sole game resource", backup.resolve("foo/data.pfs").readText())
+        assertEquals("imported save", live.resolve("slot.sav").readText())
+        // Once the conflicting imported file is removed, recover nested resources
+        // before deleting saves; recursive cleanup must not delete the restored asset.
+        assertTrue(live.resolve("foo").delete())
+        assertEquals(1, GameSaveManager.deleteSaveDirectory(live, exclude, restore))
+        assertEquals("sole game resource", live.resolve("foo/data.pfs").readText())
+        assertFalse(live.resolve("slot.sav").exists())
+        assertFalse(backup.exists())
+    }
+
+    @Test
+    fun deleteRestoresResourcesFromEveryTransactionSlotForGameRootSavePolicies() {
+        val policies = listOf<Pair<String, (String) -> Boolean>>(
+            "slot.sav" to { name -> name.endsWith(".pfs") },
+            "save.ini" to { name -> name != "save.ini" },
+            "flag00.dat" to { name -> !Regex("^flag\\d{2}\\.dat$").matches(name) },
+        )
+        for ((saveName, exclude) in policies) {
+            val live = temporaryFolder.newFolder().apply { resolve(saveName).writeText("live save") }
+            val siblings = listOf("staging", "backup", "backup_retained", "backup_retained1", "backup_retained2")
+                .mapIndexed { index, suffix ->
+                    File(live.parentFile, live.name + ".import_" + suffix).apply {
+                        mkdirs()
+                        resolve(saveName).writeText("recovery save")
+                        resolve("resource-$index.pfs").writeText("asset-$index")
+                    }
+                }
+            GameSaveManager.deleteSaveDirectory(live, exclude) { backup, destination ->
+                GameSaveManager.restoreExcludedContents(backup, destination, exclude, rejectExisting = true)
+            }
+            for (index in siblings.indices) {
+                assertEquals("asset-$index", live.resolve("resource-$index.pfs").readText())
+                assertFalse(siblings[index].exists())
+            }
+            assertFalse(live.resolve(saveName).exists())
+        }
+    }
+
+    @Test
+    fun deleteDoesNotOverwriteExistingResourcesWithRecoveryCopies() {
+        val live = liveSaves()
+        live.resolve("data.pfs").writeText("current resource")
+        val backup = transactionPath(live, "backup").apply {
+            mkdirs()
+            resolve("data.pfs").writeText("unique recovery version")
+        }
+        val exclude: (String) -> Boolean = { it.endsWith(".pfs") }
+        expectImportError(SaveErrorCode.SAVE_DIR_UNAVAILABLE) {
+            GameSaveManager.deleteSaveDirectory(live, exclude) { from, to ->
+                GameSaveManager.restoreExcludedContents(from, to, exclude, rejectExisting = true)
+            }
+        }
+        assertEquals("current resource", live.resolve("data.pfs").readText())
+        assertEquals("unique recovery version", backup.resolve("data.pfs").readText())
+        assertEquals("existing save", live.resolve("slot.sav").readText())
+    }
+
     private fun liveSaves(): File = temporaryFolder.newFolder().apply {
         resolve("slot.sav").writeText("existing save")
     }

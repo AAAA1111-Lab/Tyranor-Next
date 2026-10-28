@@ -22,6 +22,7 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
+import java.nio.file.Files
 import java.util.Locale
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
@@ -347,24 +348,13 @@ class GameSaveManager(private val context: Context) {
         return synchronized(RpgSaveSyncState.INTEROP_LOCK) {
             // 与存档互通同步互斥（H3）：删除与并发同步交错会产生半删状态
             val directory = resolveSaveLocation(game).directory ?: throw GameSaveException(SaveErrorCode.RESOLVE_SAVE_DIR_FAILED)
-            val deleted = if (directory.isDirectory) clearSaveDirectory(directory, game.engine) else 0
-            // 事务兄弟目录必须一并清理：遗留的 import_backup 会在下一次失败导入的
-            // 恢复分支把用户刚删除的存档「复活」（审查第十轮 #12）
-            transactionSiblings(directory).forEach { it.deleteRecursively() }
-            deleted
+            val restoreExcluded: ((File, File) -> Unit)? = if (restoresExcludedFromBackup(game.engine)) {
+                { backup, target -> restoreExcludedContents(backup, target, excludeFor(game.engine), rejectExisting = true) }
+            } else {
+                null
+            }
+            deleteSaveDirectory(directory, excludeFor(game.engine), restoreExcluded)
         }
-    }
-
-    /** Import transaction siblings of a save directory (staging/backup/retained copies). */
-    private fun transactionSiblings(directory: File): List<File> {
-        val parent = directory.parentFile ?: return emptyList()
-        return listOf(
-            directory.name + ".import_staging",
-            directory.name + ".import_backup",
-            directory.name + ".import_backup_retained",
-            directory.name + ".import_backup_retained1",
-            directory.name + ".import_backup_retained2",
-        ).map { File(parent, it) }.filter { it.exists() }
     }
 
     /**
@@ -545,42 +535,7 @@ class GameSaveManager(private val context: Context) {
      */
     @Throws(IOException::class)
     private fun restoreExcludedFromBackup(backup: File, destination: File, engine: EngineType) {
-        val exclude = excludeFor(engine)
-        val moved = mutableListOf<Pair<File, File>>()
-        try {
-            fun restoreRecursive(currentBackup: File, currentDest: File) {
-                // 不可读的备份目录不是「无可恢复」：必须保留备份并报错（#11）
-                val children = currentBackup.listFiles()
-                    ?: throw IOException("Backup directory unreadable: " + currentBackup.path)
-                children.forEach { child ->
-                    if (exclude(child.name)) {
-                        val target = File(currentDest, child.name)
-                        target.parentFile?.let { if (!it.exists() && !it.mkdirs()) throw GameSaveException(SaveErrorCode.CREATE_SAVE_DIR_NAMED, detail = child.name) }
-                        if (!child.renameTo(target)) throw GameSaveException(SaveErrorCode.CREATE_SAVE_DIR_NAMED, detail = child.name)
-                        moved += child to target
-                    } else if (child.isDirectory) {
-                        val subDest = File(currentDest, child.name)
-                        restoreRecursive(child, subDest)
-                    }
-                }
-            }
-            restoreRecursive(backup, destination)
-        } catch (t: Throwable) {
-            moved.forEach { (backupFile, destinationFile) ->
-                runCatching { if (!destinationFile.renameTo(backupFile)) destinationFile.copyRecursively(backupFile, overwrite = true) }
-            }
-            throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE, cause = t)
-        }
-    }
-
-    private fun clearSaveDirectory(directory: File, engine: EngineType): Int {
-        var deleted = 0
-        val exclude = excludeFor(engine)
-        directory.listFiles().orEmpty().forEach { child ->
-            if (exclude(child.name)) return@forEach
-            if (child.deleteRecursively()) deleted++
-        }
-        return deleted
+        restoreExcludedContents(backup, destination, excludeFor(engine))
     }
 
     private fun excludeFor(engine: EngineType): (String) -> Boolean = { name ->
@@ -643,6 +598,94 @@ class GameSaveManager(private val context: Context) {
         localizedContext.getString(id, *args)
 
     companion object {
+        /** Restore resources before deleting any saves or transaction recovery copies. */
+        internal fun deleteSaveDirectory(
+            directory: File,
+            exclude: (String) -> Boolean,
+            restoreExcluded: ((File, File) -> Unit)? = null,
+        ): Int {
+            val siblings = transactionSiblings(directory)
+            // A failed import may leave the only game assets in any recovery slot.
+            // A collision/unreadable tree must fail before destructive save cleanup.
+            if (restoreExcluded != null) {
+                for (sibling in siblings) {
+                    if (!sibling.isDirectory) throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
+                    restoreExcluded(sibling, directory)
+                }
+            }
+            val deleted = if (directory.isDirectory) clearSaveDirectory(directory, exclude) else 0
+            for (sibling in siblings) {
+                if (!sibling.deleteRecursively()) throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
+            }
+            return deleted
+        }
+
+        private fun clearSaveDirectory(directory: File, exclude: (String) -> Boolean): Int {
+            val children = directory.listFiles()
+                ?: throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
+            var deleted = 0
+            for (child in children) {
+                if (exclude(child.name)) continue
+                if (child.isDirectory && !Files.isSymbolicLink(child.toPath())) {
+                    deleted += clearSaveDirectory(child, exclude)
+                    if (child.listFiles()?.isEmpty() == true && !child.delete()) {
+                        throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
+                    }
+                } else {
+                    if (!child.delete()) throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
+                    deleted++
+                }
+            }
+            return deleted
+        }
+
+        internal fun restoreExcludedContents(
+            backup: File,
+            destination: File,
+            exclude: (String) -> Boolean,
+            rejectExisting: Boolean = false,
+        ) {
+            val moved = mutableListOf<Pair<File, File>>()
+            try {
+                fun restoreRecursive(currentBackup: File, currentDest: File) {
+                    // 不可读的备份目录不是「无可恢复」：必须保留备份并报错（#11）
+                    val children = currentBackup.listFiles()
+                        ?: throw IOException("Backup directory unreadable: " + currentBackup.path)
+                    children.forEach { child ->
+                        if (exclude(child.name)) {
+                            val target = File(currentDest, child.name)
+                            if (rejectExisting && target.exists()) throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
+                            target.parentFile?.let { if (!it.exists() && !it.mkdirs()) throw GameSaveException(SaveErrorCode.CREATE_SAVE_DIR_NAMED, detail = child.name) }
+                            if (!child.renameTo(target)) throw GameSaveException(SaveErrorCode.CREATE_SAVE_DIR_NAMED, detail = child.name)
+                            moved += child to target
+                        } else if (child.isDirectory) {
+                            val subDest = File(currentDest, child.name)
+                            restoreRecursive(child, subDest)
+                        }
+                    }
+                }
+                restoreRecursive(backup, destination)
+            } catch (t: Throwable) {
+                moved.forEach { (backupFile, destinationFile) ->
+                    runCatching { if (!destinationFile.renameTo(backupFile)) destinationFile.copyRecursively(backupFile, overwrite = true) }
+                }
+                if (t is kotlinx.coroutines.CancellationException) throw t
+                throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE, cause = t)
+            }
+        }
+
+        /** Import transaction siblings of a save directory (staging/backup/retained copies). */
+        private fun transactionSiblings(directory: File): List<File> {
+            val parent = directory.parentFile ?: return emptyList()
+            return listOf(
+                directory.name + ".import_staging",
+                directory.name + ".import_backup",
+                directory.name + ".import_backup_retained",
+                directory.name + ".import_backup_retained1",
+                directory.name + ".import_backup_retained2",
+            ).map { File(parent, it) }.filter { it.exists() }
+        }
+
         /** Parse the actual import stream independently of Android URI acquisition. */
         @Throws(IOException::class)
         internal fun extractZip(input: InputStream, destination: File): Int {
