@@ -68,13 +68,14 @@ class NativeBridgeMirrorPolicyTest {
     fun `corrupt or zero-row index marks the session degraded for fail-closed opens`() {
         // R10 #2: a present but unreadable/zero-row index must not silently serve the
         // 0-byte placeholders as empty content; the session is flagged and the open
-        // gate fails every mirror-root path while savedata stays local.
+        // gate fails existing unowned mirror-root files while savedata stays local.
         val mirrorRoot = temporary.newFolder("game-corrupt")
         val indexFile = File(temporary.newFolder("idx"), "corrupt.idx")
         indexFile.writeText("not-an-index-header\n")
         NativeBridge.configureSafMirror(indexFile.path, mirrorRoot.path)
         assertTrue(NativeBridge.mirrorSessionDegradedForTest)
         val session = NativeBridge.mirrorSessionForTest
+        File(mirrorRoot, "data.xp3").createNewFile()
         assertTrue(NativeBridge.mirrorDegradedBlock(session, File(mirrorRoot, "data.xp3").path.lowercase(), File(mirrorRoot, "data.xp3")))
         assertFalse(NativeBridge.mirrorDegradedBlock(session, File(mirrorRoot, "savedata/slot.ksd").path.lowercase(), File(mirrorRoot, "savedata/slot.ksd")))
         assertFalse(NativeBridge.mirrorDegradedBlock(session, "/storage/emulated/0/elsewhere/data.xp3", File("/storage/emulated/0/elsewhere/data.xp3")))
@@ -97,6 +98,92 @@ class NativeBridgeMirrorPolicyTest {
         // A placeholder without ownership stays blocked.
         val plain = File(mirrorRoot, "plugin.dll").apply { createNewFile() }
         assertTrue(NativeBridge.mirrorDegradedBlock(session, plain.path.lowercase(), plain))
+    }
+
+    @Test
+    fun `successful all-override preparation allows missing probes and new local files`() {
+        val root = temporary.newFolder("prepared-all-local")
+        val resource = File(root, "data.xp3").apply { writeText("local resource") }
+        KrMirrorLocalFiles(root).markOverridden(resource)
+        val key = resource.absolutePath.lowercase(java.util.Locale.ROOT)
+        val entries = mutableListOf(Triple(key, "content://source/data", 14L))
+        val sources = KrSafMirror.assemblePreparationSources(root, emptySet(), entries,
+            observed = 1, queryFailures = 0, rootListingComplete = true)
+        assertEquals(KrSafMirror.MirrorSourceDecision.REBUILD_FRESH, sources.decision)
+        entries.removeAll { it.first in sources.localOverrides }
+        assertTrue(entries.isEmpty())
+        val index = File(temporary.newFolder("prepared-idx"), "all-local.idx").apply {
+            writeText(buildString { KrSafMirror.writeIndexText(this, entries) })
+        }
+        NativeBridge.configureSafMirror(index.path, root.path)
+        val session = NativeBridge.mirrorSessionForTest
+        assertTrue(session.degraded)
+        val missing = File(root, "new-run.log")
+        val missingKey = missing.absolutePath.lowercase(java.util.Locale.ROOT)
+        assertFalse(session.shouldRoute(missingKey))
+        assertFalse(NativeBridge.mirrorDegradedBlock(session, missingKey, missing))
+        // No gate rejection: a non-creating local probe remains a real miss.
+        try {
+            java.io.FileInputStream(missing).close()
+            org.junit.Assert.fail("Missing probe must not create a file")
+        } catch (_: java.io.FileNotFoundException) {
+            assertFalse(missing.exists())
+        }
+        // Exercise the production router's unindexed creating-open path. It must
+        // publish ownership even when the caller never writes a byte to the new file.
+        val createdSession = KrMirrorReadSession<KrSafMirror.MirrorEntry>(
+            emptyMap(), KrMirrorLocalFiles(root), degraded = true)
+        var localOpened = false
+        val router = KrMirrorOpenRouter(
+            session = createdSession,
+            sourceSize = { it.size },
+            sourceStream = { error("No source exists for a new file") },
+            sourceDescriptor = { error("No source exists for a new file") },
+            localDescriptor = { file, _ ->
+                java.io.RandomAccessFile(file, "rw").close()
+                localOpened = true
+                17
+            },
+            closeDescriptor = { error("Successful owned open must not close its descriptor") },
+            diagnostic = { _, error -> if (error != null) throw error },
+        )
+        assertEquals(17, router.open(missingKey, missing, KrMirrorOpenRouter.Intent.WRITE, allowCreate = true))
+        assertTrue(localOpened)
+        assertEquals(0L, missing.length())
+        assertTrue(createdSession.shouldRoute(missingKey))
+        assertFalse(NativeBridge.mirrorDegradedBlock(createdSession, missingKey, missing))
+        NativeBridge.configureSafMirror(index.path, root.path)
+        assertFalse(NativeBridge.mirrorDegradedBlock(NativeBridge.mirrorSessionForTest, missingKey, missing))
+        assertTrue(NativeBridge.mirrorSessionForTest.shouldRoute(missingKey))
+        assertEquals("local resource", resource.readText())
+        assertFalse(NativeBridge.mirrorDegradedBlock(session, key, resource))
+    }
+
+    @Test
+    fun `damaged index permits absent paths but never exposes an existing placeholder`() {
+        val root = temporary.newFolder("damaged-gate")
+        for ((number, contents) in listOf("", "broken-header\n").withIndex()) {
+            val index = File(temporary.newFolder("damaged-index-$number"), "index").apply { writeText(contents) }
+            val placeholder = File(root, "asset-$number.xp3").apply { createNewFile() }
+            NativeBridge.configureSafMirror(index.path, root.path)
+            val session = NativeBridge.mirrorSessionForTest
+            assertTrue(session.degraded)
+            assertTrue(NativeBridge.mirrorDegradedBlock(session, placeholder.absolutePath.lowercase(), placeholder))
+            val guardedSession = KrMirrorReadSession<String>(emptyMap(), KrMirrorLocalFiles(root), degraded = true)
+            val router = KrMirrorOpenRouter(guardedSession,
+                sourceSize = { 0L },
+                sourceStream = { error("No source may be opened") },
+                sourceDescriptor = { error("No source may be opened") },
+                localDescriptor = { _, _ -> error("Existing placeholder must not be adopted") },
+                closeDescriptor = { error("No descriptor was opened") },
+                diagnostic = { _, error -> if (error != null) throw error })
+            assertEquals(KrMirrorOpenRouter.FAILED, router.open(placeholder.absolutePath.lowercase(),
+                placeholder, KrMirrorOpenRouter.Intent.WRITE, allowCreate = true))
+            assertFalse(KrMirrorLocalFiles(root).isOverridden(placeholder))
+            val missing = File(root, "optional-$number.log")
+            assertFalse(NativeBridge.mirrorDegradedBlock(session, missing.absolutePath.lowercase(), missing))
+            assertFalse(missing.exists())
+        }
     }
 
     @Test

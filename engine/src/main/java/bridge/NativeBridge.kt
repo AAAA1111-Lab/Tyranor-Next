@@ -106,7 +106,7 @@ object NativeBridge {
         get() = safMirror
 
     /**
-     * The degraded fail-closed gate: mirror-root paths fail, redirected savedata and
+     * The degraded fail-closed gate: existing unowned mirror paths fail, redirected savedata and
      * anything outside the mirror root keep their normal semantics. A header-only
      * index is the legitimate product of a rebuild whose rows are all local
      * overrides, so live owned files keep working across the gate (audit of
@@ -119,6 +119,10 @@ object NativeBridge {
         if (relative.equals("savedata", ignoreCase = true) ||
             relative.startsWith("savedata/", ignoreCase = true)
         ) return false
+        // An absent path cannot expose a zero-byte placeholder. Preserve normal
+        // ENOENT probes and explicit O_CREAT local creation even when a successful
+        // all-override prepare published a header-only index (independent audit B3).
+        if (!file.exists()) return false
         return !(session.isLocal(key, file) && file.isFile)
     }
 
@@ -179,13 +183,16 @@ object NativeBridge {
         val session = safMirror
         val key = target.lowercase(Locale.ROOT)
         // A degraded session (unreadable/zero-row index) must not let the engine open
-        // the 0-byte placeholders as empty content: fail closed for every path under
+        // the 0-byte placeholders as empty content: fail closed for existing unowned paths under
         // the mirror root, while redirected saves keep their local semantics (R10 #2).
         if (mirrorDegradedBlock(session, key, File(target))) {
             Log.e("NativeBridge", "mirror index degraded; failing open path=$path")
             return KrMirrorOpenRouter.FAILED
         }
-        if (session.shouldRoute(key)) {
+        val createUnindexed = session.degraded && (mode and OsConstants.O_CREAT) != 0 &&
+            !isReadOnlyOpen(mode) &&
+            session.localFiles?.resourceFileForPath(key) != null
+        if (session.shouldRoute(key) || createUnindexed) {
             val router = KrMirrorOpenRouter(
                 session = session,
                 sourceSize = { it.size },

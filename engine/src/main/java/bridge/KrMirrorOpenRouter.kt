@@ -19,10 +19,18 @@ internal class KrMirrorOpenRouter<T>(
     enum class Intent { READ_ONLY, UPDATE, WRITE, TRUNCATE }
 
     fun open(key: String, file: File, intent: Intent, allowCreate: Boolean = false): Int {
-        if (!session.shouldRoute(key)) return NOT_ROUTED
+        val unindexedCreate = !session.shouldRoute(key) && session.degraded && allowCreate &&
+            intent != Intent.READ_ONLY && session.localFiles?.resourceFileForPath(key) != null
+        if (!session.shouldRoute(key) && !unindexedCreate) return NOT_ROUTED
         val state = session.localFiles ?: return FAILED
         return try {
-            if (intent == Intent.READ_ONLY) {
+            if (unindexedCreate) {
+                // Do not adopt a placeholder that appeared while waiting for the lock.
+                // Publish ownership before exposing even an intentionally empty new file.
+                state.withFileLock(file) {
+                    if (file.exists()) FAILED else openLocal(key, file, intent, state)
+                }
+            } else if (intent == Intent.READ_ONLY) {
                 // Copy-up publishes with atomic rename. Do not hold a write mutex
                 // across provider I/O: an old launch must not block a new launch read.
                 val source = session.sourceEntry(key)
