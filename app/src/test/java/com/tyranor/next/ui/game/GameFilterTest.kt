@@ -72,6 +72,14 @@ class GameFilterTest {
     }
 
     @Test
+    fun unknownPlayedFilterKeepsEverything() {
+        // 旧版本残留或损坏的取值回落为「全部」，不能把列表清空
+        val filtered = filterGames(library, "", "bogus")
+
+        assertEquals(library.map { it.title }, filtered.map { it.title })
+    }
+
+    @Test
     fun filtersCombine() {
         val filtered = filterGames(library, EngineType.KIRIKIRI.name, AppSettingsStore.GAME_FILTER_PLAYED_ONLY)
 

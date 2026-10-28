@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -101,9 +102,10 @@ internal fun GameFilterSheet(
 
             FilterSectionTitle(stringResource(R.string.game_filter_sort_section))
             // 2×2 选择卡：比 4 行单选紧凑，选中态一眼可见（主题色描边 + 淡底 + 加粗）
+            // selectableGroup：让 TalkBack 读成「单选组，第 1 项，共 4 项」而不是孤立按钮
             sortOptions.chunked(2).forEach { rowOptions ->
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().selectableGroup(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     rowOptions.forEach { (mode, label) ->
@@ -133,7 +135,8 @@ internal fun GameFilterSheet(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
+                        .horizontalScroll(rememberScrollState())
+                        .selectableGroup(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     FilterChipCard(
@@ -153,7 +156,7 @@ internal fun GameFilterSheet(
 
             FilterSectionTitle(stringResource(R.string.game_filter_played_section))
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().selectableGroup(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 playedOptions.forEach { (mode, label) ->

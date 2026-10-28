@@ -432,7 +432,8 @@ internal fun sortGames(games: List<ScanGame>, sortMode: String): List<ScanGame> 
  * 游戏页过滤器：引擎类型（[engineFilter] 为 `EngineType.name`，空串表示全部）+ 游玩状态
  * （已游玩判据为 `openTime > 0`）。
  *
- * internal：首页分类仓库复用同一可见性规则，保证两处「同一个游戏库、同一套筛选」。
+ * internal：仅游戏页与其单测使用。首页分类仓库只共用 [sortGames]（排序），不套用本过滤——
+ * 首页有自己的「全部/快捷/最近/各引擎」分类轴，两处筛选叠加会互相打架。
  */
 internal fun filterGames(
     games: List<ScanGame>,
