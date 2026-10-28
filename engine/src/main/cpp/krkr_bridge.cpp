@@ -861,19 +861,12 @@ FILE* hookedFreopenCommon(const char* path, const char* mode, FILE* stream, Freo
                     return rebuilt;
                 }
                 const int reopenError = errno;
-                // Procfs reopening can fail for provider fds that forbid reopening by
-                // path; the freshly opened fd itself is still unused. Hand it to
-                // fdopen instead of discarding a successful open (review round 10, #8).
-                // The failed freopen already closed the old stream and IEEE leaves its
-                // object state undefined at that point, so the fallback deliberately
-                // returns a fresh FILE and abandons the caller's old object.
-                FILE* fallback = fdopen(fd, streamMode);
-                if (fallback != nullptr) return fallback;
-                const int fdopenError = errno;
+                // A failed freopen has closed the caller's FILE. A fresh fdopen
+                // object cannot preserve that stream identity, so report failure
+                // rather than return a different FILE as a successful reopen.
                 close(fd);
                 __android_log_print(ANDROID_LOG_WARN, kTag,
-                                    "freopen procfs reopen failed errno=%d fdopen errno=%d",
-                                    reopenError, fdopenError);
+                                    "freopen procfs reopen failed errno=%d", reopenError);
                 errno = reopenError;
             } else {
                 close(fd);

@@ -8,6 +8,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
+#include <initializer_list>
 #include <iterator>
 #include <stdio_ext.h>
 #include <string>
@@ -30,10 +31,12 @@ std::string callJavaRedirect(const char*) { return {}; }
 
 // Match RandomAccessFile plus NativeBridge's explicit truncation/append seek.
 // In particular the Java fd does not carry O_APPEND: FILE must be rebuilt.
+int lastJavaFd = -1;
 int callJavaOpen(const char* path, int flags) {
     const int access = (flags & O_ACCMODE) == O_RDONLY ? O_RDONLY : O_RDWR;
     const int fd = ::open(path, access | (flags & (O_TRUNC | O_CREAT)), 0600);
     if (fd >= 0 && (flags & O_APPEND) != 0) assert(lseek(fd, 0, SEEK_END) >= 0);
+    lastJavaFd = fd;
     return fd;
 }
 
@@ -68,7 +71,18 @@ static std::string readAll(FILE* stream) {
 static FILE* reopen(FILE* stream, const std::string& path, const char* mode) {
     FILE* result = hookedFreopenCommon(path.c_str(), mode, stream, ::freopen);
     assert(result != nullptr);
+    assert(result == stream);
     return result;
+}
+
+// Model libc's failure contract: the old FILE is closed even when reopening fails.
+static FILE* rejectProcReopen(const char* path, const char*, FILE* stream) {
+    int descriptor = -1;
+    assert(std::sscanf(path, "/proc/self/fd/%d", &descriptor) == 1);
+    assert(descriptor == lastJavaFd);
+    assert(fclose(stream) == 0);
+    errno = EACCES;
+    return nullptr;
 }
 
 int main(int argc, char** argv) {
@@ -180,5 +194,22 @@ int main(int argc, char** argv) {
     assert(fclose(stream) == 0);
     assert(get(second) == "X23");
 
-    puts("9 production mirror freopen host regressions passed");
+    // Audit B2: procfd failure must not return a different FILE via fdopen.
+    // Exercise both input-only and writable old streams and verify fd ownership.
+    for (const char* oldMode : {"rb", "r+"}) {
+        put(path, "ABC");
+        put(second, "123");
+        stream = fopen(path.c_str(), oldMode);
+        assert(stream);
+        const int oldFd = fileno(stream);
+        FILE* failed = hookedFreopenCommon(second.c_str(), "r+", stream, rejectProcReopen);
+        assert(failed == nullptr);
+        assert(errno == EACCES);
+        assert(fcntl(oldFd, F_GETFD) == -1 && errno == EBADF);
+        assert(fcntl(lastJavaFd, F_GETFD) == -1 && errno == EBADF);
+        assert(get(path) == "ABC");
+        assert(get(second) == "123");
+    }
+
+    puts("11 production mirror freopen host regressions passed");
 }
