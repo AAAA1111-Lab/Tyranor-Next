@@ -48,6 +48,8 @@ fun appSheetMaxHeight(): Dp = with(LocalConfiguration.current) {
  *
  * 关闭手势固定关闭（`sheetGesturesEnabled = false`）：抽屉内可滚动内容快速滑动时，剩余手势/
  * 惯性会转交抽屉导致误关（issue #27），关闭统一走遮罩/返回键。
+ * 顶部把手同样不可点击：Material3 的 `dragHandle` 槽内部自带 clickable（Expanded 时点击即关闭），
+ * 因此本组件不传该槽，把手自绘在内容首位。
  *
  * 内容区不自带滚动与内边距：调用方按需自行包 `LazyColumn` / `verticalScroll` 并
  * 用 [appSheetMaxHeight] 限制高度，避免「可滚容器套可滚容器」。
@@ -84,31 +86,11 @@ fun AppBottomSheet(
         },
         contentWindowInsets = { WindowInsets(0.dp) },
         shape = AppSheetTopShape,
-        // 玻璃描边只能画在抽屉真实顶边（dragHandle 槽首位）；不能挂 Surface 外层 modifier，
-        // 否则描边会按未偏移的布局位置落到背景里形成一条白线。
-        dragHandle = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .then(
-                        if (advancedPanelSurface != null) {
-                            Modifier.background(advancedPanelSurface.topColor)
-                        } else {
-                            Modifier
-                        },
-                    ),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                if (AppThemeColors.isGlass) {
-                    Box(
-                        Modifier.fillMaxWidth().height(0.5.dp).background(
-                            if (AppThemeColors.isAdvancedGlass) AdvancedGlassBorder else GlassBorder,
-                        ),
-                    )
-                }
-                BottomSheetDefaults.DragHandle()
-            }
-        },
+        // 不用 dragHandle 槽：Material3 1.4 会给该槽套一层 clickable，Expanded 状态下点击把手
+        // 直接 animateToDismiss()（ModalBottomSheet.kt 的 DragHandleWithTooltip 分支）。把手满宽，
+        // 等于点抽屉顶部任意位置就关闭，与「只允许遮罩/返回键关闭」冲突。
+        // 改为把把手自绘在内容首位：视觉不变，且不可点击。
+        dragHandle = null,
     ) {
         Column(
             modifier = Modifier
@@ -123,7 +105,22 @@ fun AppBottomSheet(
                 // 面板本身延伸到屏幕底边（contentWindowInsets 归零），内容必须自己避开导航栏，
                 // 否则最后一行会压在导航条下面（真机实测：游玩状态那一行被导航栏盖住 31px）。
                 .navigationBarsPadding(),
-            content = content,
-        )
+        ) {
+            // 自绘把手：玻璃描边只能画在抽屉真实顶边，放在内容首位才能与面板渐变对齐
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                if (AppThemeColors.isGlass) {
+                    Box(
+                        Modifier.fillMaxWidth().height(0.5.dp).background(
+                            if (AppThemeColors.isAdvancedGlass) AdvancedGlassBorder else GlassBorder,
+                        ),
+                    )
+                }
+                BottomSheetDefaults.DragHandle()
+            }
+            content()
+        }
     }
 }
