@@ -409,10 +409,14 @@ class GameSaveManager(private val context: Context) {
                     }
                     if (GamePathUtils.isRemovableStoragePath(root)) {
                         // 可移动存储走 KrSafMirror：清理镜像树与 SAF 索引，避免内部存储持续膨胀；
-                        // 根定位失败（锁/IO）不得中断整个清理而遗留孤儿数据（审查第十轮 #4）
+                        // 根定位失败（锁/IO）不得中断整个清理而遗留孤儿数据（审查第十轮 #4）；
+                        // 取消不是失败，必须原样向上传播（本地审计 df6984c P3-3）
                         runCatching { bridge.KrSafMirror.mirrorRootFor(appContext, game.uri, root) }
                             .onSuccess { targetList += it }
-                            .onFailure { error -> android.util.Log.w("GameSaveManager", "mirror root locate failed during cleanup", error) }
+                            .onFailure { error ->
+                                if (error is kotlin.coroutines.cancellation.CancellationException) throw error
+                                android.util.Log.w("GameSaveManager", "mirror root locate failed during cleanup", error)
+                            }
                         val mirrorKey = bridge.KrSafMirror.mirrorKey(game.uri, root)
                         targetList += File(
                             File(appContext.noBackupFilesDir, "krkr_saf_index"),
@@ -733,6 +737,11 @@ class GameSaveManager(private val context: Context) {
                 }
                 if (!staging.mkdirs()) throw GameSaveException(SaveErrorCode.CREATE_SAVE_DIR)
                 val copied = stageImportContents(source, staging, exclude)
+                // Judge the imported content BEFORE the exchange: for restoreExcluded
+                // engines the destination later receives non-empty engine resources,
+                // which must not flip an all-empty import into a backup deletion
+                // (local audit of df6984c, P2-B).
+                val stagedAllEmpty = isDirectoryContentEmpty(staging)
                 if (backup.exists() && !backup.deleteRecursively()) {
                     throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
                 }
@@ -749,8 +758,7 @@ class GameSaveManager(private val context: Context) {
                 // An all-empty import (the user chose a zero-byte ZIP) replaces a possibly
                 // non-empty live directory: keep the previous saves in the backup until the
                 // next import resolves it, so an accidental clear stays recoverable on disk.
-                // The published content now lives at destination (staging was renamed).
-                backupConsumed = !isDirectoryContentEmpty(destination)
+                backupConsumed = !stagedAllEmpty
                 return copied
             } finally {
                 staging.deleteRecursively()

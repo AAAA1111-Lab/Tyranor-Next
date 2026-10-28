@@ -864,6 +864,9 @@ FILE* hookedFreopenCommon(const char* path, const char* mode, FILE* stream, Freo
                 // Procfs reopening can fail for provider fds that forbid reopening by
                 // path; the freshly opened fd itself is still unused. Hand it to
                 // fdopen instead of discarding a successful open (review round 10, #8).
+                // The failed freopen already closed the old stream and IEEE leaves its
+                // object state undefined at that point, so the fallback deliberately
+                // returns a fresh FILE and abandons the caller's old object.
                 FILE* fallback = fdopen(fd, streamMode);
                 if (fallback != nullptr) return fallback;
                 const int fdopenError = errno;
@@ -985,7 +988,8 @@ jlong callJavaMirrorMutation(int operation, const char* from, const char* to) {
     // that must be cleared, and the caller degrades to the original syscall instead of
     // failing every rename/unlink with EIO — even standard savedata renames would break
     // (review round 10, #5). Only an exception thrown by the Java routing itself fails
-    // closed with EIO: the mutation state is then unknown.
+    // closed with EIO: the syscall state is then unknown, which also covers a Java-side
+    // CancellationException rethrown by runMirrorMutation (deliberate fail-closed).
     jclass clazz = env->FindClass("bridge/NativeBridge");
     if (clazz == nullptr) {
         if (env->ExceptionCheck()) env->ExceptionClear();

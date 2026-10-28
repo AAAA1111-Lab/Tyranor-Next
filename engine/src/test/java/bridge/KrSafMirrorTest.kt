@@ -878,4 +878,30 @@ class KrSafMirrorTest {
         assertEquals("ok3", KrSafMirror.tryStickySelectionLock(indexDirectory, "0123456789abcdef") { "ok3" })
     }
 
+    @Test
+    fun stickySelectionLockDegradesToNullWhenTheIndexDirectoryCannotBeCreated() {
+        // Audit of df6984c, P3-2: an I/O failure (here: the index path is occupied by
+        // a regular file) must return null so the caller takes the tolerant fallback.
+        val blocker = temporary.newFile("index-blocker")
+        assertNull(KrSafMirror.tryStickySelectionLock(blocker, "0123456789abcdef") { "ok" })
+    }
+
+    @Test
+    fun stickySelectionLockRestoresTheInterruptFlagAndThrowsCancellation() {
+        // Audit of df6984c, P3-2: an already-interrupted thread must receive a
+        // CancellationException and keep its interrupt flag set (AGENTS protocol).
+        val indexDirectory = temporary.newFolder("interrupted-idx")
+        Thread.currentThread().interrupt()
+        try {
+            try {
+                KrSafMirror.tryStickySelectionLock(indexDirectory, "0123456789abcdef") { "ok" }
+                fail("An interrupted wait must throw the cancellation type")
+            } catch (cancelled: kotlin.coroutines.cancellation.CancellationException) {
+                assertTrue(Thread.currentThread().isInterrupted)
+            }
+        } finally {
+            Thread.interrupted()
+        }
+    }
+
 }

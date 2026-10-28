@@ -67,13 +67,35 @@ class NativeBridgeMirrorPolicyTest {
     @Test
     fun `corrupt or zero-row index marks the session degraded for fail-closed opens`() {
         // R10 #2: a present but unreadable/zero-row index must not silently serve the
-        // 0-byte placeholders as empty content; the session is flagged and open() in
-        // NativeBridge returns FAILED for every mirror-root path.
+        // 0-byte placeholders as empty content; the session is flagged and the open
+        // gate fails every mirror-root path while savedata stays local.
         val mirrorRoot = temporary.newFolder("game-corrupt")
         val indexFile = File(temporary.newFolder("idx"), "corrupt.idx")
         indexFile.writeText("not-an-index-header\n")
         NativeBridge.configureSafMirror(indexFile.path, mirrorRoot.path)
         assertTrue(NativeBridge.mirrorSessionDegradedForTest)
-        assertEquals(-1L, NativeBridge.metadataSize("/data/user/0/x/games/game-corrupt/data.xp3"))
+        val session = NativeBridge.mirrorSessionForTest
+        assertTrue(NativeBridge.mirrorDegradedBlock(session, File(mirrorRoot, "data.xp3").path.lowercase(), File(mirrorRoot, "data.xp3")))
+        assertFalse(NativeBridge.mirrorDegradedBlock(session, File(mirrorRoot, "savedata/slot.ksd").path.lowercase(), File(mirrorRoot, "savedata/slot.ksd")))
+        assertFalse(NativeBridge.mirrorDegradedBlock(session, "/storage/emulated/0/elsewhere/data.xp3", File("/storage/emulated/0/elsewhere/data.xp3")))
+    }
+
+    @Test
+    fun `header-only index keeps live local overrides working across the degraded gate`() {
+        // Audit of df6984c, P3-1: a fresh rebuild whose rows are all local overrides
+        // publishes a header-only index; the degraded gate must not block those live
+        // owned files on the next launch (marker + file present → not blocked).
+        val mirrorRoot = temporary.newFolder("game-overrides")
+        val indexFile = File(temporary.newFolder("idx"), "header-only.idx")
+        indexFile.writeText("krkr-saf-index-v2\n")
+        val overrideTarget = File(mirrorRoot, "data.xp3").apply { createNewFile() }
+        KrMirrorLocalFiles(mirrorRoot).markOverridden(overrideTarget)
+        NativeBridge.configureSafMirror(indexFile.path, mirrorRoot.path)
+        assertTrue(NativeBridge.mirrorSessionDegradedForTest)
+        val session = NativeBridge.mirrorSessionForTest
+        assertFalse(NativeBridge.mirrorDegradedBlock(session, overrideTarget.path.lowercase(), overrideTarget))
+        // A placeholder without ownership stays blocked.
+        val plain = File(mirrorRoot, "plugin.dll").apply { createNewFile() }
+        assertTrue(NativeBridge.mirrorDegradedBlock(session, plain.path.lowercase(), plain))
     }
 }

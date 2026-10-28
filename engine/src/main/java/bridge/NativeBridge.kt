@@ -67,7 +67,12 @@ object NativeBridge {
             // prepare() never publishes a zero-row index for a launched game: an empty
             // parse means the file is missing, truncated or from an unknown version —
             // degrade instead of serving every placeholder as empty content (R10 #2).
-            loaded to loaded.isEmpty()
+            // A header-only file is NOT degraded: a fresh rebuild whose rows are all
+            // local overrides filters to zero here while the overrides stay live
+            // (audit of df6984c, P3-1) — judge by the raw row count.
+            val hasRawRows = loaded.isNotEmpty() ||
+                KrSafMirror.readIndexFile(File(indexPath)) { it }.isNotEmpty()
+            loaded to !hasRawRows
         } catch (t: Throwable) {
             Log.e("NativeBridge", "load SAF mirror index failed path=$indexPath", t)
             emptyMap<String, KrSafMirror.MirrorEntry>() to true
@@ -76,23 +81,46 @@ object NativeBridge {
         val degraded = loadResult.second
         val localFiles = root?.let { KrMirrorLocalFiles(it) }
         // snapshotOverrideKeys returns root-relative keys; translate them to this index's
-        // full keys so the session's override lookups stay key-based.
+        // full keys so the session's override lookups stay key-based. Named markers carry
+        // their relative payload and resolve even for a header-only index (a rebuild
+        // whose rows are all local overrides), so rebuild the full keys from the mirror
+        // root directly instead of relying on document keys being present.
         val relativeOverrides = localFiles?.snapshotOverrideKeys(documents.keys).orEmpty()
         val initialOverrides = if (localFiles == null || relativeOverrides.isEmpty()) {
             emptySet()
         } else {
             documents.keys
                 .filter { key -> localFiles.relativeForIndexKey(key)?.let { it in relativeOverrides } == true }
-                .toSet()
+                .toSet() + relativeOverrides.map { File(root, it).absolutePath.lowercase(Locale.ROOT) }
         }
         safMirror = KrMirrorReadSession(documents, localFiles, initialOverrides, degraded)
         val sized = documents.values.count { it.size >= 0 }
         Log.i("NativeBridge", "SAF mirror index entries=${documents.size} sized=$sized overrides=${initialOverrides.size} degraded=$degraded")
     }
 
-    /** JVM test seam for the degraded fail-closed session state. */
+    /** JVM test seams for the degraded fail-closed session state. */
     internal val mirrorSessionDegradedForTest: Boolean
         get() = safMirror.degraded
+
+    internal val mirrorSessionForTest: KrMirrorReadSession<*>
+        get() = safMirror
+
+    /**
+     * The degraded fail-closed gate: mirror-root paths fail, redirected savedata and
+     * anything outside the mirror root keep their normal semantics. A header-only
+     * index is the legitimate product of a rebuild whose rows are all local
+     * overrides, so live owned files keep working across the gate (audit of
+     * df6984c, P3-1). Extracted so the gate is JVM-testable without an activity
+     * (audit of df6984c, P3-2).
+     */
+    internal fun mirrorDegradedBlock(session: KrMirrorReadSession<*>, key: String, file: File): Boolean {
+        if (!session.degraded) return false
+        val relative = session.localFiles?.relativeForIndexKey(key) ?: return false
+        if (relative.equals("savedata", ignoreCase = true) ||
+            relative.startsWith("savedata/", ignoreCase = true)
+        ) return false
+        return !(session.isLocal(key, file) && file.isFile)
+    }
 
     @JvmStatic
     fun configurePatchOverlay(targetPath: String?, overlayPath: String?) {
@@ -153,14 +181,9 @@ object NativeBridge {
         // A degraded session (unreadable/zero-row index) must not let the engine open
         // the 0-byte placeholders as empty content: fail closed for every path under
         // the mirror root, while redirected saves keep their local semantics (R10 #2).
-        if (session.degraded) {
-            val relative = session.localFiles?.relativeForIndexKey(key)
-            if (relative != null && !relative.equals("savedata", ignoreCase = true) &&
-                !relative.startsWith("savedata/", ignoreCase = true)
-            ) {
-                Log.e("NativeBridge", "mirror index degraded; failing open path=$path")
-                return KrMirrorOpenRouter.FAILED
-            }
+        if (mirrorDegradedBlock(session, key, File(target))) {
+            Log.e("NativeBridge", "mirror index degraded; failing open path=$path")
+            return KrMirrorOpenRouter.FAILED
         }
         if (session.shouldRoute(key)) {
             val router = KrMirrorOpenRouter(

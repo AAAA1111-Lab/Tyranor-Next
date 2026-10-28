@@ -239,8 +239,11 @@ class GameSaveManagerMirrorFilterTest {
     fun interruptedExchangeWithResourceRestoreAlsoParksTheBackup() {
         // R10 #1: engines whose imports restore excluded resources (ARTEMIS/AVG32/UK2/
         // MV-MZ) must reach the same park policy — the pre-crash backup is the only
-        // copy of the previous saves even after restoreExcluded ran.
+        // copy of the previous saves even after restoreExcluded ran. The resource is
+        // seeded in the pre-crash saves so restore must run BEFORE the park decision,
+        // then again after the exchange to move it out of the fresh backup.
         val live = liveSaves()
+        live.resolve("system.pfs").writeText("engine resource")
         val backup = transactionPath(live, "backup")
         assertTrue(live.renameTo(backup))
         assertTrue(live.mkdir())
@@ -255,6 +258,9 @@ class GameSaveManagerMirrorFilterTest {
                 }
             }) { source })
         assertEquals("save contents", live.resolve("slot/data.sav").readText())
+        // The resource rode through the backup and was restored into the live directory.
+        assertEquals(listOf("system.pfs", "system.pfs"), restored)
+        assertEquals("engine resource", live.resolve("system.pfs").readText())
         val retained = File(live.parentFile, live.name + ".import_backup_retained")
         assertEquals("existing save", retained.resolve("slot.sav").readText())
         assertFalse(transactionPath(live, "backup").exists())
