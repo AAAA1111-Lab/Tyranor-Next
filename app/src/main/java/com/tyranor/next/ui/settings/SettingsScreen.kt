@@ -298,7 +298,9 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                                 hapticEffect = SliderDefaults.SliderHapticEffect.Step,
                                 modifier = Modifier.padding(horizontal = 16.dp),
                             )
-                            var gameSort by remember { mutableStateOf(AppSettingsStore.getGameSort(ctx)) }
+                            // 订阅内存态：游戏页抽屉也能改排序，四页常驻时用 remember 只读一次会一直显示旧值，
+                            // 且组合期同步读 prefs 会占主线程。
+                            val gameSort by AppSettingsStore.gameSortState.collectAsState()
                             val gameSortModes = listOf(
                                 AppSettingsStore.GAME_SORT_ALPHA to stringResource(R.string.settings_sort_alpha),
                                 AppSettingsStore.GAME_SORT_BRACKET_TAG to stringResource(R.string.settings_sort_bracket_tag),
@@ -313,7 +315,6 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                                 selectedIndex = sortIndex,
                                 onSelectedIndexChange = { index ->
                                     gameSortModes.getOrNull(index)?.first?.let { sort ->
-                                        gameSort = sort
                                         AppSettingsStore.setGameSort(ctx, sort)
                                     }
                                 },

@@ -29,7 +29,13 @@ class GameFilterTest {
 
     @Test
     fun engineSortGroupsByEnumOrderThenTitle() {
-        val sorted = sortGames(library, AppSettingsStore.GAME_SORT_ENGINE)
+        // 同引擎样本故意按 C→B 输入：若丢掉「组内按标题」的 tie-break，稳定排序会原样保留 C、B
+        val engineLibrary = listOf(
+            game("C 游戏", EngineType.KIRIKIRI, openTime = 2_000),
+            game("A 游戏", EngineType.ONS, openTime = 1_000),
+            game("B 游戏", EngineType.KIRIKIRI, openTime = 0),
+        )
+        val sorted = sortGames(engineLibrary, AppSettingsStore.GAME_SORT_ENGINE)
 
         // KIRIKIRI 在枚举中先于 ONS：同引擎内按标题，跨引擎按枚举声明顺序
         assertEquals(listOf("B 游戏", "C 游戏", "A 游戏"), sorted.map { it.title })

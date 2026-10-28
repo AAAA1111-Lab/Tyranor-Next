@@ -530,8 +530,19 @@ private fun GameLibraryContent(
     }
     // 过滤器与排序统一在搜索命中集之后收敛：Room 分支只负责「哪些标题命中」，
     // 排序/过滤一律走内存，避免搜索时绕过过滤器（DB 的两种排序查询仅覆盖字母序/括号标签）。
-    val filteredGames = remember(searchedGames, gameSort, engineFilter, playedFilter) {
-        sortGames(filterGames(searchedGames, engineFilter, playedFilter), gameSort)
+    // 无搜索时 searchedGames 已按同一 gameSort 排好序，无筛选时直接复用，避免大库二次排序；
+    // 走 DB 分支（dbResults）时结果未按当前排序，必须再排一次。
+    val searchedGamesIsSorted = query.isBlank()
+    val filteredGames = remember(
+        searchedGames,
+        gameSort,
+        engineFilter,
+        playedFilter,
+        searchedGamesIsSorted,
+    ) {
+        val filtered = filterGames(searchedGames, engineFilter, playedFilter)
+        if (searchedGamesIsSorted && filtered === searchedGames) searchedGames
+        else sortGames(filtered, gameSort)
     }
     // 引擎过滤器只列出库中实际存在的引擎（与首页分类仓库同口径）。
     val availableEngines = remember(games) {
@@ -539,10 +550,19 @@ private fun GameLibraryContent(
     }
     val hasActiveFilter = engineFilter.isNotEmpty() ||
         playedFilter != AppSettingsStore.GAME_FILTER_PLAYED_ALL
-    // 引擎过滤可能失效（该引擎的游戏被全部删除）：库非空且已无该引擎时自动清空，
-    // 避免列表停在「未找到匹配的游戏」而抽屉里看不出原因。库为空（加载中）时不动，保留持久化值。
-    LaunchedEffect(availableEngines, engineFilter, games.isEmpty()) {
-        if (games.isNotEmpty() && engineFilter.isNotEmpty() &&
+    // 「重置」统一恢复默认排序 + 全部引擎 + 全部状态：按钮位于抽屉标题栏、覆盖两个 section，
+    // 只清过滤器会让排序停在非默认值，与「筛选与排序」的口径不符。
+    val resetFilters = {
+        AppSettingsStore.setGameSort(context, AppSettingsStore.GAME_SORT_ALPHA)
+        AppSettingsStore.setGameFilterEngine(context, "")
+        AppSettingsStore.setGameFilterPlayed(context, AppSettingsStore.GAME_FILTER_PLAYED_ALL)
+    }
+    // 引擎过滤可能失效（该引擎的游戏被全部删除）：库已加载、未在扫描且已无该引擎时自动清空，
+    // 避免列表停在「未找到匹配的游戏」而抽屉里看不出原因。
+    // 判据用 loaded/scanning 而非 games.isEmpty()：冷启动与扫描中库可能瞬时为空，此时清空会
+    // 误删持久化条件；而删光最后一款游戏后库同样为空，恰恰必须清理。
+    LaunchedEffect(availableEngines, engineFilter, loaded, scanning) {
+        if (loaded && !scanning && engineFilter.isNotEmpty() &&
             availableEngines.none { it.name == engineFilter }
         ) {
             AppSettingsStore.setGameFilterEngine(context, "")
@@ -654,13 +674,7 @@ private fun GameLibraryContent(
                             if (hasActiveFilter) {
                                 com.tyranor.next.ui.common.NoRippleButton(
                                     text = stringResource(R.string.game_filter_reset),
-                                    onClick = {
-                                        AppSettingsStore.setGameFilterEngine(context, "")
-                                        AppSettingsStore.setGameFilterPlayed(
-                                            context,
-                                            AppSettingsStore.GAME_FILTER_PLAYED_ALL,
-                                        )
-                                    },
+                                    onClick = resetFilters,
                                     modifier = Modifier.padding(top = 12.dp),
                                 )
                             }
@@ -718,10 +732,7 @@ private fun GameLibraryContent(
             onSortChange = { AppSettingsStore.setGameSort(context, it) },
             onEngineChange = { AppSettingsStore.setGameFilterEngine(context, it) },
             onPlayedChange = { AppSettingsStore.setGameFilterPlayed(context, it) },
-            onReset = {
-                AppSettingsStore.setGameFilterEngine(context, "")
-                AppSettingsStore.setGameFilterPlayed(context, AppSettingsStore.GAME_FILTER_PLAYED_ALL)
-            },
+            onReset = resetFilters,
             onDismiss = { showFilterSheet = false },
         )
     }
