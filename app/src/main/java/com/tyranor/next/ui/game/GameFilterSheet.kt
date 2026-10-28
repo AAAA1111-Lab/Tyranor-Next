@@ -78,6 +78,8 @@ internal fun GameFilterSheet(
         AppSettingsStore.GAME_FILTER_PLAYED_NONE to stringResource(R.string.game_filter_played_none),
     )
     val engineAllLabel = stringResource(R.string.game_filter_all)
+    // 引擎名与首页分类/卡片角标同一套口径：UNKNOWN 走本地化文案，其余用品牌名
+    val unknownEngineLabel = stringResource(R.string.engine_name_unknown)
 
     AppBottomSheet(onDismissRequest = onDismiss) {
         Column(
@@ -152,7 +154,7 @@ internal fun GameFilterSheet(
                     )
                     availableEngines.forEach { engine ->
                         FilterChipCard(
-                            label = engine.displayName,
+                            label = if (engine == EngineType.UNKNOWN) unknownEngineLabel else engine.displayName,
                             selected = engineFilter == engine.name,
                             onClick = { onEngineChange(engine.name) },
                         )
