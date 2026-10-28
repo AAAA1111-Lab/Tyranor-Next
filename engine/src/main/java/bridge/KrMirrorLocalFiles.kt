@@ -188,7 +188,11 @@ internal class KrMirrorLocalFiles(mirrorRoot: File) {
         onSizeChanged: (Long, Long) -> Unit = { _, _ -> },
         openSource: () -> InputStream,
     ): File = withFileLock(file) {
-        if (isOverridden(file)) return@withFileLock file
+        // A marker can outlive its local file (failed marker delete after unlink, or
+        // external removal): treating such a key as owned would return the MISSING
+        // file and the caller's RandomAccessFile("rw") would silently create empty
+        // content — re-copy from the source instead (audit of fe3d057, FM1).
+        if (isOverridden(file) && file.isFile) return@withFileLock file
         if (file.isDirectory) throw IOException("Mirror target is a directory")
         if (file.length() > 0L) {
             markOverridden(file)

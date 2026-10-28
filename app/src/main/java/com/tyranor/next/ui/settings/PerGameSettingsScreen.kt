@@ -642,6 +642,10 @@ fun PerGameSettingsScreen(game: ScanGame) {
                                     } catch (cancelled: kotlinx.coroutines.CancellationException) {
                                         throw cancelled
                                     } catch (t: Throwable) {
+                                        // 对齐入口 (:256-257) 与 SaveManagementActivity.refresh
+                                        // 的兄弟模式：重解失败同样置失败态，不静默滞留旧快照
+                                        // （审计 of fe3d057, FA1）
+                                        saveLocationLoadFailed = true
                                         Log.w("PerGameSettings", "resolve save location failed gid=$gid", t)
                                     }
                                 }

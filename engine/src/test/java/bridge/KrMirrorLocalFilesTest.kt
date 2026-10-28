@@ -195,6 +195,23 @@ class KrMirrorLocalFilesTest {
     }
 
     @Test
+    fun `stale ownership marker with a missing file re-copies the source instead of returning it`() {
+        // Audit of fe3d057, FM1: copyUp's ownership early-return used to hand back the
+        // MISSING file when only the marker existed, and the caller's
+        // RandomAccessFile("rw") would silently create empty content. The stale marker
+        // must fall through to a fresh copy from the source instead.
+        val root = temporary.newFolder("stale-marker-copy")
+        val target = File(root, "asset")
+        val local = KrMirrorLocalFiles(root)
+        local.markOverridden(target)
+        check(!target.exists())
+        val published = local.copyUp(target, 4L) { ByteArrayInputStream("data".toByteArray()) }
+        assertEquals(target, published)
+        assertEquals("data", target.readText())
+        assertTrue(local.isOverridden(target))
+    }
+
+    @Test
     fun `known oversized source is refused before source IO`() {
         val root = temporary.newFolder("known-limit")
         val target = File(root, "asset").apply { createNewFile() }
