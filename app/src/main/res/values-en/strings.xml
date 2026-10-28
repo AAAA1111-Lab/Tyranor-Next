@@ -581,7 +581,7 @@
     <string name="save_location_krkr_game_dir">KRKR game-directory saves</string>
     <string name="save_location_krkr_sd_mirror">KRKR SD-card SAF mirror saves (app-specific storage)</string>
     <string name="krkr_mirror_save_forced_note">Saves for SD-card games are managed by the SAF mirror directory and this switch has no effect. Both the engine and save management read/write the app-specific directory; savedata manually placed in the game directory is ignored.</string>
-    <string name="save_location_load_failed_note">Save location resolution failed, so the information on this page may be incomplete. The isolated save and kernel settings stay editable; retry later.</string>
+    <string name="save_location_load_failed_note">Save location resolution failed; the information on this page may be incomplete or stale. Retry later to refresh it.</string>
     <string name="krkr_mirror_save_import_hint">Import/export SD-card game saves here (app-specific SAF mirror directory); savedata manually placed in the game directory is not read by the engine.</string>
     <string name="save_error_ons_external_unavailable">ONS app-specific storage is unavailable</string>
     <string name="save_location_ons_scoped">ONS app-specific save directory</string>
