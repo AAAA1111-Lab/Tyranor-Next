@@ -302,6 +302,8 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                             val gameSortModes = listOf(
                                 AppSettingsStore.GAME_SORT_ALPHA to stringResource(R.string.settings_sort_alpha),
                                 AppSettingsStore.GAME_SORT_BRACKET_TAG to stringResource(R.string.settings_sort_bracket_tag),
+                                AppSettingsStore.GAME_SORT_ENGINE to stringResource(R.string.game_sort_engine),
+                                AppSettingsStore.GAME_SORT_RECENT to stringResource(R.string.game_sort_recent),
                             )
                             val sortIndex = gameSortModes.indexOfFirst { it.first == gameSort }
                                 .let { if (it < 0) 0 else it }
