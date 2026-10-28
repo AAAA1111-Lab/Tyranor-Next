@@ -67,6 +67,9 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Check texture row origin
+        run: clang++ -std=c++17 -fsyntax-only engine/src/test/cpp/texture_row_origin_test.cpp
+
       - name: Check graphics resource ownership and provenance
         run: ./gradlew -p buildSrc graphicsResourcesRegression --no-daemon
 
