@@ -561,10 +561,11 @@ private fun GameLibraryContent(
     // 避免列表停在「未找到匹配的游戏」而抽屉里看不出原因。
     // 判据用 loaded/scanning 而非 games.isEmpty()：冷启动与扫描中库可能瞬时为空，此时清空会
     // 误删持久化条件；而删光最后一款游戏后库同样为空，恰恰必须清理。
+    // loaded 的语义是「完整库快照已发布」，手动添加游戏不会把它置真（见 addManualGame）。
+    val engineFilterStale = engineFilter.isNotEmpty() &&
+        availableEngines.none { it.name == engineFilter }
     LaunchedEffect(availableEngines, engineFilter, loaded, scanning) {
-        if (loaded && !scanning && engineFilter.isNotEmpty() &&
-            availableEngines.none { it.name == engineFilter }
-        ) {
+        if (loaded && !scanning && engineFilterStale) {
             AppSettingsStore.setGameFilterEngine(context, "")
         }
     }

@@ -216,7 +216,11 @@ class MainLibraryViewModel(application: Application) : AndroidViewModel(applicat
     fun addManualGame(game: ScanGame): Boolean {
         if (_uiState.value.games.any { it.uri == game.uri }) return false
         val revision = stateRevision.incrementAndGet()
-        _uiState.update { MainLibraryStateReducer.acceptGames(it, it.games + game) }
+        // 手动添加只是增量，不能把「完整库已加载」置真：冷启动加载期间添加会让游戏页误判
+        // 库已就绪，进而把仍然有效的引擎筛选当成失效条件清掉（见 GameScreen 的失效清理）。
+        _uiState.update { state ->
+            MainLibraryStateReducer.acceptGames(state, state.games + game).copy(loaded = state.loaded)
+        }
         enqueuePersistence(revision) {
             GameLibraryFacade.updateGames(appContext) { games ->
                 if (games.any { it.uri == game.uri }) games else games + game
