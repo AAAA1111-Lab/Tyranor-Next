@@ -1425,7 +1425,7 @@ object EngineLauncher {
                 putExtra(LaunchContract.SAF_MIRROR_ROOT, it.mirrorRoot.absolutePath)
                 putExtra(LaunchContract.SAF_MIRROR_INDEX, it.indexFile.absolutePath)
                 putExtra(LaunchContract.SAF_MIRROR_FILES, it.fileCount)
-                Log.i(TAG, "KRKR SAF mirror files=${it.fileCount} diagnostics=${it.diagnostics}")
+                // 诊断汇总由 engine 侧 prepare 输出一次（审查第十轮 #21），不再重复打印
             }
             putExtra(LaunchContract.ORIENTATION, 6)
             putExtra(LaunchContract.SCOPED_SAVE_DIR, effectiveScoped)

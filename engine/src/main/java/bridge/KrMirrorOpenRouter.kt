@@ -16,7 +16,7 @@ internal class KrMirrorOpenRouter<T>(
     private val closeDescriptor: (Int) -> Unit,
     private val diagnostic: (String, Exception?) -> Unit,
 ) {
-    enum class Intent { READ_ONLY, UPDATE, WRITE }
+    enum class Intent { READ_ONLY, UPDATE, WRITE, TRUNCATE }
 
     fun open(key: String, file: File, intent: Intent, allowCreate: Boolean = false): Int {
         if (!session.shouldRoute(key)) return NOT_ROUTED
@@ -26,7 +26,9 @@ internal class KrMirrorOpenRouter<T>(
                 // Copy-up publishes with atomic rename. Do not hold a write mutex
                 // across provider I/O: an old launch must not block a new launch read.
                 val source = session.sourceEntry(key)
-                if (session.isLocal(key, file) || file.length() > 0L || (source == null && file.isFile)) {
+                // A stale ownership marker with a missing local file must not fail the
+                // read while the source document is still readable (review round 10, #15).
+                if ((session.isLocal(key, file) && file.isFile) || file.length() > 0L || (source == null && file.isFile)) {
                     localDescriptor(file, intent).takeIf { it >= 0 } ?: FAILED
                 } else if (source != null) {
                     readSource(key, source)
@@ -36,6 +38,25 @@ internal class KrMirrorOpenRouter<T>(
                     // way base did — games probe deleted optional files and would
                     // misread FAILED/EIO as a broken resource (review round 9, #11).
                     NOT_ROUTED
+                }
+            } else if (intent == Intent.TRUNCATE) {
+                // Truncation discards the source content by intent: publish the empty
+                // local override directly instead of streaming a possibly >64 MiB
+                // source only to erase it — an oversized source must not fail an
+                // open whose result is a truncation anyway (review round 10, #9).
+                state.withFileLock(file) {
+                    val source = session.sourceEntry(key)
+                    if (file.isFile && (session.isLocal(key, file) || file.length() > 0L || source == null)) {
+                        return@withFileLock openLocal(key, file, intent, state)
+                    }
+                    if (source == null) {
+                        return@withFileLock if (allowCreate && !file.exists()) {
+                            openLocal(key, file, intent, state)
+                        } else {
+                            FAILED
+                        }
+                    }
+                    openLocal(key, file, intent, state)
                 }
             } else {
                 // Materialize the complete source before handing out a writable fd.

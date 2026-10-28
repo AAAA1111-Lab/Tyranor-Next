@@ -244,6 +244,30 @@ class KrMirrorOpenRouterTest {
         assertFalse(fixture.session.readFailed(fixture.key))
     }
 
+    @Test
+    fun `stale ownership marker with a missing local file reads the source instead of failing`() {
+        // R10 #15: a durable marker whose local file was removed externally must not
+        // turn a pure read into EIO while the source document is still readable.
+        val fixture = fixture()
+        KrMirrorLocalFiles(fixture.root).markOverridden(fixture.file)
+        check(fixture.file.delete())
+        assertEquals(10, fixture.router().open(fixture.key, fixture.file, KrMirrorOpenRouter.Intent.READ_ONLY))
+        assertEquals(listOf("source"), fixture.sourceOpens)
+        assertTrue(fixture.localOpens.isEmpty())
+    }
+
+    @Test
+    fun `truncating open publishes an empty override without copying the source up`() {
+        // R10 #9: truncation discards the source by intent — no bounded copy-up, and
+        // an oversized source must not fail an open whose result is a truncation.
+        val fixture = fixture(size = KrMirrorLocalFiles.MAX_COPY_BYTES + 1)
+        assertEquals(20, fixture.router().open(fixture.key, fixture.file, KrMirrorOpenRouter.Intent.TRUNCATE))
+        assertTrue(fixture.sourceOpens.isEmpty())
+        assertEquals(0, fixture.streamOpens)
+        assertEquals(listOf(KrMirrorOpenRouter.Intent.TRUNCATE), fixture.localOpens)
+        assertTrue(fixture.state.isOverridden(fixture.file))
+    }
+
     private fun assertPendingOpenAfterUnlink(intent: KrMirrorOpenRouter.Intent, allowCreate: Boolean) {
         val fixture = fixture()
         val entered = CountDownLatch(1)

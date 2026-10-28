@@ -8,6 +8,8 @@ internal class KrMirrorReadSession<T>(
     documents: Map<String, T>,
     val localFiles: KrMirrorLocalFiles? = null,
     initialOverrides: Set<String> = emptySet(),
+    /** The index file was unreadable or parsed to zero rows: mirror opens fail closed. */
+    val degraded: Boolean = false,
 ) {
     private val documents = documents.toMap()
     private val failedReads = ConcurrentHashMap.newKeySet<String>()

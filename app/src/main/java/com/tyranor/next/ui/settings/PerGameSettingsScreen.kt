@@ -658,7 +658,10 @@ fun PerGameSettingsScreen(game: ScanGame) {
                                     stringResource(R.string.engine_settings_scoped_save_dir),
                                     globalKrScoped,
                                     krScoped,
-                                    enabled = saveLocationReady && !saveLocationLoadFailed && !krMirrorForced,
+                                    // 存档位置解析失败不得禁用本开关：改回 <游戏根>/savedata
+                                    // 正是解除失败状态的手段，禁用会形成自锁（审查第十轮 #6；
+                                    // 运行期仍会回退 filesDir/save，开关并非不可用）
+                                    enabled = saveLocationReady && !krMirrorForced,
                                 ) { krScoped = it }
                                 if (saveLocationLoadFailed || krMirrorForced) {
                                     Text(

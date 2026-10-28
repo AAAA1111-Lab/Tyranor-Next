@@ -61,5 +61,19 @@ class NativeBridgeMirrorPolicyTest {
         // (A positive routing case needs android.net.Uri and stays device-verified.)
         NativeBridge.configureSafMirror(null, null)
         assertEquals(-1L, NativeBridge.metadataSize("/data/user/0/x/games/game-k/data.xp3"))
+        assertFalse(NativeBridge.mirrorSessionDegradedForTest)
+    }
+
+    @Test
+    fun `corrupt or zero-row index marks the session degraded for fail-closed opens`() {
+        // R10 #2: a present but unreadable/zero-row index must not silently serve the
+        // 0-byte placeholders as empty content; the session is flagged and open() in
+        // NativeBridge returns FAILED for every mirror-root path.
+        val mirrorRoot = temporary.newFolder("game-corrupt")
+        val indexFile = File(temporary.newFolder("idx"), "corrupt.idx")
+        indexFile.writeText("not-an-index-header\n")
+        NativeBridge.configureSafMirror(indexFile.path, mirrorRoot.path)
+        assertTrue(NativeBridge.mirrorSessionDegradedForTest)
+        assertEquals(-1L, NativeBridge.metadataSize("/data/user/0/x/games/game-corrupt/data.xp3"))
     }
 }

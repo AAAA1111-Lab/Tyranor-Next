@@ -62,12 +62,18 @@ object NativeBridge {
             Log.i("NativeBridge", "SAF mirror index skipped: mirror root missing path=$indexPath")
             return
         }
-        val documents = try {
-            KrSafMirror.loadIndex(indexPath)
+        val loadResult = try {
+            val loaded = KrSafMirror.loadIndex(indexPath)
+            // prepare() never publishes a zero-row index for a launched game: an empty
+            // parse means the file is missing, truncated or from an unknown version —
+            // degrade instead of serving every placeholder as empty content (R10 #2).
+            loaded to loaded.isEmpty()
         } catch (t: Throwable) {
             Log.e("NativeBridge", "load SAF mirror index failed path=$indexPath", t)
-            emptyMap()
+            emptyMap<String, KrSafMirror.MirrorEntry>() to true
         }
+        val documents = loadResult.first
+        val degraded = loadResult.second
         val localFiles = root?.let { KrMirrorLocalFiles(it) }
         // snapshotOverrideKeys returns root-relative keys; translate them to this index's
         // full keys so the session's override lookups stay key-based.
@@ -79,10 +85,14 @@ object NativeBridge {
                 .filter { key -> localFiles.relativeForIndexKey(key)?.let { it in relativeOverrides } == true }
                 .toSet()
         }
-        safMirror = KrMirrorReadSession(documents, localFiles, initialOverrides)
+        safMirror = KrMirrorReadSession(documents, localFiles, initialOverrides, degraded)
         val sized = documents.values.count { it.size >= 0 }
-        Log.i("NativeBridge", "SAF mirror index entries=${documents.size} sized=$sized overrides=${initialOverrides.size}")
+        Log.i("NativeBridge", "SAF mirror index entries=${documents.size} sized=$sized overrides=${initialOverrides.size} degraded=$degraded")
     }
+
+    /** JVM test seam for the degraded fail-closed session state. */
+    internal val mirrorSessionDegradedForTest: Boolean
+        get() = safMirror.degraded
 
     @JvmStatic
     fun configurePatchOverlay(targetPath: String?, overlayPath: String?) {
@@ -140,6 +150,18 @@ object NativeBridge {
         }
         val session = safMirror
         val key = target.lowercase(Locale.ROOT)
+        // A degraded session (unreadable/zero-row index) must not let the engine open
+        // the 0-byte placeholders as empty content: fail closed for every path under
+        // the mirror root, while redirected saves keep their local semantics (R10 #2).
+        if (session.degraded) {
+            val relative = session.localFiles?.relativeForIndexKey(key)
+            if (relative != null && !relative.equals("savedata", ignoreCase = true) &&
+                !relative.startsWith("savedata/", ignoreCase = true)
+            ) {
+                Log.e("NativeBridge", "mirror index degraded; failing open path=$path")
+                return KrMirrorOpenRouter.FAILED
+            }
+        }
         if (session.shouldRoute(key)) {
             val router = KrMirrorOpenRouter(
                 session = session,
@@ -151,7 +173,7 @@ object NativeBridge {
                         ?: throw IOException("Cannot open mirror source")
                 },
                 sourceDescriptor = { entry -> openDocumentUri(entry.uri, OsConstants.O_RDONLY) },
-                localDescriptor = { file, _ -> openDirectFile(path, file.path, mode, "mirror local") },
+                localDescriptor = { file, _ -> openDirectFile(path, file.path, mode, null) },
                 closeDescriptor = { fd -> ParcelFileDescriptor.adoptFd(fd).close() },
                 diagnostic = { message, error -> Log.w("NativeBridge", "$message path=$path flags=$mode", error) },
             )
@@ -161,6 +183,7 @@ object NativeBridge {
                 truncate = (mode and OsConstants.O_TRUNC) != 0,
             )
             val intent = when {
+                !readIntent && (mode and OsConstants.O_TRUNC) != 0 -> KrMirrorOpenRouter.Intent.TRUNCATE
                 !readIntent -> KrMirrorOpenRouter.Intent.WRITE
                 openAccess(mode) == FileAccess.READ_WRITE -> KrMirrorOpenRouter.Intent.UPDATE
                 else -> KrMirrorOpenRouter.Intent.READ_ONLY
@@ -201,6 +224,9 @@ object NativeBridge {
             session.runMutation(fromKey.takeIf { from != null }, from, toKey, to) {
                 executeOriginalMirrorMutation(operation, fromPath, toPath)
             }
+        } catch (cancelled: kotlin.coroutines.cancellation.CancellationException) {
+            // Cancellation is not a syscall failure; it must propagate as-is (AGENTS).
+            throw cancelled
         } catch (error: Exception) {
             Log.w("NativeBridge", "Mirror mutation failed from=$fromPath to=$toPath", error)
             val errorNumber = if (Thread.currentThread().isInterrupted) OsConstants.EINTR else OsConstants.EIO

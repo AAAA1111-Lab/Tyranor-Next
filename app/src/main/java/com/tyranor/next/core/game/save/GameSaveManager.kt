@@ -347,9 +347,24 @@ class GameSaveManager(private val context: Context) {
         return synchronized(RpgSaveSyncState.INTEROP_LOCK) {
             // 与存档互通同步互斥（H3）：删除与并发同步交错会产生半删状态
             val directory = resolveSaveLocation(game).directory ?: throw GameSaveException(SaveErrorCode.RESOLVE_SAVE_DIR_FAILED)
-            if (!directory.isDirectory) return 0
-            clearSaveDirectory(directory, game.engine)
+            val deleted = if (directory.isDirectory) clearSaveDirectory(directory, game.engine) else 0
+            // 事务兄弟目录必须一并清理：遗留的 import_backup 会在下一次失败导入的
+            // 恢复分支把用户刚删除的存档「复活」（审查第十轮 #12）
+            transactionSiblings(directory).forEach { it.deleteRecursively() }
+            deleted
         }
+    }
+
+    /** Import transaction siblings of a save directory (staging/backup/retained copies). */
+    private fun transactionSiblings(directory: File): List<File> {
+        val parent = directory.parentFile ?: return emptyList()
+        return listOf(
+            directory.name + ".import_staging",
+            directory.name + ".import_backup",
+            directory.name + ".import_backup_retained",
+            directory.name + ".import_backup_retained1",
+            directory.name + ".import_backup_retained2",
+        ).map { File(parent, it) }.filter { it.exists() }
     }
 
     /**
@@ -393,8 +408,11 @@ class GameSaveManager(private val context: Context) {
                         targetList += File(File(external, "save"), GamePathUtils.safeSaveName(root))
                     }
                     if (GamePathUtils.isRemovableStoragePath(root)) {
-                        // 可移动存储走 KrSafMirror：清理镜像树与 SAF 索引，避免内部存储持续膨胀
-                        targetList += bridge.KrSafMirror.mirrorRootFor(appContext, game.uri, root)
+                        // 可移动存储走 KrSafMirror：清理镜像树与 SAF 索引，避免内部存储持续膨胀；
+                        // 根定位失败（锁/IO）不得中断整个清理而遗留孤儿数据（审查第十轮 #4）
+                        runCatching { bridge.KrSafMirror.mirrorRootFor(appContext, game.uri, root) }
+                            .onSuccess { targetList += it }
+                            .onFailure { error -> android.util.Log.w("GameSaveManager", "mirror root locate failed during cleanup", error) }
                         val mirrorKey = bridge.KrSafMirror.mirrorKey(game.uri, root)
                         targetList += File(
                             File(appContext.noBackupFilesDir, "krkr_saf_index"),
@@ -440,7 +458,12 @@ class GameSaveManager(private val context: Context) {
                 val inAppStorage = target.canonicalPath.startsWith(appInternal) ||
                     (appDataRoot != null && target.canonicalPath.startsWith(appDataRoot)) ||
                     (appExternal != null && target.canonicalPath.startsWith(appExternal + File.separator))
-                if (inAppStorage) target.deleteRecursively()
+                if (inAppStorage) {
+                    target.deleteRecursively()
+                    // 事务兄弟目录（staging/backup/retained）与目标同级：遗留的旧存档
+                    // 不能在删除游戏后继续留在外部存储（审查第十轮 #13）
+                    transactionSiblings(target).forEach { it.deleteRecursively() }
+                }
             }
         }
     }
@@ -512,8 +535,9 @@ class GameSaveManager(private val context: Context) {
     /**
      * 把备份目录中不参与导入的 Artemis 引擎资源（system/、*.pfs 等）逐个 rename 回目标目录；
      * 按相对路径递归遍历，嵌套资源如 foo/data.pfs 亦能恢复（copyDirectoryContents 每层均过滤）。
-     * 全部成功后清理备份并返回，任一失败先把已移回的资源搬回备份、保留备份再抛出，
-     * 保证任何时刻备份都保有完整的引擎资源副本。
+     * 任一失败先把已移回的资源搬回备份、保留备份再抛出，保证任何时刻备份都保有完整的引擎资源副本。
+     * 备份本身的删除/停靠统一由 [importSaveDirectory] 决策（审查第十轮 #1/#11）：
+     * 这里不再清理，避免在 backupConsumed 判定前销毁可保留的旧存档。
      */
     @Throws(IOException::class)
     private fun restoreExcludedFromBackup(backup: File, destination: File, engine: EngineType) {
@@ -521,7 +545,10 @@ class GameSaveManager(private val context: Context) {
         val moved = mutableListOf<Pair<File, File>>()
         try {
             fun restoreRecursive(currentBackup: File, currentDest: File) {
-                currentBackup.listFiles().orEmpty().forEach { child ->
+                // 不可读的备份目录不是「无可恢复」：必须保留备份并报错（#11）
+                val children = currentBackup.listFiles()
+                    ?: throw IOException("Backup directory unreadable: " + currentBackup.path)
+                children.forEach { child ->
                     if (exclude(child.name)) {
                         val target = File(currentDest, child.name)
                         target.parentFile?.let { if (!it.exists() && !it.mkdirs()) throw GameSaveException(SaveErrorCode.CREATE_SAVE_DIR_NAMED, detail = child.name) }
@@ -540,7 +567,6 @@ class GameSaveManager(private val context: Context) {
             }
             throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE, cause = t)
         }
-        backup.deleteRecursively()
     }
 
     private fun clearSaveDirectory(directory: File, engine: EngineType): Int {
@@ -687,7 +713,12 @@ class GameSaveManager(private val context: Context) {
                             throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
                         }
                     }
-                    restoreExcluded != null -> restoreExcluded(backup, destination)
+                    restoreExcluded != null -> {
+                        restoreExcluded(backup, destination)
+                        // 引擎资源已搬回后，备份里剩余的旧存档同样停靠而不是删除：
+                        // 崩溃恢复场景下它是唯一副本（审查第十轮 #1）
+                        parkLeftoverBackup(destination, backup, rename)
+                    }
                     else -> parkLeftoverBackup(destination, backup, rename)
                 }
             }

@@ -41,7 +41,9 @@ object KrSafMirror {
     private const val INDEX_VERSION_V2 = "krkr-saf-index-v2"
 
     /** Depth cap for the recursive mirror walk (game trees are shallow; guards odd structures). */
-    private const val MIRROR_MAX_DEPTH = 6
+    // base has no depth limit; 12 keeps pathological trees bounded while covering
+    // real Kirikiri layouts deeper than the previous cap of 6 (review round 10, #16).
+    private const val MIRROR_MAX_DEPTH = 12
     private const val SIG_SCAN_WAIT_MILLIS = 250L
     private const val PREPARATION_LOCK_SHARDS = 64
     private val preparationLocks = ConcurrentHashMap<String, ReentrantLock>()
@@ -474,34 +476,49 @@ object KrSafMirror {
 
     /**
      * Bounded per-key lock for the sticky marker; null = lock busy or unavailable,
-     * caller falls back to the tolerant path. The index directory is otherwise only
-     * created by [prepare]: a first-ever save-management open before any launch used
-     * to throw FileNotFoundException here, and because the file was constructed
-     * outside the finally scope it also leaked the held process mutex — every later
-     * prepare on the shard then blocked until process death (local audit F1).
+     * caller falls back to the tolerant path — I/O failures (missing directory,
+     * EMFILE/ENOSPC/EACCES) must degrade here instead of escaping into
+     * resolveSaveLocation/cleanupAppData (review round 10, #4). The index directory
+     * is otherwise only created by [prepare]: a first-ever save-management open
+     * before any launch used to throw FileNotFoundException here, and because the
+     * file was constructed outside the finally scope it also leaked the held process
+     * mutex — every later prepare on the shard then blocked until process death
+     * (local audit F1).
      */
     internal fun <T> tryStickySelectionLock(indexDirectory: File, key: String, action: () -> T): T? {
         val lockFile = File(indexDirectory, "prepare-${(key.hashCode() and Int.MAX_VALUE) % PREPARATION_LOCK_SHARDS}.lock")
         val mutex = preparationLocks.getOrPut(lockFile.absolutePath) { ReentrantLock() }
-        if (!mutex.tryLock(500, TimeUnit.MILLISECONDS)) return null
+        val locked = try {
+            mutex.tryLock(500, TimeUnit.MILLISECONDS)
+        } catch (error: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw CancellationException("Sticky selection lock interrupted").also { it.initCause(error) }
+        }
+        if (!locked) return null
         try {
             if (!indexDirectory.isDirectory && !indexDirectory.mkdirs() && !indexDirectory.isDirectory) return null
-            val file = RandomAccessFile(lockFile, "rw")
+            val file = try {
+                RandomAccessFile(lockFile, "rw")
+            } catch (error: IOException) {
+                Log.w(TAG, "sticky selection lock unavailable path=${lockFile.path}", error)
+                return null
+            }
             try {
                 val held = try {
                     file.channel.tryLock()
                 } catch (_: OverlappingFileLockException) {
                     null
-                } catch (_: IOException) {
+                } catch (error: IOException) {
+                    Log.w(TAG, "sticky selection channel lock unavailable path=${lockFile.path}", error)
                     null
                 } ?: return null
                 try {
                     return action()
                 } finally {
-                    held.release()
+                    runCatching { held.release() }
                 }
             } finally {
-                file.close()
+                runCatching { file.close() }
             }
         } finally {
             mutex.unlock()
@@ -687,9 +704,13 @@ object KrSafMirror {
             if (key in currentKeys) return@count false
             val file = localFiles.fileForIndexKey(key) ?: return@count false
             try {
-                if (isLocalOverride(file)) return@count false
-                file.canonicalPath.startsWith(saveRoot.path + File.separator) &&
-                    file.isFile && file.length() == 0L && file.delete()
+                if (!file.canonicalPath.startsWith(saveRoot.path + File.separator)) return@count false
+                // Deletion races a running session's copy-up: take the same resource
+                // lock and re-verify ownership/emptiness under it, mirroring
+                // reconcilePreparedIndex (review round 10, #14).
+                localFiles.withFileLock(file) {
+                    !isLocalOverride(file) && file.isFile && file.length() == 0L && file.delete()
+                }
             } catch (_: IOException) {
                 false
             }

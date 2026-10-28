@@ -217,6 +217,13 @@ internal class KrMirrorLocalFiles(mirrorRoot: File) {
                     output.fd.sync()
                 }
             }
+            // A short read means the provider stream ended early: publishing would
+            // install a permanently truncated copy (the ownership marker stops later
+            // copy-ups from re-reading the source). Fail like KrMirrorOverlayReader's
+            // short-read policy instead; a larger actual size stays publishable (R10 #3).
+            if (expectedSize >= 0L && copied < expectedSize) {
+                throw IOException("Mirror source short read: indexed=$expectedSize copied=$copied")
+            }
             if (expectedSize >= 0L && copied != expectedSize) onSizeChanged(expectedSize, copied)
             checkInterrupted()
             replaceAtomically(temporary, file)

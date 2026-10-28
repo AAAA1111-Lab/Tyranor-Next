@@ -460,7 +460,19 @@ std::string resolveEnginePath(const char* path) {
     };
     // Source savedata is excluded from the mirror. Its actual local filename case
     // belongs to the scoped-save redirect, not the lowercased source asset tree.
-    if (!parts.empty() && asciiLower(parts.front()) != "savedata") {
+    if (!parts.empty() && asciiLower(parts.front()) == "savedata") {
+        // When the scoped-save redirect is unavailable (activity gone, missing extra),
+        // the mirror-local directory spelling is lowercase: normalize only the anchor
+        // segment and keep the remaining segments' case (review round 10, #18).
+        parts[0] = "savedata";
+        std::string normalized;
+        for (const auto& part : parts) {
+            if (!normalized.empty()) normalized += "/";
+            normalized += part;
+        }
+        return base + "/" + normalized;
+    }
+    if (!parts.empty()) {
         const bool hasUnicode = std::any_of(suffix.begin(), suffix.end(),
                 [](unsigned char byte) { return byte >= 0x80; });
         suffix = asciiLower(suffix);
@@ -844,11 +856,21 @@ FILE* hookedFreopenCommon(const char* path, const char* mode, FILE* stream, Freo
             std::snprintf(fdPath, sizeof(fdPath), "/proc/self/fd/%d", fd);
             if (original != nullptr) {
                 FILE* rebuilt = original(fdPath, streamMode, stream);
+                if (rebuilt != nullptr) {
+                    close(fd);
+                    return rebuilt;
+                }
                 const int reopenError = errno;
+                // Procfs reopening can fail for provider fds that forbid reopening by
+                // path; the freshly opened fd itself is still unused. Hand it to
+                // fdopen instead of discarding a successful open (review round 10, #8).
+                FILE* fallback = fdopen(fd, streamMode);
+                if (fallback != nullptr) return fallback;
+                const int fdopenError = errno;
                 close(fd);
-                if (rebuilt != nullptr) return rebuilt;
                 __android_log_print(ANDROID_LOG_WARN, kTag,
-                                    "freopen procfs reopen failed errno=%d", reopenError);
+                                    "freopen procfs reopen failed errno=%d fdopen errno=%d",
+                                    reopenError, fdopenError);
                 errno = reopenError;
             } else {
                 close(fd);
@@ -958,28 +980,40 @@ jlong callJavaMirrorMutation(int operation, const char* from, const char* to) {
         attached = true;
     }
     // Class/method/string lookup failures mean the JNI infrastructure is unavailable
-    // (typically a native thread whose class loader cannot see bridge/NativeBridge);
-    // degrade to the original syscall instead of failing every rename/unlink with
-    // EIO — even standard savedata renames would break (review round 9, #5). A thrown
-    // routing exception still fails closed with EIO: the mutation state is unknown.
-    jlong result = kMutationNotRouted;
+    // (typically a native thread whose class loader cannot see bridge/NativeBridge):
+    // FindClass/GetStaticMethodID leave a pending NoClassDefFoundError/NoSuchMethodError
+    // that must be cleared, and the caller degrades to the original syscall instead of
+    // failing every rename/unlink with EIO — even standard savedata renames would break
+    // (review round 10, #5). Only an exception thrown by the Java routing itself fails
+    // closed with EIO: the mutation state is then unknown.
     jclass clazz = env->FindClass("bridge/NativeBridge");
-    if (clazz != nullptr) {
-        jmethodID method = env->GetStaticMethodID(clazz, "runMirrorMutation",
-                "(ILjava/lang/String;Ljava/lang/String;)J");
-        if (method != nullptr) {
-            jstring javaFrom = env->NewStringUTF(from);
-            jstring javaTo = to == nullptr ? nullptr : env->NewStringUTF(to);
-            if (javaFrom != nullptr && (to == nullptr || javaTo != nullptr)) {
-                result = env->CallStaticLongMethod(clazz, method, operation, javaFrom, javaTo);
-            } else {
-                result = packMutationResult(-1, EIO);
-            }
-            if (javaFrom != nullptr) env->DeleteLocalRef(javaFrom);
-            if (javaTo != nullptr) env->DeleteLocalRef(javaTo);
-        }
-        env->DeleteLocalRef(clazz);
+    if (clazz == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        if (attached) gVm->DetachCurrentThread();
+        return kMutationNotRouted;
     }
+    jmethodID method = env->GetStaticMethodID(clazz, "runMirrorMutation",
+            "(ILjava/lang/String;Ljava/lang/String;)J");
+    if (method == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        env->DeleteLocalRef(clazz);
+        if (attached) gVm->DetachCurrentThread();
+        return kMutationNotRouted;
+    }
+    jstring javaFrom = env->NewStringUTF(from);
+    jstring javaTo = to == nullptr ? nullptr : env->NewStringUTF(to);
+    if (javaFrom == nullptr || (to != nullptr && javaTo == nullptr)) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        if (javaFrom != nullptr) env->DeleteLocalRef(javaFrom);
+        if (javaTo != nullptr) env->DeleteLocalRef(javaTo);
+        env->DeleteLocalRef(clazz);
+        if (attached) gVm->DetachCurrentThread();
+        return kMutationNotRouted;
+    }
+    jlong result = env->CallStaticLongMethod(clazz, method, operation, javaFrom, javaTo);
+    env->DeleteLocalRef(javaFrom);
+    if (javaTo != nullptr) env->DeleteLocalRef(javaTo);
+    env->DeleteLocalRef(clazz);
     if (env->ExceptionCheck()) {
         env->ExceptionClear();
         result = packMutationResult(-1, EIO);

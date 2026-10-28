@@ -164,19 +164,34 @@ class KrMirrorLocalFilesTest {
     }
 
     @Test
-    fun `changed source size publishes complete actual content and reports mismatch`() {
+    fun `grown source size publishes complete actual content and reports mismatch`() {
+        // A source that grew past its indexed size is still fully copied: publish the
+        // complete actual bytes and report the mismatch as a diagnostic.
         val root = temporary.newFolder("mismatch")
         val local = KrMirrorLocalFiles(root)
-        for ((name, expected) in listOf("short" to 9L, "long" to 2L)) {
-            val target = File(root, name).apply { createNewFile() }
-            var reported: Pair<Long, Long>? = null
-            local.copyUp(target, expected, { before, after -> reported = before to after }) {
-                ByteArrayInputStream("data".toByteArray())
-            }
-            assertEquals("data", target.readText())
-            assertEquals(expected to 4L, reported)
-            assertTrue(local.isOverridden(target))
+        val target = File(root, "long").apply { createNewFile() }
+        var reported: Pair<Long, Long>? = null
+        local.copyUp(target, 2L, { before, after -> reported = before to after }) {
+            ByteArrayInputStream("data".toByteArray())
         }
+        assertEquals("data", target.readText())
+        assertEquals(2L to 4L, reported)
+        assertTrue(local.isOverridden(target))
+    }
+
+    @Test
+    fun `short provider read fails the copy up without publishing truncated content`() {
+        // R10 #3: a provider stream that ends early would otherwise be published as a
+        // permanent override — the ownership marker stops later copy-ups from ever
+        // re-reading the source, so a short read must fail like the overlay reader.
+        val root = temporary.newFolder("short-read")
+        val target = File(root, "asset").apply { createNewFile() }
+        val local = KrMirrorLocalFiles(root)
+        expectIOException {
+            local.copyUp(target, 9L) { ByteArrayInputStream("data".toByteArray()) }
+        }
+        assertEquals(0L, target.length())
+        assertFalse(local.isOverridden(target))
     }
 
     @Test

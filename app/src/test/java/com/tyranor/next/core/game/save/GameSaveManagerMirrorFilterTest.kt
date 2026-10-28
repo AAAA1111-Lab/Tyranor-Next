@@ -236,6 +236,49 @@ class GameSaveManagerMirrorFilterTest {
     }
 
     @Test
+    fun interruptedExchangeWithResourceRestoreAlsoParksTheBackup() {
+        // R10 #1: engines whose imports restore excluded resources (ARTEMIS/AVG32/UK2/
+        // MV-MZ) must reach the same park policy — the pre-crash backup is the only
+        // copy of the previous saves even after restoreExcluded ran.
+        val live = liveSaves()
+        val backup = transactionPath(live, "backup")
+        assertTrue(live.renameTo(backup))
+        assertTrue(live.mkdir())
+        live.resolve("slot.sav").writeText("post-crash save")
+        val source = saveTree()
+        val restored = mutableListOf<String>()
+        assertEquals(3, GameSaveManager.importSaveDirectory(live, { false },
+            restoreExcluded = { backupDir, destination ->
+                backupDir.listFiles().orEmpty().filter { it.name == "system.pfs" }.forEach { resource ->
+                    check(resource.renameTo(File(destination, resource.name)))
+                    restored += resource.name
+                }
+            }) { source })
+        assertEquals("save contents", live.resolve("slot/data.sav").readText())
+        val retained = File(live.parentFile, live.name + ".import_backup_retained")
+        assertEquals("existing save", retained.resolve("slot.sav").readText())
+        assertFalse(transactionPath(live, "backup").exists())
+        assertFalse(transactionPath(live, "staging").exists())
+    }
+
+    @Test
+    fun allEmptyImportWithResourceRestoreKeepsTheRecoveryBackup() {
+        // R10 #1: an all-empty ZIP for a restoreExcluded engine must keep the previous
+        // saves in the backup — restoreExcluded no longer deletes it, the unified
+        // backupConsumed policy decides.
+        val source = temporaryFolder.newFolder()
+        source.resolve("empty.sav").createNewFile()
+        val live = liveSaves()
+        assertEquals(1, GameSaveManager.importSaveDirectory(live, { false },
+            restoreExcluded = { _, _ -> }) { source })
+        assertTrue(live.resolve("empty.sav").isFile)
+        assertEquals(0L, live.resolve("empty.sav").length())
+        assertFalse(live.resolve("slot.sav").exists())
+        assertEquals("existing save", transactionPath(live, "backup").resolve("slot.sav").readText())
+        assertFalse(transactionPath(live, "staging").exists())
+    }
+
+    @Test
     fun recreatedEmptyDestinationRecoversBackupBeforeInvalidZipParsing() {
         val live = liveSaves()
         val backup = transactionPath(live, "backup")
