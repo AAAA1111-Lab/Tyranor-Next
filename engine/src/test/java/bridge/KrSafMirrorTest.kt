@@ -157,6 +157,33 @@ class KrSafMirrorTest {
     }
 
     @Test
+    fun staleOverrideMarkerKeepsTheIndexRowRoutableWhileALiveOverrideFiltersIt() {
+        // Audit of 84e1d22, M1: a marker can outlive its local file (failed marker
+        // delete after unlink, or external removal). Filtering such a row out of the
+        // loaded documents would make the key unroutable (NOT_ROUTED → ENOENT on the
+        // missing local file) — the row must stay so a read falls back to the source.
+        val root = temporary.newFolder("stale-marker")
+        val staleTarget = File(root, "data.xp3").apply { createNewFile() }
+        val liveTarget = File(root, "plugin/gamepad.dll").apply {
+            requireNotNull(parentFile).mkdirs(); createNewFile()
+        }
+        val localFiles = KrMirrorLocalFiles(root)
+        localFiles.markOverridden(staleTarget)
+        localFiles.markOverridden(liveTarget)
+        check(staleTarget.delete())
+        val indexFile = File(temporary.newFolder("idx"), "k.idx")
+        indexFile.writeText(buildString { KrSafMirror.writeIndexText(this, listOf(
+            Triple(staleTarget.absolutePath.lowercase(Locale.ROOT), "content://t/stale", 10L),
+            Triple(liveTarget.absolutePath.lowercase(Locale.ROOT), "content://t/live", 20L),
+        )) })
+        val loaded = KrSafMirror.loadIndexed(indexFile.path, root) { it }
+        // The stale marker keeps its row (source fallback stays reachable)...
+        assertEquals("content://t/stale", loaded.documents[staleTarget.absolutePath.lowercase(Locale.ROOT)]?.uri)
+        // ...while the live override's row is filtered out (local semantics own it).
+        assertFalse(loaded.documents.containsKey(liveTarget.absolutePath.lowercase(Locale.ROOT)))
+    }
+
+    @Test
     fun corruptRowsDoNotDiscardValidSiblingResources() {
         val index = KrSafMirror.parseIndexLines(v2(
             v2Line("/x/first", "content://a/first", 10L),

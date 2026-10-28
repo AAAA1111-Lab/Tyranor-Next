@@ -64,12 +64,12 @@ object NativeBridge {
         }
         val loadResult = try {
             val loaded = KrSafMirror.loadIndexed(indexPath, root) { uri -> Uri.parse(uri) }
-            // prepare() never publishes a zero-RAW-row index for a launched game: a
-            // missing/truncated/unknown-version file degrades (fail closed) instead of
-            // serving every placeholder as empty content (R10 #2). The raw count is
-            // taken from the SAME parse as the filtered documents — a header-only file
-            // still flags degraded, and its live local overrides keep working through
-            // mirrorDegradedBlock's ownership exemption (audit of 2fe2f38, N1/N2).
+            // A zero-RAW-row index means the file is missing, truncated or from an
+            // unknown version — it degrades (fail closed) instead of serving every
+            // placeholder as empty content (R10 #2). The raw count comes from the SAME
+            // parse as the filtered documents; a header-only file still flags degraded,
+            // and its live local overrides keep working through mirrorDegradedBlock's
+            // ownership exemption (audit of 2fe2f38, N1/N2).
             loaded.documents.mapValues { (_, holder) ->
                 KrSafMirror.MirrorEntry(holder.uri, holder.size)
             } to (loaded.rawCount == 0)

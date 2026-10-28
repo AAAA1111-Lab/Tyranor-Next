@@ -98,4 +98,26 @@ class NativeBridgeMirrorPolicyTest {
         val plain = File(mirrorRoot, "plugin.dll").apply { createNewFile() }
         assertTrue(NativeBridge.mirrorDegradedBlock(session, plain.path.lowercase(), plain))
     }
+
+    @Test
+    fun `all-override index rows filter to an empty but not degraded session`() {
+        // Audit of 84e1d22, M4: a full index whose every row is a live local override
+        // loads as documents=∅ with degraded=false (rawCount>0) — routing for the
+        // override keys survives through the armed localOverrides, not the documents.
+        val mirrorRoot = temporary.newFolder("game-all-override")
+        val overrideTarget = File(mirrorRoot, "data.xp3").apply { createNewFile() }
+        KrMirrorLocalFiles(mirrorRoot).markOverridden(overrideTarget)
+        val indexFile = File(temporary.newFolder("idx"), "all-override.idx")
+        indexFile.writeText(buildString {
+            KrSafMirror.writeIndexText(
+                this,
+                listOf(Triple(overrideTarget.absolutePath.lowercase(), "content://stub/document/x", 5L)),
+            )
+        })
+        NativeBridge.configureSafMirror(indexFile.path, mirrorRoot.path)
+        assertFalse(NativeBridge.mirrorSessionDegradedForTest)
+        val session = NativeBridge.mirrorSessionForTest
+        assertTrue(session.shouldRoute(overrideTarget.absolutePath.lowercase()))
+        assertFalse(NativeBridge.mirrorDegradedBlock(session, overrideTarget.absolutePath.lowercase(), overrideTarget))
+    }
 }

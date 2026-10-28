@@ -628,11 +628,21 @@ fun PerGameSettingsScreen(game: ScanGame) {
                     trailing = {
                         TopBarIcon(painterResource(R.drawable.ic_save), stringResource(R.string.common_save), MiuixTheme.colorScheme.primary) {
                             save()
-                            // 存档路径展示与实际生效设置同源：保存后按新值重解一次（磁盘 + DB 读，走 IO）
-                            if (game.engine == EngineType.XSYS35 || game.engine == EngineType.XSYS4) {
+                            // 存档路径展示与实际生效设置同源：保存后按新值重解一次（磁盘 + DB 读，走 IO）。
+                            // KRKR 同样重解：解析失败提示（loadFailed）在用户改回设置并保存后应当立即
+                            // 解除，而不是滞留到重进页面（本地审计 84e1d22，P3-5 第三轮裁决）
+                            if (game.engine == EngineType.XSYS35 || game.engine == EngineType.XSYS4 || game.engine == EngineType.KIRIKIRI) {
                                 scope.launch {
-                                    saveLocation = withContext(Dispatchers.IO) {
-                                        GameSaveManager(ctx).resolveSaveLocation(game)
+                                    try {
+                                        val loaded = withContext(Dispatchers.IO) {
+                                            GameSaveManager(ctx).resolveSaveLocation(game)
+                                        }
+                                        saveLocation = loaded
+                                        saveLocationLoadFailed = loaded.directory == null || !loaded.available
+                                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                        throw cancelled
+                                    } catch (t: Throwable) {
+                                        Log.w("PerGameSettings", "resolve save location failed gid=$gid", t)
                                     }
                                 }
                             }

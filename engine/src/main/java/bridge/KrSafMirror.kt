@@ -641,7 +641,18 @@ object KrSafMirror {
         relativeOverrides: Set<String>,
     ): Map<String, MirrorEntryHolder<T>> {
         if (localFiles == null || relativeOverrides.isEmpty()) return entries
-        return entries.filterKeys { key -> localFiles.relativeForIndexKey(key) !in relativeOverrides }
+        return entries.filterKeys { key ->
+            val relative = localFiles.relativeForIndexKey(key)
+            if (relative == null || relative !in relativeOverrides) return@filterKeys true
+            // A marker can outlive its local file (an unlink whose marker delete
+            // failed, or an external removal): such a STALE marker must not drop the
+            // indexed row, or the key becomes unroutable and a read hits the missing
+            // local file with ENOENT instead of the still-readable source document
+            // (audit of 84e1d22, M1; KrMirrorOpenRouter #15 owns the read side).
+            // Drop the row only when the owned file is really present.
+            val owned = localFiles.fileForIndexKey(key)
+            owned == null || !owned.isFile
+        }
     }
 
     /** Shared production file reader; URI construction is injectable for plain JVM tests. */
