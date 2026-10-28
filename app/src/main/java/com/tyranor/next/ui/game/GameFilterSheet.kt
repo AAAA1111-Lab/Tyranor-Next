@@ -102,22 +102,28 @@ internal fun GameFilterSheet(
 
             FilterSectionTitle(stringResource(R.string.game_filter_sort_section))
             // 2×2 选择卡：比 4 行单选紧凑，选中态一眼可见（主题色描边 + 淡底 + 加粗）
-            // selectableGroup：让 TalkBack 读成「单选组，第 1 项，共 4 项」而不是孤立按钮
-            sortOptions.chunked(2).forEach { rowOptions ->
-                Row(
-                    modifier = Modifier.fillMaxWidth().selectableGroup(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    rowOptions.forEach { (mode, label) ->
-                        FilterChoiceCard(
-                            label = label,
-                            selected = sortMode == mode,
-                            onClick = { onSortChange(mode) },
-                            modifier = Modifier.weight(1f),
-                        )
+            // selectableGroup 必须包住两行：四个选项共用一个选中状态，TalkBack 才会读成
+            // 「单选组，第 1 项，共 4 项」；逐行加会退化成两个各含两项的组。
+            Column(
+                modifier = Modifier.fillMaxWidth().selectableGroup(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                sortOptions.chunked(2).forEach { rowOptions ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        rowOptions.forEach { (mode, label) ->
+                            FilterChoiceCard(
+                                label = label,
+                                selected = sortMode == mode,
+                                onClick = { onSortChange(mode) },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        // 奇数个时补一个等宽占位，避免最后一张卡被拉宽
+                        if (rowOptions.size == 1) Spacer(Modifier.weight(1f))
                     }
-                    // 奇数个时补一个等宽占位，避免最后一张卡被拉宽
-                    if (rowOptions.size == 1) Spacer(Modifier.weight(1f))
                 }
             }
 
