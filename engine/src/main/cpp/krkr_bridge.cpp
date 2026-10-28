@@ -836,27 +836,9 @@ FILE* hookedFreopenCommon(const char* path, const char* mode, FILE* stream, Freo
             return nullptr;
         }
         if (fd >= 0) {
-            // The caller's FILE is only reusable when its own access mode provably
-            // equals the request: dup2 rebinds the descriptor but cannot rebuild FILE
-            // flags, and Bionic's __swsetup fails writes on a stream opened without
-            // write access (rb -> w+ would report success yet never write; audit F2).
-            // Compare the old stream's descriptor mode as well, keep both sides
-            // non-append, and let the procfs rebuild handle every mode adaptation.
-            const int actualFlags = fcntl(fd, F_GETFL);
-            const int streamFd = fileno(stream);
-            const int oldFlags = streamFd >= 0 ? fcntl(streamFd, F_GETFL) : -1;
-            const bool modeReusable = actualFlags >= 0 && oldFlags >= 0 &&
-                    (oldFlags & O_ACCMODE) == (flags & O_ACCMODE) &&
-                    (actualFlags & O_ACCMODE) == (flags & O_ACCMODE) &&
-                    (oldFlags & O_APPEND) == 0;
-            if (modeReusable && streamFd >= 0 && dup2(fd, streamFd) >= 0) {
-                close(fd);
-                clearerr(stream);
-                if ((flags & O_ACCMODE) != O_WRONLY) rewind(stream);
-                return stream;
-            }
-            // Matching O_ACCMODE is insufficient for the rebuild: FILE also owns append
-            // state, buffering, orientation and EOF state. Let libc rebuild all of it.
+            // Descriptor access flags do not describe FILE permissions: Java may
+            // return O_RDWR for a pure-write fdopen stream. Rebuild through libc to
+            // reset append, access, buffering, orientation and EOF state together.
             const char* streamMode = compatibleStreamMode(fd, flags, mode);
             char fdPath[64];
             std::snprintf(fdPath, sizeof(fdPath), "/proc/self/fd/%d", fd);

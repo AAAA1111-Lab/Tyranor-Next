@@ -1,5 +1,6 @@
 // Linux host regression of the production mirror freopen implementation.
 // tools/test_krkr_mirror_stdio.py extracts the actual C++ function bodies.
+#include <atomic>
 #include <cassert>
 #include <cerrno>
 #include <cstdio>
@@ -13,7 +14,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+using FopenFn = FILE* (*)(const char*, const char*);
 using FreopenFn = FILE* (*)(const char*, const char*, FILE*);
+std::atomic<bool> gMirrorActive{true};
 constexpr int kMirrorOpenFailed = -2;
 constexpr const char* kTag = "host-test";
 constexpr int ANDROID_LOG_WARN = 1;
@@ -140,8 +143,7 @@ int main(int argc, char** argv) {
     fclose(stream);
     assert(get(path) == "OLD");
 
-    // Audit F2: a same-mode swap may reuse the caller's FILE via dup2 — the old
-    // stream's descriptor mode equals the request, so writes keep working.
+    // Rebuilding a same-mode stream must preserve ordinary update semantics.
     put(path, "ABC");
     put(second, "123");
     stream = fopen(path.c_str(), "r+");
@@ -152,8 +154,7 @@ int main(int argc, char** argv) {
     assert(fclose(stream) == 0);
     assert(get(second) == "X23");
 
-    // Audit F2: a mode change (rb -> w) must take the rebuild path; the request is
-    // O_WRONLY while the Java-first fd opens O_RDWR, so reuse is not permissible.
+    // A read-only stream reopened for writing acquires FILE write permissions.
     const std::string third = std::string(argv[1]) + "/third";
     put(path, "ABC");
     stream = fopen(path.c_str(), "rb");
@@ -163,5 +164,21 @@ int main(int argc, char** argv) {
     assert(fclose(stream) == 0);
     assert(get(third) == "N");
 
-    puts("8 production mirror freopen host regressions passed");
+    // Audit R1: use the actual hookFopenCommon entry, whose Java-first O_RDWR fd
+    // is deliberately wider than the pure-write FILE requested by fdopen("w").
+    // Matching descriptor access cannot prove that the old FILE can read.
+    put(second, "123");
+    stream = hookFopenCommon(::fopen, path.c_str(), "w");
+    assert(stream);
+    assert((fcntl(fileno(stream), F_GETFL) & O_ACCMODE) == O_RDWR);
+    assert(__fwritable(stream));
+    assert(!__freadable(stream));
+    stream = reopen(stream, second, "r+");
+    assert(readAll(stream) == "123");
+    assert(fseek(stream, 0, SEEK_SET) == 0);
+    assert(fwrite("X", 1, 1, stream) == 1);
+    assert(fclose(stream) == 0);
+    assert(get(second) == "X23");
+
+    puts("9 production mirror freopen host regressions passed");
 }

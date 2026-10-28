@@ -43,6 +43,7 @@ def main() -> None:
     signatures = [
         "int fopenModeToFlags(const char* mode) {",
         "const char* compatibleStreamMode(int fd, int flags, const char* requestedMode) {",
+        "FILE* hookFopenCommon(FopenFn original, const char* rawPath, const char* mode) {",
         "FILE* hookedFreopenCommon(const char* path, const char* mode, FILE* stream, FreopenFn original) {",
     ]
     with tempfile.TemporaryDirectory(prefix="krkr-mirror-stdio-") as folder:
