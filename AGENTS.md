@@ -264,6 +264,8 @@ Column(fillMaxSize)                                // 页面根
 
 - 所有应用弹窗使用 `AppAlertDialog`，背景与圆角由动态主题常量决定：默认浅色通常为白底 8dp，深浅色/色调切换使用 `NavWhite`，玻璃风格使用对应面板材质与 32dp；统一引用 `AppComponentShape`，不得写死白色或 8dp。原生按键编辑器的明文豁免仍仅限该页与游戏内按键层。
 
+- 所有底部抽屉使用 `com.tyranor.next.ui.common.AppBottomSheet`：面板色 / 遮罩 / `AppSheetTopShape` / 玻璃描边 / `sheetGesturesEnabled = false` / 内容区 `navigationBarsPadding()` 全部收敛在组件内，调用方只提供内容。内容区**不自带滚动与内边距**——需要滚动的调用方自行包 `LazyColumn` / `verticalScroll` 并用 `appSheetMaxHeight()` 限高，避免「可滚容器套可滚容器」。禁止再在页面内直接调用 `ModalBottomSheet` 拼装抽屉外观。
+
 ## 页面内容文字尺寸规范
 
 页面内容（顶部栏除外）只允许使用**两种**文字尺寸，与引擎设置页保持一致：
