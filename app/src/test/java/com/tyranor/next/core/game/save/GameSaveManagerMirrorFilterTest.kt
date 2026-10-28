@@ -269,17 +269,26 @@ class GameSaveManagerMirrorFilterTest {
 
     @Test
     fun allEmptyImportWithResourceRestoreKeepsTheRecoveryBackup() {
-        // R10 #1: an all-empty ZIP for a restoreExcluded engine must keep the previous
-        // saves in the backup — restoreExcluded no longer deletes it, the unified
-        // backupConsumed policy decides.
+        // R10 #1 + audit of 2fe2f38 (N5): an all-empty ZIP for a restoreExcluded engine
+        // must keep the previous saves in the backup even though the real resource
+        // restore repopulates the destination with non-empty files — the retention
+        // decision reads the STAGED content (pre-exchange), not the destination.
+        // With the old destination-based judgment this test fails (backup deleted).
         val source = temporaryFolder.newFolder()
         source.resolve("empty.sav").createNewFile()
         val live = liveSaves()
+        live.resolve("system.pfs").writeText("engine resource")
         assertEquals(1, GameSaveManager.importSaveDirectory(live, { false },
-            restoreExcluded = { _, _ -> }) { source })
+            restoreExcluded = { backupDir, destination ->
+                backupDir.listFiles().orEmpty().filter { it.name == "system.pfs" }.forEach { resource ->
+                    check(resource.renameTo(File(destination, resource.name)))
+                }
+            }) { source })
         assertTrue(live.resolve("empty.sav").isFile)
         assertEquals(0L, live.resolve("empty.sav").length())
         assertFalse(live.resolve("slot.sav").exists())
+        // The resource rode through the backup and was restored into the live directory.
+        assertEquals("engine resource", live.resolve("system.pfs").readText())
         assertEquals("existing save", transactionPath(live, "backup").resolve("slot.sav").readText())
         assertFalse(transactionPath(live, "staging").exists())
     }

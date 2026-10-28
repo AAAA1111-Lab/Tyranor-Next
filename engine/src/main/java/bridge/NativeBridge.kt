@@ -63,16 +63,16 @@ object NativeBridge {
             return
         }
         val loadResult = try {
-            val loaded = KrSafMirror.loadIndex(indexPath)
-            // prepare() never publishes a zero-row index for a launched game: an empty
-            // parse means the file is missing, truncated or from an unknown version —
-            // degrade instead of serving every placeholder as empty content (R10 #2).
-            // A header-only file is NOT degraded: a fresh rebuild whose rows are all
-            // local overrides filters to zero here while the overrides stay live
-            // (audit of df6984c, P3-1) — judge by the raw row count.
-            val hasRawRows = loaded.isNotEmpty() ||
-                KrSafMirror.readIndexFile(File(indexPath)) { it }.isNotEmpty()
-            loaded to !hasRawRows
+            val loaded = KrSafMirror.loadIndexed(indexPath, root) { uri -> Uri.parse(uri) }
+            // prepare() never publishes a zero-RAW-row index for a launched game: a
+            // missing/truncated/unknown-version file degrades (fail closed) instead of
+            // serving every placeholder as empty content (R10 #2). The raw count is
+            // taken from the SAME parse as the filtered documents — a header-only file
+            // still flags degraded, and its live local overrides keep working through
+            // mirrorDegradedBlock's ownership exemption (audit of 2fe2f38, N1/N2).
+            loaded.documents.mapValues { (_, holder) ->
+                KrSafMirror.MirrorEntry(holder.uri, holder.size)
+            } to (loaded.rawCount == 0)
         } catch (t: Throwable) {
             Log.e("NativeBridge", "load SAF mirror index failed path=$indexPath", t)
             emptyMap<String, KrSafMirror.MirrorEntry>() to true

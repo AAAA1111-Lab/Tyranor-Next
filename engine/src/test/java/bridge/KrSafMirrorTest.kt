@@ -887,6 +887,34 @@ class KrSafMirrorTest {
     }
 
     @Test
+    fun stickySelectionLockDegradesWhenTheLockFileCannotBeOpenedAndReleasesTheMutex() {
+        // Audit of 2fe2f38 (N3): the RandomAccessFile IOException branch (all shard
+        // lock paths are directories) must return null, and the mutex must be released
+        // — verified from another thread, where a leaked ReentrantLock would time out.
+        val indexDirectory = temporary.newFolder("idx-unopenable")
+        for (shard in 0 until 64) {
+            File(indexDirectory, "prepare-$shard.lock").mkdirs()
+        }
+        assertNull(KrSafMirror.tryStickySelectionLock(indexDirectory, "0123456789abcdef") { "ok" })
+        // Unblock and re-run on a fresh thread: success proves the mutex was released.
+        for (shard in 0 until 64) {
+            File(indexDirectory, "prepare-$shard.lock").deleteRecursively()
+        }
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val second = java.util.concurrent.atomic.AtomicReference<String?>()
+            executor.execute {
+                second.set(KrSafMirror.tryStickySelectionLock(indexDirectory, "0123456789abcdef") { "ok" })
+            }
+            executor.shutdown()
+            assertTrue(executor.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS))
+            assertEquals("ok", second.get())
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun stickySelectionLockRestoresTheInterruptFlagAndThrowsCancellation() {
         // Audit of df6984c, P3-2: an already-interrupted thread must receive a
         // CancellationException and keep its interrupt flag set (AGENTS protocol).

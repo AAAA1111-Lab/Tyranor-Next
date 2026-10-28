@@ -606,17 +606,33 @@ object KrSafMirror {
 
     /** Load valid rows even when individual index rows are corrupt. Overrides are relative keys. */
     @JvmStatic
-    fun loadIndex(indexPath: String?, mirrorRoot: File? = null): Map<String, MirrorEntry> {
-        if (indexPath.isNullOrBlank()) return emptyMap()
+    fun loadIndex(indexPath: String?, mirrorRoot: File? = null): Map<String, MirrorEntry> =
+        loadIndexed(indexPath, mirrorRoot) { uri -> Uri.parse(uri) }.documents
+            .mapValues { (_, holder) -> MirrorEntry(holder.uri, holder.size) }
+
+    internal data class IndexedLoad<T>(val documents: Map<String, MirrorEntryHolder<T>>, val rawCount: Int)
+
+    /**
+     * Single-parse load that also reports the RAW row count before local-override
+     * filtering, so callers can distinguish "header-only because every row is a live
+     * override" from "truncated/unknown file" without a second parse whose result can
+     * diverge from the first (audit of 2fe2f38, N1).
+     */
+    internal fun <T> loadIndexed(
+        indexPath: String?,
+        mirrorRoot: File?,
+        buildUri: (String) -> T,
+    ): IndexedLoad<T> {
+        if (indexPath.isNullOrBlank()) return IndexedLoad(emptyMap(), 0)
         val file = File(indexPath)
         // Preparation already excludes known local overrides. Read self-describing marker
         // keys once; only legacy markers require a one-time comparison with index keys.
         // Do not canonicalize/hash every source row or discard an unrecognized root alias.
-        val entries = readIndexFile(file) { uri -> Uri.parse(uri) }
+        val entries = readIndexFile(file, buildUri)
         val localFiles = mirrorRoot?.let { KrMirrorLocalFiles(it) }
         val relativeOverrides = localFiles?.snapshotOverrideKeys(entries.keys).orEmpty()
-        return retainSourceEntries(entries, localFiles, relativeOverrides)
-            .mapValues { (_, holder) -> MirrorEntry(holder.uri, holder.size) }
+        val documents = retainSourceEntries(entries, localFiles, relativeOverrides)
+        return IndexedLoad(documents, entries.size)
     }
 
     internal fun <T> retainSourceEntries(
