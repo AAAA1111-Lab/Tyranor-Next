@@ -4,6 +4,7 @@ import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.io.InterruptedIOException
+import java.nio.file.Files
 import java.util.concurrent.CancellationException
 
 /** Injectable mirror-only open path; unindexed/scoped paths retain the existing bridge route. */
@@ -19,7 +20,7 @@ internal class KrMirrorOpenRouter<T>(
     enum class Intent { READ_ONLY, UPDATE, WRITE, TRUNCATE }
 
     fun open(key: String, file: File, intent: Intent, allowCreate: Boolean = false): Int {
-        val unindexedCreate = !session.shouldRoute(key) && session.degraded && allowCreate &&
+        val unindexedCreate = !session.shouldRoute(key) && allowCreate &&
             intent != Intent.READ_ONLY && session.localFiles?.resourceFileForPath(key) != null
         if (!session.shouldRoute(key) && !unindexedCreate) return NOT_ROUTED
         val state = session.localFiles ?: return FAILED
@@ -30,7 +31,7 @@ internal class KrMirrorOpenRouter<T>(
                 state.withFileLock(file) {
                     // Another ordinary O_CREAT may have published a local file while
                     // this request waited. Recheck ownership, not the pre-lock route snapshot.
-                    if (!file.exists() || (file.isFile && session.isLocal(key, file))) {
+                    if (!file.exists() || (file.isFile && (session.isLocal(key, file) || (!session.degraded && file.length() > 0L)))) {
                         openLocal(key, file, intent, state)
                     } else {
                         FAILED
@@ -124,15 +125,38 @@ internal class KrMirrorOpenRouter<T>(
     }
 
     private fun openLocal(key: String, file: File, intent: Intent, state: KrMirrorLocalFiles): Int {
-        val fd = localDescriptor(file, intent)
-        if (fd < 0) return FAILED
+        val createdByOpen = !file.exists()
+        val fd = try {
+            localDescriptor(file, intent)
+        } catch (error: Exception) {
+            rollbackCreatedFile(file, createdByOpen, error)
+            throw error
+        }
+        if (fd < 0) {
+            rollbackCreatedFile(file, createdByOpen, null)
+            return FAILED
+        }
+        var ownershipPublished = false
         try {
             state.markOverridden(file)
+            ownershipPublished = true
             session.promote(key)
             return fd
         } catch (error: Exception) {
             runCatching { closeDescriptor(fd) }
+            if (!ownershipPublished) {
+                rollbackCreatedFile(file, createdByOpen, error)
+            }
             throw error
+        }
+    }
+
+    private fun rollbackCreatedFile(file: File, createdByOpen: Boolean, cause: Exception?) {
+        if (!createdByOpen || !file.exists()) return
+        try {
+            Files.deleteIfExists(file.toPath())
+        } catch (rollbackError: Exception) {
+            cause?.addSuppressed(rollbackError)
         }
     }
 

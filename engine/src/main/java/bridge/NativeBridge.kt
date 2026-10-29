@@ -189,7 +189,7 @@ object NativeBridge {
             Log.e("NativeBridge", "mirror index degraded; failing open path=$path")
             return KrMirrorOpenRouter.FAILED
         }
-        val createUnindexed = session.degraded && (mode and OsConstants.O_CREAT) != 0 &&
+        val createUnindexed = (mode and OsConstants.O_CREAT) != 0 &&
             !isReadOnlyOpen(mode) &&
             session.localFiles?.resourceFileForPath(key) != null
         if (session.shouldRoute(key) || createUnindexed) {
@@ -221,7 +221,12 @@ object NativeBridge {
             return router.open(key, File(target), intent, allowCreate = (mode and OsConstants.O_CREAT) != 0)
         }
         return try {
-            openUnindexedLocal(session, key, (mode and OsConstants.O_CREAT) != 0) {
+            openUnindexedLocal(
+                session = session,
+                key = key,
+                allowCreate = createUnindexed,
+                closeDescriptor = { fd -> ParcelFileDescriptor.adoptFd(fd).close() },
+            ) {
                 openDirectFile(path, target, mode, diagnosticPrefix = if (redirected != null) "redirect" else null)
             }
         } catch (directError: Throwable) {
@@ -239,9 +244,10 @@ object NativeBridge {
     }
 
     /**
-     * Preserve libc existence semantics for unindexed degraded mirror probes. Java's
+     * Preserve libc existence semantics for unindexed degraded mirror probes and publish
+     * durable ownership when an unindexed mirror resource is created locally. Java's
      * RandomAccessFile("rw") creates missing files even without O_CREAT, so defer
-     * non-creating requests to native rather than checking existence before Java open.
+     * non-creating degraded requests to native rather than checking existence before Java open.
      * Indexed/owned paths have already been handled by the mirror router.
      */
     internal fun openUnindexedLocal(
@@ -249,10 +255,30 @@ object NativeBridge {
         key: String,
         allowCreate: Boolean,
         directOpen: () -> Int,
+    ): Int = openUnindexedLocal(session, key, allowCreate, {}, directOpen)
+
+    internal fun openUnindexedLocal(
+        session: KrMirrorReadSession<*>,
+        key: String,
+        allowCreate: Boolean,
+        closeDescriptor: (Int) -> Unit,
+        directOpen: () -> Int,
     ): Int {
-        if (session.degraded && !allowCreate &&
-            session.localFiles?.resourceFileForPath(key) != null
-        ) return KrMirrorOpenRouter.NOT_ROUTED
+        val resource = session.localFiles?.resourceFileForPath(key)
+        if (resource != null) {
+            if (allowCreate) {
+                return KrMirrorOpenRouter(
+                    session = session,
+                    sourceSize = { -1L },
+                    sourceStream = { throw IOException("Cannot open unindexed mirror source") },
+                    sourceDescriptor = { KrMirrorOpenRouter.FAILED },
+                    localDescriptor = { _, _ -> directOpen() },
+                    closeDescriptor = closeDescriptor,
+                    diagnostic = { message, error -> Log.w("NativeBridge", "$message key=$key", error) },
+                ).open(key, resource, KrMirrorOpenRouter.Intent.WRITE, allowCreate = true)
+            }
+            if (session.degraded) return KrMirrorOpenRouter.NOT_ROUTED
+        }
         return directOpen()
     }
 

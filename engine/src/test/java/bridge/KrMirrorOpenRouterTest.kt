@@ -350,6 +350,76 @@ class KrMirrorOpenRouterTest {
         assertFalse(session.shouldRoute(key))
     }
 
+    @Test
+    fun `failed marker publication on new file rolls back creation and allows retry after recovery`() {
+        val root = temporary.newFolder()
+        val state = KrMirrorLocalFiles(root)
+        val blocker = File(root, ".tyranor-mirror-state/local-overrides").apply {
+            requireNotNull(parentFile).mkdirs()
+            writeText("inject marker IO failure")
+        }
+        val session = KrMirrorReadSession<String>(emptyMap(), state, degraded = true)
+        val file = File(root, "new-run.log")
+        val key = file.absolutePath.lowercase(Locale.ROOT)
+        var opens = 0
+        val closed = mutableListOf<Int>()
+        val router = KrMirrorOpenRouter(
+            session = session,
+            sourceSize = { 0L },
+            sourceStream = { throw AssertionError("No source stream expected") },
+            sourceDescriptor = { throw AssertionError("No source fd expected") },
+            localDescriptor = { local, _ ->
+                java.io.RandomAccessFile(local, "rw").close()
+                ++opens
+                17
+            },
+            closeDescriptor = { closed.add(it) },
+            diagnostic = { _, _ -> },
+        )
+        assertEquals(KrMirrorOpenRouter.FAILED,
+            router.open(key, file, KrMirrorOpenRouter.Intent.WRITE, allowCreate = true))
+        assertFalse(file.exists())
+        assertFalse(state.isOverridden(file))
+        assertEquals(listOf(17), closed)
+        assertFalse(session.shouldRoute(key))
+
+        assertTrue(blocker.delete())
+        assertEquals(17, router.open(key, file, KrMirrorOpenRouter.Intent.WRITE, allowCreate = true))
+        assertEquals(2, opens)
+        assertTrue(file.isFile)
+        assertTrue(state.isOverridden(file))
+        assertTrue(session.shouldRoute(key))
+        assertFalse(NativeBridge.mirrorDegradedBlock(session, key, file))
+    }
+
+    @Test
+    fun `failed marker publication never deletes a preexisting local file`() {
+        val root = temporary.newFolder()
+        val state = KrMirrorLocalFiles(root)
+        val existing = File(root, "existing.cfg").apply { writeText("preserve existing local content") }
+        val key = existing.absolutePath.lowercase(Locale.ROOT)
+        File(root, ".tyranor-mirror-state/local-overrides").apply {
+            requireNotNull(parentFile).mkdirs()
+            writeText("inject marker IO failure")
+        }
+        val session = KrMirrorReadSession(mapOf(key to "source"), state)
+        val closed = mutableListOf<Int>()
+        val router = KrMirrorOpenRouter(
+            session = session,
+            sourceSize = { 6L },
+            sourceStream = { throw AssertionError("Existing local file must not copy source") },
+            sourceDescriptor = { throw AssertionError("Existing local file must not open source") },
+            localDescriptor = { _, _ -> 19 },
+            closeDescriptor = { closed.add(it) },
+            diagnostic = { _, _ -> },
+        )
+        assertEquals(KrMirrorOpenRouter.FAILED,
+            router.open(key, existing, KrMirrorOpenRouter.Intent.WRITE, allowCreate = true))
+        assertEquals(listOf(19), closed)
+        assertTrue(existing.isFile)
+        assertEquals("preserve existing local content", existing.readText())
+    }
+
     private fun assertPendingOpenAfterUnlink(intent: KrMirrorOpenRouter.Intent, allowCreate: Boolean) {
         val fixture = fixture()
         val entered = CountDownLatch(1)

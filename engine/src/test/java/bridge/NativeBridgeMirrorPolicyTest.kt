@@ -242,4 +242,100 @@ class NativeBridgeMirrorPolicyTest {
         assertTrue(session.shouldRoute(overrideTarget.absolutePath.lowercase()))
         assertFalse(NativeBridge.mirrorDegradedBlock(session, overrideTarget.absolutePath.lowercase(), overrideTarget))
     }
+
+    @Test
+    fun `normal session unindexed creation persists ownership across all-override header-only reload`() {
+        assertNormalCreationSurvivesHeaderOnlyReload("engine-created local log")
+    }
+
+    @Test
+    fun `normal session empty unindexed creation persists ownership across all-override header-only reload`() {
+        assertNormalCreationSurvivesHeaderOnlyReload("")
+    }
+
+    private fun assertNormalCreationSurvivesHeaderOnlyReload(initialContents: String) {
+        val root = temporary.newFolder()
+        val sourceFile = File(root, "startup.tjs").apply { createNewFile() }
+        val sourceKey = sourceFile.absolutePath.lowercase(java.util.Locale.ROOT)
+        val state = KrMirrorLocalFiles(root)
+        val normal = KrMirrorReadSession(
+            documents = mapOf(sourceKey to "source script"),
+            localFiles = state,
+            initialOverrides = emptySet(),
+            degraded = false,
+        )
+        val created = File(root, "new-run.log")
+        val createdKey = created.absolutePath.lowercase(java.util.Locale.ROOT)
+        assertFalse(normal.shouldRoute(createdKey))
+        val fd = NativeBridge.openUnindexedLocal(normal, createdKey, allowCreate = true) {
+            java.io.RandomAccessFile(created, "rw").use { raf ->
+                raf.write(initialContents.toByteArray(Charsets.UTF_8))
+            }
+            17
+        }
+        assertEquals(17, fd)
+        assertEquals(initialContents.length.toLong(), created.length())
+        assertTrue(state.isOverridden(created))
+        assertTrue(normal.shouldRoute(createdKey))
+        assertTrue(normal.isLocal(createdKey, created))
+
+        val sourceBytes = "source script".toByteArray(Charsets.UTF_8)
+        state.copyUp(sourceFile, sourceBytes.size.toLong()) { sourceBytes.inputStream() }
+        val previous = mapOf(
+            sourceKey to KrSafMirror.MirrorEntryHolder("content://source/document/startup", sourceBytes.size.toLong()),
+        )
+        val entries = mutableListOf(
+            Triple(sourceKey, "content://source/document/startup", sourceBytes.size.toLong()),
+        )
+        val known = hashSetOf(sourceKey)
+        val sources = KrSafMirror.assemblePreparationSources(
+            root, previous.keys, entries,
+            observed = 1, queryFailures = 0, rootListingComplete = true,
+        )
+        assertEquals(KrSafMirror.MirrorSourceDecision.REBUILD_FRESH, sources.decision)
+        entries.removeAll { it.first in sources.localOverrides }
+        known.removeAll(sources.localOverrides)
+        KrSafMirror.reconcilePreparedIndex(
+            root, previous, entries, known, sources.localOverrides, sources.decision,
+        )
+        val index = File(temporary.newFolder(), "next.idx").apply {
+            writeText(buildString { KrSafMirror.writeIndexText(this, entries) })
+        }
+        NativeBridge.configureSafMirror(index.path, root.path)
+        val next = NativeBridge.mirrorSessionForTest
+        assertTrue(next.degraded)
+        assertTrue(state.isOverridden(sourceFile))
+        assertFalse(NativeBridge.mirrorDegradedBlock(next, createdKey, created))
+        assertTrue(next.shouldRoute(createdKey))
+
+        val reopenedSession = KrMirrorReadSession<String>(
+            documents = emptyMap(),
+            localFiles = state,
+            initialOverrides = state.snapshotOverrideKeys().mapTo(HashSet()) {
+                File(root, it).absolutePath.lowercase(java.util.Locale.ROOT)
+            },
+            degraded = true,
+        )
+        val router = KrMirrorOpenRouter(
+            session = reopenedSession,
+            sourceSize = { 0L },
+            sourceStream = { error("No source stream for local file") },
+            sourceDescriptor = { error("No source fd for local file") },
+            localDescriptor = { local, intent ->
+                if (intent == KrMirrorOpenRouter.Intent.WRITE) {
+                    java.io.RandomAccessFile(local, "rw").use { raf ->
+                        raf.seek(raf.length())
+                        raf.write("+append".toByteArray(Charsets.UTF_8))
+                    }
+                }
+                23
+            },
+            closeDescriptor = { error("Successful local open must not close its descriptor") },
+            diagnostic = { _, error -> if (error != null) throw error },
+        )
+        assertEquals(23, router.open(createdKey, created, KrMirrorOpenRouter.Intent.READ_ONLY))
+        assertEquals(initialContents, created.readText())
+        assertEquals(23, router.open(createdKey, created, KrMirrorOpenRouter.Intent.WRITE, allowCreate = true))
+        assertEquals("$initialContents+append", created.readText())
+    }
 }
