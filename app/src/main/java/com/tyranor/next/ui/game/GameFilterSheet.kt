@@ -19,6 +19,7 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -102,12 +103,13 @@ internal fun GameFilterSheet(
                     modifier = Modifier.weight(1f),
                 )
                 // 抽屉内按钮走常规点击反馈（DialogTextButton 的 indication = null 只属于 AppAlertDialog）；
-                // 文字仍用 bodyMedium，守住两档排版
+                // 文字仍用 bodyMedium，守住两档排版。minimumInteractiveComponentSize 把触控区补到 48dp
                 Text(
                     stringResource(R.string.game_filter_reset),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier
+                        .minimumInteractiveComponentSize()
                         .clip(AppComponentShape)
                         .clickable(onClick = onReset)
                         .padding(horizontal = 8.dp, vertical = 4.dp),
