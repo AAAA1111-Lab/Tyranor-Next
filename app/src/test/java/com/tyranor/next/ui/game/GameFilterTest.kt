@@ -81,11 +81,33 @@ class GameFilterTest {
 
     @Test
     fun filterPreservesSortedOrder() {
-        // 无搜索时筛选结果直接复用、不再二次排序，前提是 filter 保序
-        val sorted = sortGames(library, AppSettingsStore.GAME_SORT_ALPHA)
-        val filtered = filterGames(sorted, "", AppSettingsStore.GAME_FILTER_PLAYED_ONLY)
+        // 无搜索时筛选结果直接复用、不再二次排序，前提是 filter 保持「当前排序」而不是标题序。
+        // 用 recent（C,A,B）与 engine（B,C,A）样本：若 filterGames 改成按标题重排，断言即失败。
+        val byRecent = sortGames(library, AppSettingsStore.GAME_SORT_RECENT)
+        assertEquals(
+            listOf("C 游戏", "A 游戏"),
+            filterGames(byRecent, "", AppSettingsStore.GAME_FILTER_PLAYED_ONLY).map { it.title },
+        )
 
-        assertEquals(listOf("A 游戏", "C 游戏"), filtered.map { it.title })
+        val byEngine = sortGames(library, AppSettingsStore.GAME_SORT_ENGINE)
+        assertEquals(
+            listOf("B 游戏", "C 游戏"),
+            filterGames(byEngine, EngineType.KIRIKIRI.name, AppSettingsStore.GAME_FILTER_PLAYED_ALL)
+                .map { it.title },
+        )
+    }
+
+    @Test
+    fun recentSortTieBreaksByTitle() {
+        val ties = listOf(
+            game("B 游戏", EngineType.KIRIKIRI, openTime = 500),
+            game("A 游戏", EngineType.ONS, openTime = 500),
+        )
+
+        assertEquals(
+            listOf("A 游戏", "B 游戏"),
+            sortGames(ties, AppSettingsStore.GAME_SORT_RECENT).map { it.title },
+        )
     }
 
     @Test

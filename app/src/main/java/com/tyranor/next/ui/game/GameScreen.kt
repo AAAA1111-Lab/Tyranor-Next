@@ -548,8 +548,10 @@ private fun GameLibraryContent(
     val availableEngines = remember(games) {
         games.map { it.engine }.distinct().sortedBy { it.ordinal }
     }
-    val hasActiveFilter = engineFilter.isNotEmpty() ||
-        playedFilter != AppSettingsStore.GAME_FILTER_PLAYED_ALL
+    // 与「重置」同口径：非默认排序也算「有条件生效」，否则改了排序圆点不亮、重置却会动它
+    val hasActiveCondition = engineFilter.isNotEmpty() ||
+        playedFilter != AppSettingsStore.GAME_FILTER_PLAYED_ALL ||
+        gameSort != AppSettingsStore.GAME_SORT_ALPHA
     // 「重置」统一恢复默认排序 + 全部引擎 + 全部状态：按钮位于抽屉标题栏、覆盖两个 section，
     // 只清过滤器会让排序停在非默认值，与「筛选与排序」的口径不符。
     val resetFilters = {
@@ -594,17 +596,24 @@ private fun GameLibraryContent(
                     showSearch = !showSearch
                     if (!showSearch) query = ""
                 }
-                // 筛选与排序入口：有生效条件时右上角补一个小圆点（不额外占用顶栏宽度）
+                // 筛选与排序入口：有生效条件时右上角补一个小圆点（不额外占用顶栏宽度）。
+                // 圆点贴触控区外沿（top/end = 1dp）：34dp 触控区里图像油墨从 4dp 起，
+                // 原来的 8dp 内缩正好压在漏斗顶边上。
                 Box(contentAlignment = Alignment.TopEnd) {
                     TopBarIcon(
                         painterResource(R.drawable.ic_game_filter),
                         stringResource(R.string.game_filter_content_description),
                         MaterialTheme.colorScheme.primary,
+                        stateDescription = if (hasActiveCondition) {
+                            stringResource(R.string.game_filter_active_state)
+                        } else {
+                            null
+                        },
                     ) { showFilterSheet = true }
-                    if (hasActiveFilter) {
+                    if (hasActiveCondition) {
                         Box(
                             Modifier
-                                .padding(top = 8.dp, end = 8.dp)
+                                .padding(top = 1.dp, end = 1.dp)
                                 .size(6.dp)
                                 .clip(CircleShape)
                                 .background(MaterialTheme.colorScheme.primary),
@@ -671,8 +680,8 @@ private fun GameLibraryContent(
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
-                            // 有生效的筛选条件时，空态直接给一个出口，省得再去顶栏翻抽屉
-                            if (hasActiveFilter) {
+                            // 有生效条件时，空态直接给一个出口，省得再去顶栏翻抽屉
+                            if (hasActiveCondition) {
                                 com.tyranor.next.ui.common.NoRippleButton(
                                     text = stringResource(R.string.game_filter_reset),
                                     onClick = resetFilters,

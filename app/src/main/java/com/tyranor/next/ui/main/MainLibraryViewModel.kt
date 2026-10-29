@@ -41,7 +41,7 @@ data class MainLibraryUiState(
     val scrapeMessage: String? = null,
     /** 已发布搜索结果的查询词；与页面当前查询词一致时结果才可用（迁移方案阶段 3）。 */
     val searchQuery: String = "",
-    /** Room DAO 搜索结果（已按当前排序模式排序）；null 表示无可用的 DB 搜索结果。 */
+    /** Room DAO 搜索结果（命中集；engine/recent 排序会回落到标题序，展示顺序由 UI 内存重排）。null 表示无可用的 DB 搜索结果。 */
     val searchResults: List<ScanGame>? = null,
 )
 

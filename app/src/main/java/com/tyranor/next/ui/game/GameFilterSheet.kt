@@ -2,6 +2,7 @@ package com.tyranor.next.ui.game
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -34,10 +35,11 @@ import com.tyranor.next.R
 import com.tyranor.next.core.engine.EngineType
 import com.tyranor.next.core.settings.AppSettingsStore
 import com.tyranor.next.theme.AppComponentShape
+import com.tyranor.next.theme.AppThemeColors
 import com.tyranor.next.theme.NavWhite
 import com.tyranor.next.theme.TextColor
+import com.tyranor.next.theme.glassBorder
 import com.tyranor.next.ui.common.AppBottomSheet
-import com.tyranor.next.ui.common.DialogTextButton
 import com.tyranor.next.ui.common.appSheetMaxHeight
 
 /**
@@ -99,7 +101,17 @@ internal fun GameFilterSheet(
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                     modifier = Modifier.weight(1f),
                 )
-                DialogTextButton(text = stringResource(R.string.game_filter_reset), onClick = onReset)
+                // 抽屉内按钮走常规点击反馈（DialogTextButton 的 indication = null 只属于 AppAlertDialog）；
+                // 文字仍用 bodyMedium，守住两档排版
+                Text(
+                    stringResource(R.string.game_filter_reset),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .clip(AppComponentShape)
+                        .clickable(onClick = onReset)
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                )
             }
 
             FilterSectionTitle(stringResource(R.string.game_filter_sort_section))
@@ -234,9 +246,9 @@ private fun FilterChipCard(
  * 选择控件的公共外观。
  *
  * - 选中：淡主题色底 + 主题色描边 + 主题色粗体（三段统一）；
- * - [hollow] = true 且未选中：**空心标签**（透明底 + 1dp 描边），用于横向划屏的引擎行，
- *   避免一排实心白块压过排序卡；
- * - 否则：白卡底（抽屉面板是页面灰底，白卡形成反差）。
+ * - [hollow] = true 且未选中：**空心标签**（透明底 + 1dp outline；玻璃风格由 `glassBorder()`
+ *   画 0.5dp 发丝边），用于横向划屏的引擎行，避免一排实心白块压过排序卡；
+ * - 否则：白卡底（抽屉面板是页面灰底，白卡形成反差）+ 玻璃风格的发丝边。
  */
 @Composable
 private fun FilterChoiceBase(
@@ -248,7 +260,6 @@ private fun FilterChoiceBase(
     hollow: Boolean = false,
 ) {
     val accent = MaterialTheme.colorScheme.primary
-    val outline = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)
     Box(
         modifier = modifier
             .clip(AppComponentShape)
@@ -259,10 +270,18 @@ private fun FilterChoiceBase(
                     else -> NavWhite
                 },
             )
+            // 玻璃风格下未选中卡片与抽屉面板几乎同色，必须补 0.5dp 发丝描边（AGENTS 3.5，
+            // 高级玻璃还带顶边高光）；默认风格自动 no-op
+            .glassBorder(AppComponentShape)
             .then(
                 when {
                     selected -> Modifier.border(1.dp, accent, AppComponentShape)
-                    hollow -> Modifier.border(1.dp, outline, AppComponentShape)
+                    // 玻璃系已由 glassBorder 画过发丝边，不再叠加；默认风格的空心标签仍需 outline
+                    hollow && !AppThemeColors.isGlass -> Modifier.border(
+                        1.dp,
+                        MaterialTheme.colorScheme.outline.copy(alpha = 0.6f),
+                        AppComponentShape,
+                    )
                     else -> Modifier
                 },
             )

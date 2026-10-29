@@ -50,7 +50,7 @@ flowchart TD
 
 数据写入链为 UI 命令队列 → [GameLibraryFacade](app/src/main/java/com/tyranor/next/core/game/storage/GameLibraryFacade.kt) 缓存与修订号 → [GameLibraryRepository](app/src/main/java/com/tyranor/next/core/game/storage/GameLibraryRepository.kt) 单线程 FIFO + mutex → Room。封面更新只修改对应字段；一致性搜索先等待已排队写入，避免旧结果覆盖新状态。
 
-`games` 表的预计算排序键列只覆盖「字母」「括号标签」两种排序；「引擎」「最近游玩」两种在 UI 内存完成（无对应 SQL 列），因此切换这两种排序不需要重新查库。
+`games` 表的预计算排序键列只覆盖「字母」「括号标签」两种排序；「引擎」「最近游玩」在 UI 内存完成（无对应 SQL 列）。因此任何排序切换都不重新查库，DB 只负责「哪些标题命中」，展示顺序一律由 UI 内存重排。
 
 旧 `game_scanner` prefs 仍作为幂等迁移来源和恢复镜像，不能删除为“无用缓存”。应用/引擎偏好及引擎进程读取的单游戏 blob 仍保留 prefs；Room 不是所有状态的唯一介质，也不能把普通 SharedPreferences 当成实时跨进程消息总线。
 

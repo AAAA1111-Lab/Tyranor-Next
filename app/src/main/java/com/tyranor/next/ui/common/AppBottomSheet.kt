@@ -18,6 +18,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.tyranor.next.theme.AdvancedGlassBorder
@@ -106,9 +107,11 @@ fun AppBottomSheet(
                 // 否则最后一行会压在导航条下面（真机实测：游玩状态那一行被导航栏盖住 31px）。
                 .navigationBarsPadding(),
         ) {
-            // 自绘把手：玻璃描边只能画在抽屉真实顶边，放在内容首位才能与面板渐变对齐
+            // 自绘把手：玻璃描边只能画在抽屉真实顶边，放在内容首位才能与面板渐变对齐。
+            // clearAndSetSemantics：M3 的 DragHandle 自带 contentDescription，而本抽屉手势已关闭、
+            // 把手也没有点击动作，留着只会让 TalkBack 聚焦一个双击无反应的控件。
             Column(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().clearAndSetSemantics { },
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 if (AppThemeColors.isGlass) {
