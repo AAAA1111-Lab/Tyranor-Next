@@ -612,7 +612,7 @@
     <string name="save_error_resolve_actual_dir">无法解析实际存档目录</string>
     <string name="save_error_create_save_dir">无法创建存档目录</string>
     <string name="save_error_save_dir_unavailable">存档目录不可用</string>
-    <string name="save_error_resource_restore_conflict">删除已取消：为保护导入事务目录中的游戏资源，存档未被删除；请处理冲突后重试</string>
+    <string name="save_error_resource_restore_conflict">删除已取消：为保护导入事务目录中的游戏资源（恢复冲突或目录不可读），存档未被删除；请处理后重试</string>
     <string name="save_error_no_files_in_zip">压缩包中未找到存档文件</string>
     <string name="save_error_read_import_zip">无法读取导入压缩包</string>
     <string name="save_error_duplicate_zip_entry">压缩包包含重复文件：%1$s</string>

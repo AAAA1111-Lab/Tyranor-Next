@@ -612,7 +612,7 @@
     <string name="save_error_resolve_actual_dir">実際のセーブフォルダを解析できません</string>
     <string name="save_error_create_save_dir">セーブフォルダを作成できません</string>
     <string name="save_error_save_dir_unavailable">セーブフォルダを使用できません</string>
-    <string name="save_error_resource_restore_conflict">削除を取り消しました：インポートトランザクション内のゲームリソースを保護するため、セーブは削除されていません。競合を解消してから再試行してください</string>
+    <string name="save_error_resource_restore_conflict">削除を取り消しました：インポートトランザクション内のゲームリソースを保護するため（復元の競合またはディレクトリ判読不可）、セーブは削除されていません。解消してから再試行してください</string>
     <string name="save_error_no_files_in_zip">ZIP 内にセーブファイルが見つかりません</string>
     <string name="save_error_read_import_zip">インポート ZIP を読み取れません</string>
     <string name="save_error_duplicate_zip_entry">ZIP に重複ファイルが含まれています：%1$s</string>
