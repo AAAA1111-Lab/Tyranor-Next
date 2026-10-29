@@ -221,7 +221,9 @@ object NativeBridge {
             return router.open(key, File(target), intent, allowCreate = (mode and OsConstants.O_CREAT) != 0)
         }
         return try {
-            openDirectFile(path, target, mode, diagnosticPrefix = if (redirected != null) "redirect" else null)
+            openUnindexedLocal(session, key, (mode and OsConstants.O_CREAT) != 0) {
+                openDirectFile(path, target, mode, diagnosticPrefix = if (redirected != null) "redirect" else null)
+            }
         } catch (directError: Throwable) {
             if (isSafFallbackEnabled()) {
                 val safFd = openViaSaf(target, mode, directError)
@@ -234,6 +236,24 @@ object NativeBridge {
             Log.e("NativeBridge", "open failed mode=$mode path=$path", directError)
             -1
         }
+    }
+
+    /**
+     * Preserve libc existence semantics for unindexed degraded mirror probes. Java's
+     * RandomAccessFile("rw") creates missing files even without O_CREAT, so defer
+     * non-creating requests to native rather than checking existence before Java open.
+     * Indexed/owned paths have already been handled by the mirror router.
+     */
+    internal fun openUnindexedLocal(
+        session: KrMirrorReadSession<*>,
+        key: String,
+        allowCreate: Boolean,
+        directOpen: () -> Int,
+    ): Int {
+        if (session.degraded && !allowCreate &&
+            session.localFiles?.resourceFileForPath(key) != null
+        ) return KrMirrorOpenRouter.NOT_ROUTED
+        return directOpen()
     }
 
     /** JNI bridge back to unhooked libc pointers; called only within the Java lock transaction. */

@@ -160,6 +160,41 @@ class NativeBridgeMirrorPolicyTest {
     }
 
     @Test
+    fun `missing unindexed noncreating update defers before Java can create a file`() {
+        val root = temporary.newFolder("missing-update")
+        val index = File(temporary.newFolder("missing-update-index"), "index").apply {
+            writeText(buildString { KrSafMirror.writeIndexText(this, emptyList()) })
+        }
+        NativeBridge.configureSafMirror(index.path, root.path)
+        val session = NativeBridge.mirrorSessionForTest
+        val missing = File(root, "optional.cfg")
+        val key = missing.absolutePath.lowercase(java.util.Locale.ROOT)
+        assertFalse(NativeBridge.mirrorDegradedBlock(session, key, missing))
+        assertFalse(session.shouldRoute(key))
+        var directOpens = 0
+        // This is the same final direct-open dispatch used by NativeBridge.open(r+).
+        // If reached, the actual Java update opener would create the absent file.
+        val updateOpen = {
+            directOpens++
+            java.io.RandomAccessFile(missing, "rw").use { 17 }
+        }
+        assertEquals(KrMirrorOpenRouter.NOT_ROUTED,
+            NativeBridge.openUnindexedLocal(session, key, allowCreate = false, directOpen = updateOpen))
+        assertEquals(0, directOpens)
+        assertFalse(missing.exists())
+        // Even a repeat probe cannot turn the failed update into an empty unowned file.
+        assertEquals(KrMirrorOpenRouter.NOT_ROUTED,
+            NativeBridge.openUnindexedLocal(session, key, allowCreate = false, directOpen = updateOpen))
+        assertEquals(0, directOpens)
+        assertFalse(missing.exists())
+        // Ordinary sessions retain their existing direct-open behavior.
+        val ordinary = KrMirrorReadSession<String>(emptyMap(), KrMirrorLocalFiles(root))
+        assertEquals(17, NativeBridge.openUnindexedLocal(ordinary, key, false, updateOpen))
+        assertEquals(1, directOpens)
+        assertTrue(missing.exists())
+    }
+
+    @Test
     fun `damaged index permits absent paths but never exposes an existing placeholder`() {
         val root = temporary.newFolder("damaged-gate")
         for ((number, contents) in listOf("", "broken-header\n").withIndex()) {
