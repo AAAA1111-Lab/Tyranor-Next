@@ -1,5 +1,6 @@
 package com.tyranor.next.ui.settings
 
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -56,6 +57,7 @@ import com.tyranor.next.core.settings.EffectiveEngineSettings
 import com.tyranor.next.core.settings.PerGameSettingsStore
 import com.tyranor.next.core.settings.RenPyOverride
 import com.tyranor.next.core.settings.RpgMakerOverride
+import com.tyranor.next.core.settings.RuffleOverride
 import com.tyranor.next.core.settings.WinlatorOverride
 import com.tyranor.next.theme.MiuixSettingsTheme
 import com.tyranor.next.theme.glassShadow
@@ -159,6 +161,16 @@ fun PerGameSettingsScreen(game: ScanGame) {
         mutableStateOf(PerGameSettingsStore.toRenPyOverride(PerGameSettingsStore.load(ctx, gid)))
     }
     val renpy = renpyOverride ?: RenPyOverride()
+    var ruffleOverride by remember(gid) {
+        mutableStateOf(
+            if (game.engine == EngineType.RUFFLE) {
+                PerGameSettingsStore.toRuffleOverride(PerGameSettingsStore.load(ctx, gid))
+            } else {
+                null
+            },
+        )
+    }
+    val ruffle = ruffleOverride ?: RuffleOverride()
 
     val onsOverride = remember { mutableStateOf(PerGameSettingsStore.loadOnsOverride(ctx, gid) ?: JSONObject()) }
     var onsScoped by remember { mutableStateOf(onsBool(onsOverride.value, "scopedsavedir")) }
@@ -242,11 +254,29 @@ fun PerGameSettingsScreen(game: ScanGame) {
         }
     }
     // System35 / System4 生效存档路径展示：resolveSaveLocation 内含游戏目录解析与三级设置合并
-    // （磁盘 + DB 读），挂起在 IO 线程取结果，避免组合期阻塞
+    // （磁盘 + DB 读），挂起在 IO 线程取结果，避免组合期阻塞。
+    // KRKR 亦需加载：SD 卡镜像强制接管存档路径时，独立存档开关要置灰并显示引导。
+    // 镜像判定未就绪（null）前开关保持禁用，避免首帧把 SD 游戏误判为机内存储。
+    var saveLocationReady by remember(gid) { mutableStateOf(false) }
+    var saveLocationLoadFailed by remember(gid) { mutableStateOf(false) }
     LaunchedEffect(gid) {
-        if (game.engine != EngineType.XSYS35 && game.engine != EngineType.XSYS4) return@LaunchedEffect
-        saveLocation = withContext(Dispatchers.IO) {
-            GameSaveManager(ctx).resolveSaveLocation(game)
+        if (game.engine != EngineType.XSYS35 && game.engine != EngineType.XSYS4 && game.engine != EngineType.KIRIKIRI) {
+            saveLocationReady = true
+            return@LaunchedEffect
+        }
+        try {
+            val loaded = withContext(Dispatchers.IO) {
+                GameSaveManager(ctx).resolveSaveLocation(game)
+            }
+            saveLocation = loaded
+            saveLocationLoadFailed = loaded.directory == null || !loaded.available
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (t: Throwable) {
+            saveLocationLoadFailed = true
+            Log.w("PerGameSettings", "resolve save location failed gid=$gid", t)
+        } finally {
+            saveLocationReady = true
         }
     }
     var rpgmOverride by remember(gid) {
@@ -424,6 +454,7 @@ fun PerGameSettingsScreen(game: ScanGame) {
     val winlatorTimezoneMap = winlatorTimezoneOptionsMap()
     val winlatorBox64PresetMap = winlatorBox64PresetOptionsMap()
     val globalRenpy = remember { EngineSettingsStore.loadRenPy(ctx) }
+    val globalRuffle = remember { EngineSettingsStore.loadRuffle(ctx) }
     val globalRpg = remember { EngineSettingsStore.loadRpgMaker(ctx) }
     val rpgWindowMap = rpgWindowSizeOptionsMap()
     val rpgSpeedUpMap = rpgSpeedUpOptionsMap()
@@ -455,6 +486,11 @@ fun PerGameSettingsScreen(game: ScanGame) {
     val artToggleMap = artToggleOptionsMap()
     val artSurfaceCacheMap = artSurfaceCacheOptionsMap()
     val artFontCacheMap = artFontCacheOptionsMap()
+    val ruffleBackendMap = ruffleBackendOptionsMap()
+    val ruffleQualityMap = ruffleQualityOptionsMap()
+    val ruffleScaleModeMap = ruffleScaleModeOptionsMap()
+    val ruffleLoadBehaviorMap = ruffleLoadBehaviorOptionsMap()
+    val ruffleScreenTimeoutMap = ruffleScreenTimeoutOptionsMap()
     val engineDefault = stringResource(R.string.engine_option_engine_default)
     val builtinFont = stringResource(R.string.engine_settings_builtin_font)
     val auto = stringResource(R.string.common_auto)
@@ -633,6 +669,46 @@ fun PerGameSettingsScreen(game: ScanGame) {
         PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_RENPY_LESS_UPDATES, renpy.lessUpdates)
         PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_RENPY_DONT_USE_GL2, renpy.dontUseGl2)
         PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_RENPY_RECOMPILE, renpy.recompile)
+        // Ruffle 覆盖只写 Ruffle 游戏：无条件写会把 ruffle_* 键塞进其它游戏的覆盖 blob。
+        if (game.engine == EngineType.RUFFLE) {
+            PerGameSettingsStore.setStr(
+                ctx,
+                gid,
+                PerGameSettingsStore.F_RUFFLE_SCREEN_TIMEOUT,
+                ruffle.screenTimeout?.trim()?.toIntOrNull()
+                    ?.takeIf { it in EngineSettingsStore.RUFFLE_SCREEN_TIMEOUTS }?.toString(),
+            )
+            PerGameSettingsStore.setStr(
+                ctx,
+                gid,
+                PerGameSettingsStore.F_RUFFLE_BACKEND,
+                ruffle.backend?.takeIf { it in EngineSettingsStore.RUFFLE_BACKENDS },
+            )
+            PerGameSettingsStore.setStr(
+                ctx,
+                gid,
+                PerGameSettingsStore.F_RUFFLE_QUALITY,
+                ruffle.quality?.takeIf { it in EngineSettingsStore.RUFFLE_QUALITIES },
+            )
+            PerGameSettingsStore.setStr(
+                ctx,
+                gid,
+                PerGameSettingsStore.F_RUFFLE_SCALE_MODE,
+                ruffle.scaleMode?.takeIf { it in EngineSettingsStore.RUFFLE_SCALE_MODES },
+            )
+            PerGameSettingsStore.setStr(
+                ctx,
+                gid,
+                PerGameSettingsStore.F_RUFFLE_LETTERBOX,
+                ruffle.letterbox?.takeIf { it in EngineSettingsStore.RUFFLE_LETTERBOXES },
+            )
+            PerGameSettingsStore.setStr(
+                ctx,
+                gid,
+                PerGameSettingsStore.F_RUFFLE_LOAD_BEHAVIOR,
+                ruffle.loadBehavior?.takeIf { it in EngineSettingsStore.RUFFLE_LOAD_BEHAVIORS },
+            )
+        }
     }
 
     MiuixSettingsTheme {
@@ -648,11 +724,25 @@ fun PerGameSettingsScreen(game: ScanGame) {
                     trailing = {
                         TopBarIcon(painterResource(R.drawable.ic_save), stringResource(R.string.common_save), MiuixTheme.colorScheme.primary) {
                             save()
-                            // 存档路径展示与实际生效设置同源：保存后按新值重解一次（磁盘 + DB 读，走 IO）
-                            if (game.engine == EngineType.XSYS35 || game.engine == EngineType.XSYS4) {
+                            // 存档路径展示与实际生效设置同源：保存后按新值重解一次（磁盘 + DB 读，走 IO）。
+                            // KRKR 同样重解：解析失败提示（loadFailed）在用户改回设置并保存后应当立即
+                            // 解除，而不是滞留到重进页面（本地审计 84e1d22，P3-5 第三轮裁决）
+                            if (game.engine == EngineType.XSYS35 || game.engine == EngineType.XSYS4 || game.engine == EngineType.KIRIKIRI) {
                                 scope.launch {
-                                    saveLocation = withContext(Dispatchers.IO) {
-                                        GameSaveManager(ctx).resolveSaveLocation(game)
+                                    try {
+                                        val loaded = withContext(Dispatchers.IO) {
+                                            GameSaveManager(ctx).resolveSaveLocation(game)
+                                        }
+                                        saveLocation = loaded
+                                        saveLocationLoadFailed = loaded.directory == null || !loaded.available
+                                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                        throw cancelled
+                                    } catch (t: Throwable) {
+                                        // 对齐入口 (:256-257) 与 SaveManagementActivity.refresh
+                                        // 的兄弟模式：重解失败同样置失败态，不静默滞留旧快照
+                                        // （审计 of fe3d057, FA1）
+                                        saveLocationLoadFailed = true
+                                        Log.w("PerGameSettings", "resolve save location failed gid=$gid", t)
                                     }
                                 }
                             }
@@ -672,16 +762,48 @@ fun PerGameSettingsScreen(game: ScanGame) {
             ) {
                 when (game.engine) {
 	                    EngineType.KIRIKIRI -> {
+                        // SD 卡镜像强制接管存档路径：独立存档开关不生效，置灰并显示引导；
+                        // 镜像判定加载完成前保持禁用，避免首帧误判为机内存储
+                        val krMirrorForced = saveLocation?.mirrorForced == true
                         item {
                             SectionCard("KRKR") {
-                                OverrideSwitch(stringResource(R.string.engine_settings_scoped_save_dir), globalKrScoped, krScoped) { krScoped = it }
+                                OverrideSwitch(
+                                    stringResource(R.string.engine_settings_scoped_save_dir),
+                                    globalKrScoped,
+                                    krScoped,
+                                    // 存档位置解析失败不得禁用本开关：改回 <游戏根>/savedata
+                                    // 正是解除失败状态的手段，禁用会形成自锁（审查第十轮 #6；
+                                    // 运行期仍会回退 filesDir/save，开关并非不可用）
+                                    enabled = saveLocationReady && !krMirrorForced,
+                                ) { krScoped = it }
+                                if (saveLocationLoadFailed || krMirrorForced) {
+                                    Text(
+                                        stringResource(
+                                            if (saveLocationLoadFailed) R.string.save_location_load_failed_note
+                                            else R.string.krkr_mirror_save_forced_note,
+                                        ),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                                    )
+                                }
                                 OverrideSwitch(
                                     stringResource(R.string.engine_settings_skip_startup_dialogs),
                                     globalKrSkipStartupDialogs,
                                     krSkipStartupDialogs,
                                 ) { krSkipStartupDialogs = it }
                                 OverrideChoice(stringResource(R.string.engine_settings_engine_version), krVersionMap, globalKrVersion, krVersion) { krVersion = it }
-                                OverrideChoice(stringResource(R.string.engine_settings_engine_kernel), krKernelMap, globalKrKernel, krKernel) { krKernel = it }
+                                // SD 卡镜像在运行时强制 KR2 内核（EffectiveEngineSettings.resolveKrKernel），
+                                // 下拉保留存储值展示但置灰，避免用户选择实际不生效的 krkrsdl3；
+                                // 存档位置解析失败不得禁用内核行：改回 KR2 正是解除失败的
+                                // 手段，禁用会形成 krkrsdl3 自锁（审查第九轮 #10）
+                                OverrideChoice(
+                                    stringResource(R.string.engine_settings_engine_kernel),
+                                    krKernelMap,
+                                    globalKrKernel,
+                                    krKernel,
+                                    enabled = saveLocationReady && !krMirrorForced,
+                                ) { krKernel = it }
                                 if (!isSdl3) {
                                     OverrideChoice(stringResource(R.string.engine_settings_krkr_patch_overlay), krPatchOverlayMap, globalKrPatchOverlayMode, krPatchOverlayMode) { krPatchOverlayMode = it }
                                 }
@@ -879,6 +1001,63 @@ fun PerGameSettingsScreen(game: ScanGame) {
                             }
                             Text(
                                 stringResource(R.string.engine_settings_renpy_module_description),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                            )
+                        }
+                    }
+                    EngineType.RUFFLE -> item {
+                        SectionCard(stringResource(R.string.engine_settings_ruffle_title)) {
+                            OverrideChoice(
+                                stringResource(R.string.engine_settings_ruffle_backend),
+                                ruffleBackendMap,
+                                globalRuffle.backend,
+                                ruffle.backend,
+                            ) { ruffleOverride = ruffle.copy(backend = it) }
+                            OverrideChoice(
+                                stringResource(R.string.engine_settings_ruffle_quality),
+                                ruffleQualityMap,
+                                globalRuffle.quality,
+                                ruffle.quality,
+                            ) { ruffleOverride = ruffle.copy(quality = it) }
+                            OverrideChoice(
+                                stringResource(R.string.engine_settings_ruffle_scale_mode),
+                                ruffleScaleModeMap,
+                                globalRuffle.scaleMode,
+                                ruffle.scaleMode,
+                            ) { ruffleOverride = ruffle.copy(scaleMode = it) }
+                            OverrideSwitch(
+                                stringResource(R.string.engine_settings_ruffle_letterbox),
+                                EngineSettingsStore.normalizeRuffleLetterbox(globalRuffle.letterbox) ==
+                                    EngineSettingsStore.RUFFLE_LETTERBOX_ON,
+                                ruffle.letterbox?.let {
+                                    EngineSettingsStore.normalizeRuffleLetterbox(it) ==
+                                        EngineSettingsStore.RUFFLE_LETTERBOX_ON
+                                },
+                            ) { enabled ->
+                                ruffleOverride = ruffle.copy(
+                                    letterbox = when (enabled) {
+                                        null -> null
+                                        true -> EngineSettingsStore.RUFFLE_LETTERBOX_ON
+                                        false -> "off"
+                                    },
+                                )
+                            }
+                            OverrideChoice(
+                                stringResource(R.string.engine_settings_ruffle_load_behavior),
+                                ruffleLoadBehaviorMap,
+                                globalRuffle.loadBehavior,
+                                ruffle.loadBehavior,
+                            ) { ruffleOverride = ruffle.copy(loadBehavior = it) }
+                            OverrideChoice(
+                                stringResource(R.string.engine_settings_ruffle_screen_timeout),
+                                ruffleScreenTimeoutMap,
+                                globalRuffle.screenTimeout.toString(),
+                                ruffle.screenTimeout,
+                            ) { ruffleOverride = ruffle.copy(screenTimeout = it) }
+                            Text(
+                                stringResource(R.string.engine_settings_ruffle_module_description),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
