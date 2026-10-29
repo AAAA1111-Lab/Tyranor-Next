@@ -14,8 +14,8 @@ SOURCE_META = {'repository': 'https://github.com/AAAA1111-Lab/VN-SR', 'revision'
 ASSET_DIRECTORY = 'vnsr'
 
 
-def convert(data):
-    """Retain upstream bytes; the common coordinate wrapper handles physical row order."""
+def retained_bytes(data):
+    """Structural guard only: the pinned bytes pass through unchanged for the coordinate wrapper."""
     text = data.decode("utf-8")
     if "int index=phase.y*2+phase.x;" not in text:
         raise ValueError("Unexpected reconstruction")
@@ -35,6 +35,8 @@ def main():
         raise ValueError("Pinned license differs")
     manifest_path = root / "engine/patches/vnsr-filters.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if len(manifest["sources"]) != 1:
+        raise ValueError("Unexpected additional graphics sources: " + str(len(manifest["sources"])))
     source = manifest["sources"][0]
     if source.get("verification") != "retained" or source["license"].get("spdx") != "MIT":
         raise ValueError("Invalid retained source or license metadata")
@@ -43,6 +45,8 @@ def main():
         raise ValueError("Pinned source metadata differs: " + ", ".join(mismatched))
     if manifest.get("assetDirectory") != ASSET_DIRECTORY:
         raise ValueError("Pinned asset directory differs: " + str(manifest.get("assetDirectory")))
+    if source["license"].get("path") != "LICENSE":
+        raise ValueError("Pinned license path differs: " + str(source["license"].get("path")))
     if source["license"].get("sha256") != LICENSE_SHA256 or source["license"].get("localPath") != "engine/src/main/assets/vnsr/LICENSE-MIT":
         raise ValueError("License manifest differs")
     expected_sources = {"shaders/gles/" + name: (digest, "engine/patches/vnsr/sources/" + name) for name, digest in PINS.items()}
@@ -54,7 +58,7 @@ def main():
         data = (root / "engine/patches/vnsr/sources" / name).read_bytes()
         if hashlib.sha256(data).hexdigest() != expected:
             raise ValueError("Pinned source differs: " + name)
-        output = convert(data)
+        output = retained_bytes(data)
         target = assets / "vnsr" / name
         generated["vnsr/" + name] = hashlib.sha256(output).hexdigest()
         if args.check:

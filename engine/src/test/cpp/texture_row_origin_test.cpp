@@ -1,3 +1,5 @@
+#include <limits>
+
 #include "../../main/cpp/texture_row_origin.h"
 
 struct Point { float x,y,u,v; };

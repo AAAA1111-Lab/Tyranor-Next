@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """CPU coordinate regression for the six unmodified Anime4K Restore exports."""
 import hashlib
 import json
@@ -75,7 +76,6 @@ def main():
         'asymmetric_gradient':[[[((x*7+y*11+c*3)%41)/40 for c in range(3)]+[1.] for x in range(12)] for y in range(12)],
         'horizontal_edge':[[[.05 if y<4 else .85 if y<8 else .3, x/11, .1 if y<7 else .7,1.] for x in range(12)] for y in range(12)],
         'constant_control':[[[.2,.4,.6,1.] for x in range(12)] for y in range(12)]}
-    report=[]
     for name in ('S','M','L','Soft_S','Soft_M','Soft_L'):
         path=ROOT/'engine/src/main/assets/anime4k'/('Anime4K_Restore_CNN_'+name+'.glsl')
         passes=parse(path.read_text(encoding='utf-8'))
@@ -90,7 +90,6 @@ def main():
             if pattern=='constant_control':assert result['bottom_left_current']['max_abs_rgb'] < 1e-12
             else:assert result['bottom_left_current']['max_abs_rgb'] > 1e-6
             record['patterns'][pattern]=result
-        report.append(record)
         p=record['patterns']['horizontal_edge']
         print(name, 'passes='+str(len(passes)), 'edge current MAE(8bit)='+str(round(p['bottom_left_current']['mean_abs_rgb_8bit_equivalent'],6)), 'corrected max='+str(p['bottom_left_y_corrected']['max_abs_rgb']))
 

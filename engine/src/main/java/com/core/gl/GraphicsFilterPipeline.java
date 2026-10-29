@@ -13,6 +13,7 @@ public final class GraphicsFilterPipeline {
     private final int[] inputWidths, inputHeights, outputWidths, outputHeights;
     private final boolean[] execute;
     private boolean geometryKnown, planValid, temporaryFailed, failed, hasExecution;
+    private boolean inputTopLeft;
     private int sourceWidth, sourceHeight, boundWidth, boundHeight;
     private int actualWidth, actualHeight, bypassReason;
     private long targetBytes;
@@ -60,8 +61,6 @@ public final class GraphicsFilterPipeline {
         if (texture == 0 || !prepareGeometry(sw, sh, screenWidth, screenHeight)) return texture;
         return run(texture, sw, sh);
     }
-
-    private boolean inputTopLeft;
 
     private int run(int original, int sw, int sh) {
         if (temporaryFailed || failed) { invalidateMeasurements(); return original; }

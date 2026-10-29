@@ -15,7 +15,7 @@ VN-SR 分类提供 C08 / C12 / C16 三种通道规模，均为原生 **2X**。
 
 普通构建按清单中仓库根相对的 `sources[].files[].localPath` 校验已保留来源文件的SHA，缺失、修改或越出engine目录会失败；
 VN-SR 声明 `verification: retained`，来源文件和许可证必须提供localPath并通过SHA校验；纯外部来源记录仍只作描述。
-`license.path` 指上游路径，`license.localPath` 指仓库保留文本；生成器另行固定MIT标识及清单哈希。
+`license.path` 指上游路径，`license.localPath` 指仓库保留文本；生成器固定MIT标识、`license.path`、来源 `repository`/`revision`/`version`、`assetDirectory`、来源数量及清单哈希，任一漂移都会使 `--check` 失败。
 
 ## 宿主适配
 
@@ -44,7 +44,7 @@ python tools/test-vnsr-generator.py
 
 ## 验证边界
 
-本轮执行的验证为静态与CPU/JVM级别：来源与许可逐字节SHA核对、三档残差坐标等价（CPU最大误差0.0）、
+本轮执行的验证为静态与CPU/JVM级别：来源与许可逐字节SHA核对、三档残差坐标等价（CPU回归阈值为1e-10，当次运行误差为0.0）、
 Anime4K六份Restore导出的CPU方向负对照、生成器与来源清单篡改负例、`texture_row_origin`编译期断言、
 资源来源回归、图形专项JVM测试、Debug宿主native构建与上游CI检查。
 未执行完整Release/R8 APK构建，也未执行任何实机验收；早期提交者“运行测试通过”的反馈是历史结论，

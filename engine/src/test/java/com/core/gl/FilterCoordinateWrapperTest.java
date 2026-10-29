@@ -2,6 +2,9 @@ package com.core.gl;
 
 import org.junit.Test;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -56,9 +59,81 @@ public final class FilterCoordinateWrapperTest {
                         worstWrongBinding = Math.max(worstWrongBinding, Math.abs(wrong[1] - reference[1]));
                     }
                 }
+                // A wrong binding shifts _texOff by two texels (2/size.y), so require more than
+                // one texel of drift — a threshold that stays size-independent.
                 assertTrue("wrong u_FLIP_Y binding must be distinguishable for declared="
-                        + declared + " input=" + inputTopLeft, worstWrongBinding > 0.1);
+                        + declared + " input=" + inputTopLeft, worstWrongBinding * size[1] > 1.0);
             }
+        }
+    }
+
+    /**
+     * Known-displacement oracle stated in image space rather than as a mirror of the emitted
+     * algebra: texOff(0, +1) moves one row toward the image bottom exactly when the shader is
+     * written in top-left coordinates, and the physical row holding the image top is row 0
+     * exactly when the input texture is stored top-left. Both statements are independent of the
+     * implementation, so a consistently wrong wrapper cannot satisfy them.
+     */
+    @Test public void texOffDisplacementStaysInImageSpaceAcrossCombinations() {
+        MpvHookShader.Pass pass = MpvHookShader.parse(
+                "//!DESC wrapper\n//!BIND MAIN\n//!SAVE MAIN\n"
+                        + "vec4 hook() { return MAIN_tex(MAIN_pos) + MAIN_texOff(MAIN_pt); }").get(0);
+        Wrapper wrapper = Wrapper.parse(MpvHookShader.fragmentSource(pass), "MAIN");
+        double[] size = {16.0, 9.0};
+        for (boolean declared : new boolean[]{true, false}) {
+            for (boolean inputTopLeft : new boolean[]{true, false}) {
+                int flip = Anime4kPostProcessor.flipYUniform(declared, inputTopLeft);
+                int imageDownRows = declared ? 1 : -1;
+                int imageDownPhysical = inputTopLeft ? 1 : -1;
+                for (int row = 1; row < 8; row++) {
+                    double[] vPos = {0.3, (row + 0.5) / size[1]};
+                    for (int offY : new int[]{-1, 1}) {
+                        double[] emitted = wrapper.evalTexOff(vPos, new double[]{0, offY}, size, flip);
+                        double expectedRows = offY * imageDownRows * imageDownPhysical;
+                        assertEquals(expectedRows / size[1], emitted[1] - vPos[1], 1e-9);
+                    }
+                    double[] emittedX = wrapper.evalTexOff(vPos, new double[]{-1, 0}, size, flip);
+                    assertEquals(-1.0 / size[0], emittedX[0] - vPos[0], 1e-9);
+                }
+            }
+        }
+    }
+
+    /** Evaluates the real hook() body so composite sampling paths cannot drift from the wrapper. */
+    @Test public void emittedHookBodyCompositionMatchesDeclaredSemantics() {
+        MpvHookShader.Pass pass = MpvHookShader.parse(
+                "//!DESC wrapper\n//!BIND MAIN\n//!SAVE MAIN\n"
+                        + "vec4 hook() { return MAIN_tex(MAIN_pos) + MAIN_texOff(vec2(1.0)); }").get(0);
+        Wrapper wrapper = Wrapper.parse(MpvHookShader.fragmentSource(pass), "MAIN");
+        double[] size = {16.0, 9.0};
+        for (boolean declared : new boolean[]{true, false}) {
+            for (boolean inputTopLeft : new boolean[]{true, false}) {
+                int flip = Anime4kPostProcessor.flipYUniform(declared, inputTopLeft);
+                for (double[] vPos : new double[][]{{0.25, 0.25}, {0.5, 0.5}, {0.9375, 0.0625}}) {
+                    double[] emitted = wrapper.evalHookBody(Wrapper.baseVars(vPos, size, flip));
+                    // MAIN_pos is the logical position; MAIN_tex converts logical -> physical, so the
+                    // composition applies the flip twice and lands back on the physical fragment point.
+                    double[] logical = hookRef(vPos, flip);
+                    double[] base = hookRef(logical, flip);
+                    // MAIN_texOff(vec2(1.0)) samples one texel right-down in the shader's logical space.
+                    double[] offset = hookRef(new double[]{logical[0] + 1.0 / size[0], logical[1] + 1.0 / size[1]}, flip);
+                    assertVec(emitted, new double[]{base[0] + offset[0], base[1] + offset[1]});
+                }
+            }
+        }
+    }
+
+    /** Any asset that samples through the wrapper surface must declare its row order explicitly. */
+    @Test public void coordinateWrapperUsersDeclareTopLeft() throws Exception {
+        Path assets = Path.of("src/main/assets");
+        if (!Files.isDirectory(assets)) assets = Path.of("engine/src/main/assets");
+        Pattern wrapperSurface = Pattern.compile("\\w+_tex\\(|\\w+_texOff\\(|\\w+_pos\\b");
+        for (GraphicsFilterDefinition definition : GraphicsFilterDefinitions.all()) {
+            if (definition.shaderAsset == null) continue;
+            String source = new String(Files.readAllBytes(assets.resolve(definition.shaderAsset)), StandardCharsets.UTF_8);
+            if (!wrapperSurface.matcher(source).find()) continue;
+            assertTrue(definition.id + " samples through the coordinate wrapper but does not declare topLeftCoordinates",
+                    definition.topLeftCoordinates);
         }
     }
 
@@ -79,6 +154,10 @@ public final class FilterCoordinateWrapperTest {
         return declaredTopLeft != inputTopLeft ? 1.0 - logicalY : logicalY;
     }
 
+    private static double[] hookRef(double[] p, int flip) {
+        return new double[]{p[0], flip == 1 ? 1.0 - p[1] : p[1]};
+    }
+
     private static void assertVec(double[] actual, double[] expected) {
         assertEquals(expected.length, actual.length, 0.0);
         for (int i = 0; i < expected.length; i++) {
@@ -86,19 +165,23 @@ public final class FilterCoordinateWrapperTest {
         }
     }
 
-    /** Extracts the emitted hookCoord, _tex, _texOff and _pos definitions for numerical evaluation. */
+    /** Extracts the emitted hookCoord, _tex, _texOff, _pos and hook() definitions for numerical evaluation. */
     private static final class Wrapper {
+        final String bind;
         final String hookParam;
         final Node hookX, hookY;
-        final Node texArg, texOffArg, posDefine;
+        final Node texArg, texOffArg, posDefine, hookBody;
 
-        private Wrapper(String hookParam, Node hookX, Node hookY, Node texArg, Node texOffArg, Node posDefine) {
+        private Wrapper(String bind, String hookParam, Node hookX, Node hookY,
+                Node texArg, Node texOffArg, Node posDefine, Node hookBody) {
+            this.bind = bind;
             this.hookParam = hookParam;
             this.hookX = hookX;
             this.hookY = hookY;
             this.texArg = texArg;
             this.texOffArg = texOffArg;
             this.posDefine = posDefine;
+            this.hookBody = hookBody;
         }
 
         static Wrapper parse(String source, String bind) {
@@ -114,8 +197,34 @@ public final class FilterCoordinateWrapperTest {
             assertTrue("emitted " + bind + "_texOff definition not found", texOff.find());
             Matcher posDef = Pattern.compile("#define " + bind + "_pos ([^\\n]+)").matcher(source);
             assertTrue("emitted " + bind + "_pos define not found", posDef.find());
-            return new Wrapper(hook.group(1), hookX, hookY, FilterCoordinateWrapperTest.parse(tex.group(1)),
-                    FilterCoordinateWrapperTest.parse(texOff.group(1)), FilterCoordinateWrapperTest.parse(posDef.group(1)));
+            Matcher hookFn = Pattern.compile("vec4 hook\\(\\) \\{ return ([^;]+); \\}").matcher(source);
+            assertTrue("emitted hook body not found", hookFn.find());
+            return new Wrapper(bind, hook.group(1), hookX, hookY, FilterCoordinateWrapperTest.parse(tex.group(1)),
+                    FilterCoordinateWrapperTest.parse(texOff.group(1)), FilterCoordinateWrapperTest.parse(posDef.group(1)),
+                    FilterCoordinateWrapperTest.parse(expandDefines(source, hookFn.group(1))));
+        }
+
+        /** Expands the emitted #define aliases so the hook body evaluates through the same grammar. */
+        static String expandDefines(String source, String body) {
+            String expanded = body;
+            Matcher define = Pattern.compile("#define (\\w+) ([^\\n]+)").matcher(source);
+            while (define.find()) {
+                expanded = expanded.replaceAll("\\b" + define.group(1) + "\\b",
+                        Matcher.quoteReplacement(define.group(2)));
+            }
+            return expanded;
+        }
+
+        static Map<String, double[]> baseVars(double[] vPos, double[] size, int flip) {
+            Map<String, double[]> vars = new HashMap<>();
+            vars.put("vPos", vPos);
+            vars.put("u_FLIP_Y", new double[]{flip});
+            vars.put("u_MAIN_size", size);
+            return vars;
+        }
+
+        double[] evalHookBody(Map<String, double[]> vars) {
+            return hookBody.eval(vars, this);
         }
 
         double[] evalTex(double[] pos, int flip) {
@@ -277,8 +386,25 @@ public final class FilterCoordinateWrapperTest {
                                     wrapper.hookY.eval(scope, wrapper)[0]};
                         }
                         if ("vec2".equals(name)) {
-                            if (args.size() != 2) throw new AssertionError("vec2 expects two components");
+                            if (args.size() == 1) {
+                                double[] broadcast = args.get(0).eval(vars, wrapper);
+                                return new double[]{broadcast[0], broadcast[0]};
+                            }
+                            if (args.size() != 2) throw new AssertionError("vec2 expects one or two components");
                             return new double[]{args.get(0).eval(vars, wrapper)[0], args.get(1).eval(vars, wrapper)[0]};
+                        }
+                        String texName = wrapper.bind + "_tex";
+                        String texOffName = wrapper.bind + "_texOff";
+                        if (texName.equals(name) || texOffName.equals(name)) {
+                            if (args.size() != 1) throw new AssertionError(name + " expects one argument");
+                            Map<String, double[]> scope = new HashMap<>(vars);
+                            if (texOffName.equals(name)) {
+                                scope.put("off", args.get(0).eval(vars, wrapper));
+                                scope.put("pos", wrapper.texOffArg.eval(scope, wrapper));
+                            } else {
+                                scope.put("pos", args.get(0).eval(vars, wrapper));
+                            }
+                            return wrapper.texArg.eval(scope, wrapper);
                         }
                         throw new AssertionError("unexpected call in wrapper expression: " + name);
                     };

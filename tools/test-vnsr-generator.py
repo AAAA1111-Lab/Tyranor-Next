@@ -19,8 +19,10 @@ def main():
         shutil.copyfile(root/"tools/generate-vnsr-filters.py",target/"tools/generate-vnsr-filters.py")
         manifest_path = target/"engine/patches/vnsr-filters.json"
         original = (root/"engine/patches/vnsr-filters.json").read_text()
+        names = [item["localPath"].split("/")[-1] for item in json.loads(original)["sources"][0]["files"]]
         for kind in ("valid", "source path", "license id", "license hash", "generated hash", "retained gate",
-                     "repository", "revision", "version", "asset directory"):
+                     "repository", "revision", "version", "asset directory", "license path", "extra source",
+                     "asset bytes", "source bytes", "license bytes"):
             data = json.loads(original)
             source = data["sources"][0]
             if kind == "source path": del source["files"][0]["localPath"]
@@ -32,7 +34,19 @@ def main():
             if kind == "revision": source["revision"] = "0"*40
             if kind == "version": source["version"] = "0.2.0"
             if kind == "asset directory": data["assetDirectory"] = "vnsr-rewritten"
+            if kind == "license path": source["license"]["path"] = "LICENSE.txt"
+            if kind == "extra source": data["sources"].append({"description": "descriptive only", "verification": "external-only"})
             manifest_path.write_text(json.dumps(data),encoding="utf-8")
+            # Restore pinned bytes so each kind fails only for its own tampered surface.
+            assets_dir = target/"engine/src/main/assets/vnsr"
+            sources_dir = target/"engine/patches/vnsr/sources"
+            shutil.copyfile(root/"engine/src/main/assets/vnsr/LICENSE-MIT", assets_dir/"LICENSE-MIT")
+            for name in names:
+                shutil.copyfile(root/"engine/patches/vnsr/sources"/name, sources_dir/name)
+                shutil.copyfile(root/"engine/src/main/assets/vnsr"/name, assets_dir/name)
+            if kind == "asset bytes": (assets_dir/names[0]).write_bytes((assets_dir/names[0]).read_bytes()+b" ")
+            if kind == "source bytes": (sources_dir/names[0]).write_bytes((sources_dir/names[0]).read_bytes()+b" ")
+            if kind == "license bytes": (assets_dir/"LICENSE-MIT").write_bytes((assets_dir/"LICENSE-MIT").read_bytes()+b" ")
             result = subprocess.run([sys.executable,str(target/"tools/generate-vnsr-filters.py"),"--check"],capture_output=True,text=True)
             assert (result.returncode == 0) == (kind == "valid"), (kind,result.stdout,result.stderr)
             print("PASS: "+kind)
