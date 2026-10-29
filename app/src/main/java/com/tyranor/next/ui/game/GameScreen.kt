@@ -531,8 +531,8 @@ private fun GameLibraryContent(
     }
     // 过滤器与排序统一在搜索命中集之后收敛：Room 分支只负责「哪些标题命中」，
     // 排序/过滤一律走内存，避免搜索时绕过过滤器（DB 的两种排序查询仅覆盖字母序/括号标签）。
-    // 无搜索时 searchedGames 已按同一 gameSort 排好序，无筛选时直接复用，避免大库二次排序；
-    // 走 DB 分支（dbResults）时结果未按当前排序，必须再排一次。
+    // filter 保序：无搜索时 searchedGames 已按当前排序排好，筛完直接可用；
+    // 走 DB 分支（dbResults）时结果顺序未按当前排序，必须再排一次。
     val searchedGamesIsSorted = query.isBlank()
     val filteredGames = remember(
         searchedGames,
@@ -542,8 +542,7 @@ private fun GameLibraryContent(
         searchedGamesIsSorted,
     ) {
         val filtered = filterGames(searchedGames, engineFilter, playedFilter)
-        if (searchedGamesIsSorted && filtered === searchedGames) searchedGames
-        else sortGames(filtered, gameSort)
+        if (searchedGamesIsSorted) filtered else sortGames(filtered, gameSort)
     }
     // 引擎过滤器只列出库中实际存在的引擎（与首页分类仓库同口径）。
     val availableEngines = remember(games) {

@@ -80,6 +80,15 @@ class GameFilterTest {
     }
 
     @Test
+    fun filterPreservesSortedOrder() {
+        // 无搜索时筛选结果直接复用、不再二次排序，前提是 filter 保序
+        val sorted = sortGames(library, AppSettingsStore.GAME_SORT_ALPHA)
+        val filtered = filterGames(sorted, "", AppSettingsStore.GAME_FILTER_PLAYED_ONLY)
+
+        assertEquals(listOf("A 游戏", "C 游戏"), filtered.map { it.title })
+    }
+
+    @Test
     fun filtersCombine() {
         val filtered = filterGames(library, EngineType.KIRIKIRI.name, AppSettingsStore.GAME_FILTER_PLAYED_ONLY)
 
