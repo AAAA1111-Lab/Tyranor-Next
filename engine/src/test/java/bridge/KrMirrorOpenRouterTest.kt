@@ -268,6 +268,88 @@ class KrMirrorOpenRouterTest {
         assertTrue(fixture.state.isOverridden(fixture.file))
     }
 
+    @Test
+    fun `concurrent ordinary creates both open the published local file`() {
+        assertConcurrentCreatesShareOwnedFile(false)
+    }
+
+    @Test
+    fun `concurrent creates from separate sessions recognize durable ownership`() {
+        assertConcurrentCreatesShareOwnedFile(true)
+    }
+
+    private fun assertConcurrentCreatesShareOwnedFile(separateSessions: Boolean) {
+        val root = temporary.newFolder()
+        val file = File(root, "new-run.log")
+        val key = file.absolutePath.lowercase(Locale.ROOT)
+        val state = KrMirrorLocalFiles(root)
+        val first = KrMirrorReadSession<String>(emptyMap(), state, degraded = true)
+        val sessions = listOf(first, if (separateSessions) {
+            KrMirrorReadSession<String>(emptyMap(), KrMirrorLocalFiles(root), degraded = true)
+        } else first)
+        val entered = CountDownLatch(2)
+        val results = List(2) { AtomicReference(Int.MIN_VALUE) }
+        val failures = List(2) { AtomicReference<Throwable>() }
+        var opens = 0
+        val workers = sessions.mapIndexed { index, session ->
+            val router = KrMirrorOpenRouter(session, { 0L },
+                { throw AssertionError("New local files have no source stream") },
+                { throw AssertionError("New local files have no source fd") },
+                { local, _ ->
+                    if (!local.exists()) check(local.createNewFile())
+                    ++opens
+                    20 + opens
+                }, { throw AssertionError("Successful opens keep their fd") }, { _, _ -> })
+            Thread {
+                entered.countDown()
+                try {
+                    results[index].set(router.open(key, file, KrMirrorOpenRouter.Intent.WRITE, allowCreate = true))
+                } catch (error: Throwable) {
+                    failures[index].set(error)
+                }
+            }
+        }
+        try {
+            state.withFileLock(file) {
+                workers.forEach { it.start() }
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+                while (workers.any { it.state != Thread.State.BLOCKED } && System.nanoTime() < deadline) Thread.yield()
+                workers.forEach { assertEquals("Both creates must wait for the resource lock", Thread.State.BLOCKED, it.state) }
+            }
+            workers.forEach { it.join(5000) }
+            workers.forEach { assertFalse(it.isAlive) }
+            failures.forEach { assertEquals(null, it.get()) }
+            assertEquals(setOf(21, 22), results.map { it.get() }.toSet())
+            assertEquals(2, opens)
+            assertTrue(file.isFile)
+            assertEquals(0L, file.length())
+            assertTrue(state.isOverridden(file))
+            sessions.forEach { assertTrue(it.shouldRoute(key)); assertTrue(it.isLocal(key, file)) }
+        } finally {
+            workers.forEach { it.join(5000) }
+        }
+    }
+
+    @Test
+    fun `unindexed create rejects an unowned placeholder under the lock`() {
+        val root = temporary.newFolder()
+        val file = File(root, "unowned.xp3").apply { createNewFile() }
+        val key = file.absolutePath.lowercase(Locale.ROOT)
+        val state = KrMirrorLocalFiles(root)
+        val session = KrMirrorReadSession<String>(emptyMap(), state, degraded = true)
+        val router = KrMirrorOpenRouter(session, { 0L },
+            { throw AssertionError("No source expected") },
+            { throw AssertionError("No source fd expected") },
+            { _, _ -> throw AssertionError("An unowned placeholder must not be opened") },
+            {}, { _, _ -> })
+        assertEquals(KrMirrorOpenRouter.FAILED,
+            router.open(key, file, KrMirrorOpenRouter.Intent.WRITE, allowCreate = true))
+        assertEquals(0L, file.length())
+        assertFalse(state.isOverridden(file))
+        assertFalse(session.shouldRoute(key))
+    }
+
     private fun assertPendingOpenAfterUnlink(intent: KrMirrorOpenRouter.Intent, allowCreate: Boolean) {
         val fixture = fixture()
         val entered = CountDownLatch(1)

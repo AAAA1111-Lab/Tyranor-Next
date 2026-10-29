@@ -28,7 +28,13 @@ internal class KrMirrorOpenRouter<T>(
                 // Do not adopt a placeholder that appeared while waiting for the lock.
                 // Publish ownership before exposing even an intentionally empty new file.
                 state.withFileLock(file) {
-                    if (file.exists()) FAILED else openLocal(key, file, intent, state)
+                    // Another ordinary O_CREAT may have published a local file while
+                    // this request waited. Recheck ownership, not the pre-lock route snapshot.
+                    if (!file.exists() || (file.isFile && session.isLocal(key, file))) {
+                        openLocal(key, file, intent, state)
+                    } else {
+                        FAILED
+                    }
                 }
             } else if (intent == Intent.READ_ONLY) {
                 // Copy-up publishes with atomic rename. Do not hold a write mutex
