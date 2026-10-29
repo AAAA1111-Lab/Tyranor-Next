@@ -154,7 +154,7 @@ PR 说明问题、最终行为、影响的引擎/页面、验证命令及结果�
 
 - 顶部栏由公共组件内部使用 **Column + Row**，页面不自行使用 Material3 `TopAppBar` 替代；Miuix 页面壳按下文约定接入。
 
-- 普通/降级路径由外层 `Column` 组装为「顶部栏 → 正文内容」；启用渐进模糊时交给 `TopBarBlurHost` / `MiuixTopBarBlurScaffold` 叠层托管并消费 `topInset`，不要强行改回上下分离布局。
+- 页面由外层 `Column` 组装为「顶部栏 → 正文内容」，Material 页与 Miuix 页均保持上下分离布局；Miuix 页由透明 `MiuixScaffold` 的 `topBar` 槽承载 `AppTopBar`，正文位于顶栏下方，不启用顶栏模糊叠层。
 
 - **禁止在顶部栏放置任何返回按钮/图标**。返回统一依赖系统返回键/手势（`Activity` 默认 `finish()`），不要通过 `onBack` 参数下发返回回调。
 
@@ -182,11 +182,6 @@ PR 说明问题、最终行为、影响的引擎/页面、验证命令及结果�
   `contentPadding`），否则滚动内容会从顶栏下方穿过与标题重叠。设置类页面（MiuixScaffold）的
   `innerPadding` 顶部值一律加到列表 modifier 上，`contentPadding` 只保留额外的间距。
 
-- **默认外观风格的渐进模糊（仅默认风格，Android 12+）**：顶部栏背景仍是透明色，但页面经 `ui/common/TopBarBlur.kt` 的 `TopBarBlurHost`（Miuix 页用 `MiuixTopBarBlurScaffold`）托管时，正文铺满整页并垫在顶栏下方，顶栏背景层采样正文做模糊 + 页面底色半透明叠层，整体按竖向渐变遮罩——**顶端最实、底边完全透明**，形成「向上渐模糊」。
-  - 使用方式：`TopBarBlurHost(topBar = { AppTopBar(...) }) { topInset -> … }`；滚动列表把 `topInset` 加到 `contentPadding.top`，非滚动内容用 `padding(top = topInset)`。顶栏下方的固定条（分页/分类栏/搜索框）必须放进 `AppTopBar` 的 `underTitle`，才处于模糊区内。
-  - 玻璃系外观风格（复古/高级）与 Android 12 以下**不启用**：`TopBarBlurHost` 退化为「顶栏在上、正文在下」的 Column，`topInset = 0`，行为与原先一致。
-  - Web 首页（WebView）、解封包页不接入（WebView 不得录入采样层，见 `MainScreen.kt` 的 Web 首页采样降级说明）。
-
 - 禁止使用主题色 `primary` 作为顶部栏背景。
 
 ### 5. 状态栏
@@ -201,8 +196,6 @@ PR 说明问题、最终行为、影响的引擎/页面、验证命令及结果�
 - 不要自行给状态栏设置非透明背景色。
 
 ### 6. 位置顺序
-
-以下示意仅对应普通/模糊降级路径；默认风格 Android 12+ 的模糊宿主按第 4 节处理正文与顶栏叠层。
 
 ```
 Column(fillMaxSize)                                // 页面根
@@ -586,18 +579,18 @@ Column(fillMaxSize)                                // 页面根
 
 使用 Android CLI 做设备审查前，先发现并阅读其中适用的审查技能；工具或技能不可用时记录缺失条件，继续可执行的本地审查，不编造已安装或已通过的结果。`--sdk=/tmp/androidsdk` 是既有验收环境示例，须替换为本机 SDK 路径。
 
-JVM 回归使用 JUnit 4，位于 app/engine 各自的 `src/test/`；覆盖扫描、设置解析、存档、输入、宿主生命周期与图形策略。测试聚焦行为和边界，不镜像实现，也不为纯文档修改新增业务测试。真机用例与 release R8 probe 的构建、安装和能力边界分别见 [androidTest](app/src/androidTest/README.md) 与 [releaseProbe](app/src/releaseProbe/README.md)；普通 Android CI 未自动运行设备验收。
-
-设备测试 JNI probe 的构建脚本当前只选择 Linux/macOS NDK host 路径，Windows 不能直接照搬这些测试 APK 构建命令；这不影响普通 App 构建与 JVM 测试命令的适用说明。
-
-Room schema 变更须提交 `app/schemas/` 并添加显式 `Migration`；仅既有 v1→v2 与降级恢复保留破坏性重建策略，不扩大例外。
-
-应由多个相互独立的 Agent 或 子Agent 从不同角度重新检查代码，例如：
+必须强制性多个相互独立的 Agent 或 子Agent 从不同角度重新检查代码，例如：
 代码逻辑审核：检查实现逻辑、状态流转、边界条件以及潜在逻辑错误。
 架构审核：检查模块职责、依赖关系、代码耦合以及是否破坏现有架构。
 代码健壮性审核：检查异常处理、空值、资源释放、线程安全、生命周期以及极端输入。
 回归风险审核：分析修改是否可能影响现有功能、其他引擎或既有调用链。
 代码规范审核：检查代码风格、命名、重复代码、无效代码以及是否符合 AGENTS.md 和项目现有规范。
+
+JVM 回归使用 JUnit 4，位于 app/engine 各自的 `src/test/`；覆盖扫描、设置解析、存档、输入、宿主生命周期与图形策略。测试聚焦行为和边界，不镜像实现，也不为纯文档修改新增业务测试。真机用例与 release R8 probe 的构建、安装和能力边界分别见 [androidTest](app/src/androidTest/README.md) 与 [releaseProbe](app/src/releaseProbe/README.md)；普通 Android CI 未自动运行设备验收。
+
+设备测试 JNI probe 的构建脚本当前只选择 Linux/macOS NDK host 路径，Windows 不能直接照搬这些测试 APK 构建命令；这不影响普通 App 构建与 JVM 测试命令的适用说明。
+
+Room schema 变更须提交 `app/schemas/` 并添加显式 `Migration`；仅既有 v1→v2 与降级恢复保留破坏性重建策略，不扩大例外。
 
 ***
 

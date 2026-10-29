@@ -20,14 +20,14 @@
 | 导航样式 | 经典 MD、液态玻璃经典、液态玻璃透镜、悬浮按钮；未手选时默认外观取透镜，API < 33 回退经典液态玻璃；玻璃风格默认经典 MD |
 | 平板 | sw600dp 或宽 ≥ 840dp 且侧栏开关启用时使用侧栏；默认启用。悬浮按钮保留圆球导航，其余样式按主题侧栏规则处理 |
 
-默认风格的顶栏渐进模糊仅在 Android 12+ 的适用宿主页启用；网页首页与拆封包页不接入。全屏按键编辑器固定横屏、不设顶栏，其它页面使用公共顶栏、输入框、标签栏与弹窗组件。
+页面统一为顶栏在上、正文在下的上下分离布局（Material 页为 `AppTopBar` + `Column`，Miuix 页为透明 `MiuixScaffold` + `AppTopBar`），不启用顶栏模糊叠层。全屏按键编辑器固定横屏、不设顶栏，其它页面使用公共顶栏、输入框、标签栏与弹窗组件。
 
 ## 3. 游戏库
 
 来源：[EngineScanner](app/src/main/java/com/tyranor/next/core/game/scan/EngineScanner.kt)、[GameLibraryDao](app/src/main/java/com/tyranor/next/core/game/storage/GameLibraryDao.kt)、`ui/game/`。
 
 - 用户添加扫描根后递归识别游戏；默认扫描深度 3，可设置 1–5。支持差量扫描与重新扫描，手动添加的 PC/安卓记录在重扫后保留。
-- 游戏身份、引擎、目录 URI、启动目标与封面元数据落入 Room；记录既可来自目录，也可来自单个 ROM。无法识别为受支持引擎的目录不作为普通扫描候选入库。
+- 游戏身份、引擎、目录或入口文件 URI、启动目标与封面元数据落入 Room；记录既可来自目录，也可来自单个文件（ROM / SWF）。无法识别为受支持引擎的目录不作为普通扫描候选入库。
 - 游戏页提供搜索、排序、卡片样式、改名、封面操作、启动文件选择及适用的单游戏设置/存档操作；可清理已不存在的游戏记录。
 - 快捷启动最多 **3** 项；最近游戏最多读取 **20** 项。桌面快捷方式经独立入口回到统一启动链。
 - PC 游戏由用户选择目录和启动 exe 手动添加；安卓游戏从已安装可启动应用选择，以 `androidapp://<包名>` 标识，卸载后启动返回缺失结果。
@@ -50,6 +50,7 @@
 | RPG Maker MV / MZ | `rpg_core.js` / `rmmz_core.js`、`www/` 等 | 内置 Web 运行环境，支持适用的 Asar 包 |
 | RPG Maker RGSS | XP/VX/VX Ace 资源或 mkxp-z 模块选择 | 外置 RPGM APK 模块 |
 | Ren'Py | `.rpa`、`.rpy/.rpyc` 等组合 | 外置 Ren'Py APK；自动或指定 8.5 / 7.7.1 |
+| Ruffle / Flash | 顶层 `.swf`；根 `index.html/index.htm` + 唯一 SWF 的叶子目录 | 外置 Ruffle APK；一 SWF 一条记录 |
 | YU-RIS / CatSystem2 | YPF/DLL/配置或 INT/CST/HG3 等组合 | 外置 Winlator |
 | PC / 安卓游戏 | 手动添加目录+exe / 应用包名 | 外置 Winlator / 直接启动应用 |
 | PSP / Nintendo Switch | `.pbp/.cso/.iso/.chd` / `.nsp/.xci/.nca/.nro` | 外置 PPSSPP（标准/黄金）/ Eden，一 ROM 一条记录 |
@@ -58,10 +59,22 @@
 
 外置模拟器跳转使用显式组件启动目标应用：YU-RIS / CatSystem2 / PC 通过 Winlator 的 `dir_path` 与 `exe_path` 传递游戏目录和主程序；PSP / Nintendo Switch 则传递 ROM URI 及读取授权。具体协议见 [外置模拟器接入说明](docs/外置主机模拟器跳转接入方案.md)。
 
+Ruffle（SWF / Flash）由外置 Ruffle APK 模块承载，当前扫描与启动边界如下：
+
+- 扫描目录的直接子项中，每个顶层 `.swf` 默认是一条记录：uri 为文件 URI，`launchTarget` 为文件名，别名 `internal.flash`。
+- 包装目录：叶子目录、根含 `index.html/index.htm`、恰有一个顶层 `.swf`，且没有子目录、KRKR/ONS/XSYS4/主机 ROM 或 Tyrano/RPGM/VN/Node 特征时，整个目录作为一条记录（uri 为目录 URI，`launchTarget` 为 SWF 文件名）。
+- 无根 index 的单 SWF 仍按文件记录；同目录多个 SWF 逐条入库；含子目录的目录不自动识别为包装游戏。单 SWF 标题取父目录名（缺失回退文件主名），多个 SWF 取文件主名。
+- 启动：文件记录先解析入口所在目录，模块收到 `game`（title/id/folder/execFile，`type=flash`）与 `settings`（`app.screenTimeout.int` 及 `ruffle.backend/quality/scaleMode/letterbox/loadBehavior.string`）。未安装返回类型化失败；安装入口打开项目托管的 RufflePlugin-1.02.00.apk 直链。
+- 设置：全局与单游戏覆盖，默认 `opengl / high / showall / on / streaming / 0`（0 = 不自动关闭）；允许值分别为 auto/opengl/vulkan、low/medium/high/best、exactfit/noborder/noscale/showall、on/off、streaming/delayed/blocking、0/5/10/15/30/45/60 分钟。
+- `configuration.json`：游戏目录位于主外部存储根的子目录时，插件优先读取 `<游戏目录>/configuration.json`；其它情况（含存储根、可移动存储）读取 `/storage/emulated/0/JoiPlay/games/<id>/configuration.json`。文件存在时覆盖 intent settings；主 App 仅在文件已存在且为合法 JSON 对象时同步受管键，不创建/删除，跳过共享多 SWF 目录与存储根，原子写并限制 1 MiB。
+- 无统一存档管理，插件自管运行时/存档；不提供虚拟按键重映射；插件固定横屏。设备/插件运行验证尚未执行。
+
 ## 5. 设置、输入与图形
 
 - 应用设置、引擎设置、单游戏设置按作用域分离；单游戏未覆盖的字段跟随引擎全局设置，经 `EngineSettingsResolver` 统一解析。
 - Winlator 全局与单游戏图形加速支持跟随容器配置、DXVK、WineD3D（跟随容器渲染器）、WineD3D + OpenGL / GDI。显式 GL/GDI 预设通过既有 `dxwrapperConfig` 整项替换 WineD3D 配置，其它子参数用接收端默认值；可与 Box64 同时下发，开启写入容器配置时持久化。旧 WineD3D 不迁移，空值与继承语义不变；需支持该协议的 winlator-cn。
+- 单游戏 Winlator 设置提供三种运行模式：跟随全局（默认）、跟随容器、自定义。跟随容器以全局设置为基线，仅清空六个图形/运行参数，容器 ID/名称先继承全局、再由逐游戏值覆盖。**模式推断**按 1.61 的 `null / "" / 值` 语义（空串 = 显式不下发，不等同于未覆盖）；切换运行模式不会清除另一种模式已填的参数（以 `winlator_mode` 为准，切回可恢复）；「跟随容器」是本版本新增的显式语义，六空记录升级后 `save` 固定为 `false`（1.61 会继承记录或全局的 `save`，差异只在是否把配置写回容器），保存过的模式以保存值为准。
+- 容器匹配遵循「ID 优先于名称」：两者都覆盖时以 ID 为准；**只覆盖名称时会清除继承的全局 ID**（置 0 不下发），否则继承的 ID 会让名称覆盖失效。该行为是 1.61 未定义、本版本明确的新规则。
 - 不同引擎提供适用的内核/版本、编码、字体、渲染、存档位置或兼容参数；PC 游戏支持 Winlator 全局与单游戏参数覆盖，安卓游戏不提供引擎参数配置。
 - Web 宿主支持统一虚拟按键与手柄映射、按键方案导入/导出与全屏编辑；方案按归一化视口保存。默认虚拟按键 MV/MZ 开、Tyrano/VN/WebOther 关；Web 手柄映射默认开。
 - 共用画质滤镜链最多 **8** 节点，支持添加、移除、排序与参数配置；单游戏切换跟随全局后保留自定义链。
@@ -93,7 +106,7 @@
 - **镜像写入 copy-up**：非只读打开（含截断/追加/仅写）对已索引占位先复制完整源内容到本地（上限 64 MiB、临时文件 + 原子发布 + fsync，失败回滚占位并不留所有权标记），再提供可写本地描述符；保护范围限于尚未交付可写描述符的 copy-up 准备/发布事务：失败不发布半成品或新所有权。可写描述符已交付后，合法截断及随后写入按本地语义执行，崩溃或空间不足可能留下空/部分覆写与标记，不自动用源内容覆盖这些本地结果。追加日志类文件同样先复制（其源通常为引擎自建文件，代价小）。
 - **SAF 镜像备份取舍**：`<数据根>/games/` 同时包含可重建占位树、真实存档/本地覆写文件及对应控制标记，控制标记随同一镜像根参加备份与清理。恢复仅含 exclude 的默认备份范围，保留 root、files、sharedpref、database、external 等域的默认候选；不添加只覆盖 games 的单独 include，以免把应用设置、游戏库 prefs 镜像及其他引擎存档排除。鉴权与 Room 数据库排除项不变，索引仍位于 noBackupFilesDir。系统备份仍受容量、设备与传输策略限制，不保证保存或恢复这些存档（`bmgr` 实测待办），用户仍应主动导出 ZIP。
 - ZIP 导入检查路径安全，最多 **20,000 个条目（含目录）**、展开内容 **1 GiB**；MV/MZ 可剥除最多 **3 层**单目录包装。适用的会话/操作门禁阻止运行中冲突。
-- **YU-RIS 为外置跳转中的存档例外**：统一管理其游戏根 `save/`。PSP、Switch、CatSystem2、PC、安卓游戏、Ren'Py、RPG Maker RGSS、VN 与 WebOther 当前不提供该统一文件存档接口；外置启动不意味着所有引擎都不能管理存档。
+- **YU-RIS 为外置跳转中的存档例外**：统一管理其游戏根 `save/`。PSP、Switch、CatSystem2、PC、安卓游戏、Ren'Py、RPG Maker RGSS、Ruffle、VN 与 WebOther 当前不提供该统一文件存档接口；外置启动不意味着所有引擎都不能管理存档。
 - MV/MZ 标准格式与 Tyranor 格式仅作文件名映射，不重新编码内容；MV 支持哈希名及历史键名，MZ 使用 `fileN.bin` 等 ASCII 键名。
 - 启动时发现适用标准存档可询问转化，已有目标不覆盖，原件留在 `original/`。
 - MV/MZ 存档互通默认关闭，支持全局/单游戏设置；开启后启动前与回前台进行双向同步，并等待引擎会话结束。按槽位比较时间与哈希；删除副本隔离到 `deleted/`，同步清单损坏时中止文件修改。
@@ -125,8 +138,11 @@ Ethornell 已接入扫描、设置与内置宿主，但真实游戏存读档及�
 | --- | --- |
 | 扫描/存储 | SAF/真实路径、深度边界、差量重扫、手动记录保留、旧 prefs 导入及空库修复 |
 | 游戏库 UI | 搜索防抖与旧结果拒绝、快捷 3 项限制、最近记录、跨 Tab 封面同步 |
+| 顶栏/导航 | 顶栏与正文上下分离、不叠加顶栏渐进模糊；主四 Tab 反复切换后内容与选中项一致；列表滚动不穿顶栏；游戏搜索框、分页/分类条位置正确；手机/平板、深浅色；复古/高级玻璃风格 |
 | 启动/设置 | 缺权限/文件/模块、生效覆盖、取消后不启动、成功发起与首帧区分 |
+| Winlator 运行模式 | 跟随全局/跟随容器/自定义三分支、`null / "" / 值` 迁移推断、只覆盖容器名时的 ID 清除、模式键分区往返 |
 | Winlator 图形加速 | GL/GDI 第一配置槽映射、旧 WineD3D 保留容器渲染器、Box64 合并、全局/单游戏继承与空值、备份往返、save 开关及 GDI 游戏实机验证 |
+| Ruffle / SWF | 一 SWF 一条与包装目录边界（根 index、唯一 SWF、无子目录、既有引擎信号优先）、文件 URI→父目录、`game`/`settings` 契约与类型包装、模块未安装/入口缺失、全局与单游戏覆盖、`configuration.json` 只同步不创建、无存档入口与横屏限制；设备/插件验证待执行 |
 | 宿主/JNI | 暂停恢复、Surface 重挂/旧世代、正常退出 ACK 后重入、owner 线程与资源释放 |
 | 存档 | ZIP 路径/数量/体积限制、目标冲突、MV/MZ 名称与目录、互通删除/清单损坏、Ethornell gate 关闭 |
 | 图形/外观 | 支持/不支持内核、无效/空链回退、关闭滤镜原路径、GPU 数据缺失、手机/平板和深浅色 |
