@@ -420,6 +420,34 @@ class KrMirrorOpenRouterTest {
         assertEquals("preserve existing local content", existing.readText())
     }
 
+    @Test
+    fun `unindexed creating open with missing parent directory defers as not routed without read failure`() {
+        val root = temporary.newFolder()
+        val state = KrMirrorLocalFiles(root)
+        val session = KrMirrorReadSession<String>(emptyMap(), state)
+        val missingDirFile = File(root, "missing-dir/new-run.log")
+        val key = missingDirFile.absolutePath.lowercase(Locale.ROOT)
+        var localDescriptorCalled = false
+        val router = KrMirrorOpenRouter(
+            session = session,
+            sourceSize = { -1L },
+            sourceStream = { throw AssertionError("No source stream expected") },
+            sourceDescriptor = { KrMirrorOpenRouter.FAILED },
+            localDescriptor = { _, _ ->
+                localDescriptorCalled = true
+                17
+            },
+            closeDescriptor = { throw AssertionError("No descriptor opened") },
+            diagnostic = { _, _ -> },
+        )
+        val result = router.open(key, missingDirFile, KrMirrorOpenRouter.Intent.WRITE, allowCreate = true)
+        assertEquals(KrMirrorOpenRouter.NOT_ROUTED, result)
+        assertFalse(localDescriptorCalled)
+        assertFalse(session.readFailed(key))
+        assertFalse(missingDirFile.exists())
+        assertFalse(state.isOverridden(missingDirFile))
+    }
+
     private fun assertPendingOpenAfterUnlink(intent: KrMirrorOpenRouter.Intent, allowCreate: Boolean) {
         val fixture = fixture()
         val entered = CountDownLatch(1)

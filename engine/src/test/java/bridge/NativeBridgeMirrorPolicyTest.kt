@@ -187,11 +187,45 @@ class NativeBridgeMirrorPolicyTest {
             NativeBridge.openUnindexedLocal(session, key, allowCreate = false, directOpen = updateOpen))
         assertEquals(0, directOpens)
         assertFalse(missing.exists())
-        // Ordinary sessions retain their existing direct-open behavior.
-        val ordinary = KrMirrorReadSession<String>(emptyMap(), KrMirrorLocalFiles(root))
-        assertEquals(17, NativeBridge.openUnindexedLocal(ordinary, key, false, updateOpen))
+        // Ordinary sessions also defer non-creating updates for missing unindexed resources.
+        val ordinaryState = KrMirrorLocalFiles(root)
+        val ordinary = KrMirrorReadSession<String>(emptyMap(), ordinaryState)
+        assertEquals(KrMirrorOpenRouter.NOT_ROUTED,
+            NativeBridge.openUnindexedLocal(ordinary, key, allowCreate = false, directOpen = updateOpen))
+        assertEquals(0, directOpens)
+        assertFalse(missing.exists())
+        assertFalse(ordinaryState.isOverridden(missing))
+
+        // Subsequent creating open on optional.cfg succeeds and establishes ownership.
+        assertEquals(17,
+            NativeBridge.openUnindexedLocal(ordinary, key, allowCreate = true, directOpen = updateOpen))
         assertEquals(1, directOpens)
         assertTrue(missing.exists())
+        assertTrue(ordinaryState.isOverridden(missing))
+        assertTrue(ordinary.shouldRoute(key))
+
+        // A path outside the mirror root or savedata with allowCreate = false still invokes directOpen.
+        val saveFile = File(root, "savedata/slot.ksd")
+        val saveKey = saveFile.absolutePath.lowercase(java.util.Locale.ROOT)
+        var saveOpens = 0
+        val saveOpen = {
+            saveOpens++
+            23
+        }
+        assertEquals(23,
+            NativeBridge.openUnindexedLocal(ordinary, saveKey, allowCreate = false, directOpen = saveOpen))
+        assertEquals(1, saveOpens)
+
+        val outsideFile = File(temporary.newFolder("outside"), "other.txt")
+        val outsideKey = outsideFile.absolutePath.lowercase(java.util.Locale.ROOT)
+        var outsideOpens = 0
+        val outsideOpen = {
+            outsideOpens++
+            29
+        }
+        assertEquals(29,
+            NativeBridge.openUnindexedLocal(ordinary, outsideKey, allowCreate = false, directOpen = outsideOpen))
+        assertEquals(1, outsideOpens)
     }
 
     @Test

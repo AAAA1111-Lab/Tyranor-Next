@@ -20,18 +20,22 @@ internal class KrMirrorOpenRouter<T>(
     enum class Intent { READ_ONLY, UPDATE, WRITE, TRUNCATE }
 
     fun open(key: String, file: File, intent: Intent, allowCreate: Boolean = false): Int {
-        val unindexedCreate = !session.shouldRoute(key) && allowCreate &&
-            intent != Intent.READ_ONLY && session.localFiles?.resourceFileForPath(key) != null
-        if (!session.shouldRoute(key) && !unindexedCreate) return NOT_ROUTED
+        val unindexedWrite = !session.shouldRoute(key) &&
+            intent != Intent.READ_ONLY &&
+            session.localFiles?.resourceFileForPath(key) != null &&
+            (allowCreate || (!session.degraded && file.isFile && file.length() > 0L))
+        if (!session.shouldRoute(key) && !unindexedWrite) return NOT_ROUTED
         val state = session.localFiles ?: return FAILED
         return try {
-            if (unindexedCreate) {
+            if (unindexedWrite) {
                 // Do not adopt a placeholder that appeared while waiting for the lock.
                 // Publish ownership before exposing even an intentionally empty new file.
                 state.withFileLock(file) {
                     // Another ordinary O_CREAT may have published a local file while
                     // this request waited. Recheck ownership, not the pre-lock route snapshot.
-                    if (!file.exists() || (file.isFile && (session.isLocal(key, file) || (!session.degraded && file.length() > 0L)))) {
+                    if (!file.exists() && file.parentFile?.isDirectory != true) {
+                        NOT_ROUTED
+                    } else if ((allowCreate && !file.exists()) || (file.isFile && (session.isLocal(key, file) || (!session.degraded && file.length() > 0L)))) {
                         openLocal(key, file, intent, state)
                     } else {
                         FAILED
@@ -66,7 +70,11 @@ internal class KrMirrorOpenRouter<T>(
                     }
                     if (source == null) {
                         return@withFileLock if (allowCreate && !file.exists()) {
-                            openLocal(key, file, intent, state)
+                            if (file.parentFile?.isDirectory != true) {
+                                NOT_ROUTED
+                            } else {
+                                openLocal(key, file, intent, state)
+                            }
                         } else {
                             FAILED
                         }
@@ -89,7 +97,11 @@ internal class KrMirrorOpenRouter<T>(
                         // O_CREAT may intentionally make a new empty local file. A
                         // plain r+/O_RDWR or write-only open must fail after unlink.
                         return@withFileLock if (allowCreate && !file.exists()) {
-                            openLocal(key, file, intent, state)
+                            if (file.parentFile?.isDirectory != true) {
+                                NOT_ROUTED
+                            } else {
+                                openLocal(key, file, intent, state)
+                            }
                         } else {
                             FAILED
                         }
