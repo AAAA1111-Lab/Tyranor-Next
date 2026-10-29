@@ -618,10 +618,20 @@ class GameSaveManager(private val context: Context) {
             val siblings = transactionSiblings(directory)
             // A failed import may leave the only game assets in any recovery slot.
             // A collision/unreadable tree must fail before destructive save cleanup.
+            // Failures here are surfaced as RESOURCE_RESTORE_CONFLICT so the UI can
+            // tell "deletion refused to protect game resources" apart from an
+            // unavailable save directory (audit of 28eb330f, AF2).
             if (restoreExcluded != null) {
                 for (sibling in siblings) {
-                    if (!sibling.isDirectory) throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
-                    restoreExcluded(sibling, directory)
+                    if (!sibling.isDirectory) throw GameSaveException(SaveErrorCode.RESOURCE_RESTORE_CONFLICT)
+                    try {
+                        restoreExcluded(sibling, directory)
+                    } catch (error: GameSaveException) {
+                        if (error.code == SaveErrorCode.RESOURCE_RESTORE_CONFLICT) throw error
+                        throw GameSaveException(SaveErrorCode.RESOURCE_RESTORE_CONFLICT, cause = error)
+                    } catch (error: IOException) {
+                        throw GameSaveException(SaveErrorCode.RESOURCE_RESTORE_CONFLICT, cause = error)
+                    }
                 }
             }
             val deleted = if (directory.isDirectory) clearSaveDirectory(directory, exclude) else 0
@@ -665,7 +675,7 @@ class GameSaveManager(private val context: Context) {
                     children.forEach { child ->
                         if (exclude(child.name)) {
                             val target = File(currentDest, child.name)
-                            if (rejectExisting && target.exists()) throw GameSaveException(SaveErrorCode.SAVE_DIR_UNAVAILABLE)
+                            if (rejectExisting && target.exists()) throw GameSaveException(SaveErrorCode.RESOURCE_RESTORE_CONFLICT)
                             target.parentFile?.let { if (!it.exists() && !it.mkdirs()) throw GameSaveException(SaveErrorCode.CREATE_SAVE_DIR_NAMED, detail = child.name) }
                             if (!child.renameTo(target)) throw GameSaveException(SaveErrorCode.CREATE_SAVE_DIR_NAMED, detail = child.name)
                             moved += child to target
