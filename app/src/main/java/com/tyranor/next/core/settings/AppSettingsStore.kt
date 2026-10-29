@@ -543,7 +543,7 @@ object AppSettingsStore {
     }
 
     /** 排序模式归一化：未知值一律回落为字母序，避免旧版本残留值破坏排序。 */
-    private fun normalizeGameSort(sort: String?): String = when (val value = sort.orEmpty()) {
+    fun normalizeGameSort(sort: String?): String = when (val value = sort.orEmpty()) {
         GAME_SORT_BRACKET_TAG, GAME_SORT_ENGINE, GAME_SORT_RECENT -> value
         else -> GAME_SORT_ALPHA
     }
@@ -569,7 +569,7 @@ object AppSettingsStore {
     }
 
     /** 游玩状态归一化：未知值回落为「全部」。 */
-    private fun normalizeGameFilterPlayed(played: String?): String = when (val value = played.orEmpty()) {
+    fun normalizeGameFilterPlayed(played: String?): String = when (val value = played.orEmpty()) {
         GAME_FILTER_PLAYED_ONLY, GAME_FILTER_PLAYED_NONE -> value
         else -> GAME_FILTER_PLAYED_ALL
     }
