@@ -55,6 +55,9 @@ def main():
         name = Path(definition["asset"]).name
         original = (ROOT/"engine/patches/vnsr/sources"/name).read_text()
         adapted = (ROOT/"engine/src/main/assets"/definition["asset"]).read_text()
+        # The generator retains upstream bytes, so the packaged asset must be byte-identical;
+        # the flip equivalence below is therefore evaluated against the pinned source itself.
+        assert adapted == original
         assert definition["nativeScale"] == definition["maxOutputScale"] == 2
         assert definition["haloPerPass"] == 1
         assert adapted.count("//!DESC ") == count
@@ -62,7 +65,6 @@ def main():
         assert offsets and max(abs(float(v)) for pair in offsets for v in pair) == 1
         expected = evaluate(original,image)
         assert definition["topLeftCoordinates"]
-        assert evaluate(adapted,image) == expected
         actual = evaluate(adapted,image[::-1],flip_coordinates=True)[::-1]
         error = max(abs(a-b) for ra,rb in zip(expected,actual) for pa,pb in zip(ra,rb) for a,b in zip(pa,pb))
         assert error < 1e-10, (name,error)

@@ -195,6 +195,11 @@ public final class Anime4kPostProcessor {
 
     void setInputTopLeft(boolean value) { mInputTopLeft = value; }
 
+    /** u_FLIP_Y flips shader-logical sampling only when the declared row order and the host's physical rows disagree. */
+    static int flipYUniform(boolean declaredTopLeft, boolean inputTopLeft) {
+        return declaredTopLeft != inputTopLeft ? 1 : 0;
+    }
+
     private int mNativeScale = 1, mMaxOutputScale = 1, mHaloPerPass;
     private List<MpvHookShader.Pass> mParsedPasses;
     private int mPresentProgram, mPresentSamplerLoc;
@@ -1003,7 +1008,7 @@ public final class Anime4kPostProcessor {
             GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, target.fbo[0]);
             GLES30.glViewport(0, 0, target.width, target.height);
             GLES30.glUseProgram(pp.program);
-            if (pp.flipYLoc >= 0) GLES30.glUniform1i(pp.flipYLoc, mTopLeftCoordinates != mInputTopLeft ? 1 : 0);
+            if (pp.flipYLoc >= 0) GLES30.glUniform1i(pp.flipYLoc, flipYUniform(mTopLeftCoordinates, mInputTopLeft));
             if (pp.outputSizeLoc >= 0) GLES30.glUniform2f(pp.outputSizeLoc, target.width, target.height);
             if (pp.sharpnessLoc >= 0) GLES30.glUniform1f(pp.sharpnessLoc, (float) mSharpness);
             if (pp.outputSizedLoc >= 0) GLES30.glUniform1i(pp.outputSizedLoc, mOutputSizedShader ? 1 : 0);

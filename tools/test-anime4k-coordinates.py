@@ -81,15 +81,12 @@ def main():
         passes=parse(path.read_text(encoding='utf-8'))
         record={'shader':path.name,'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'passes':len(passes),'patterns':{}}
         for pattern,image in patterns.items():
-            reference=run(passes,image) # Original export applied to top-left image rows.
+            reference=run(passes,image) # Un-adapted export on top-left image rows: the coordinate oracle.
             unchanged=run(passes,image[::-1])[::-1] # Current shader on bottom-left texture.
-            adapted=run(passes,image[::-1],-1)[::-1] # Proposed macro offset Y correction.
-            same_top=run(passes,image) # Current shader if upstream supplied top-left texture.
+            adapted=run(passes,image[::-1],-1)[::-1] # Declared top-left shader via the host row-order adapter.
             result={'bottom_left_current':metrics(reference,unchanged),
-                    'bottom_left_y_corrected':metrics(reference,adapted),
-                    'top_left_current':metrics(reference,same_top)}
+                    'bottom_left_y_corrected':metrics(reference,adapted)}
             assert result['bottom_left_y_corrected']['max_abs_rgb'] < 1e-12
-            assert result['top_left_current']['max_abs_rgb'] == 0
             if pattern=='constant_control':assert result['bottom_left_current']['max_abs_rgb'] < 1e-12
             else:assert result['bottom_left_current']['max_abs_rgb'] > 1e-6
             record['patterns'][pattern]=result
