@@ -15,7 +15,7 @@ VN-SR 分类提供 C08 / C12 / C16 三种通道规模，均为原生 **2X**。
 
 普通构建按清单中仓库根相对的 `sources[].files[].localPath` 校验已保留来源文件的SHA，缺失、修改或越出engine目录会失败；
 VN-SR 声明 `verification: retained`，来源文件和许可证必须提供localPath并通过SHA校验；纯外部来源记录仍只作描述。
-`license.path` 指上游路径，`license.localPath` 指仓库保留文本；生成器固定MIT标识、`license.path`、来源 `repository`/`revision`/`version`、`assetDirectory`、来源数量及清单哈希，任一漂移都会使 `--check` 失败。
+`license.path` 指上游路径，`license.localPath` 指仓库保留文本；生成器固定MIT标识、`license.path`、来源 `repository`/`revision`/`version`、`assetDirectory`、来源数量及清单内记录哈希，任一漂移都会使 `--check` 失败。两者的校验边界明确划分：`tools/generate-vnsr-filters.py --check` 作为专有生成器严格固定唯一的已保留来源条目、`license.path` 与所生成记录哈希；而 Gradle 的 `VerifyGraphicsResources` 任务负责通用的资源贡献清单结构合法性校验，对各滤镜贡献中可能追加的纯描述性外部来源保持兼容。
 
 ## 宿主适配
 

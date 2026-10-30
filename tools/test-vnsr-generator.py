@@ -18,25 +18,47 @@ def main():
         (target/"tools").mkdir()
         shutil.copyfile(root/"tools/generate-vnsr-filters.py",target/"tools/generate-vnsr-filters.py")
         manifest_path = target/"engine/patches/vnsr-filters.json"
-        original = (root/"engine/patches/vnsr-filters.json").read_text()
-        names = [item["localPath"].split("/")[-1] for item in json.loads(original)["sources"][0]["files"]]
-        for kind in ("valid", "source path", "license id", "license hash", "generated hash", "retained gate",
-                     "repository", "revision", "version", "asset directory", "license path", "extra source",
-                     "asset bytes", "source bytes", "license bytes"):
+        original = (root/"engine/patches/vnsr-filters.json").read_text(encoding="utf-8")
+        parsed = json.loads(original)
+        names = [Path(item["localPath"]).name for item in parsed["sources"][0]["files"]]
+        cases = [
+            "valid", "license id", "license hash", "retained gate",
+            "repository", "revision", "version", "asset directory", "license path", "extra source",
+            "license bytes"
+        ]
+        for idx, entry in enumerate(parsed["generated"]):
+            cases.append(f"generated hash:{idx}:{entry['file']}")
+        for idx, entry in enumerate(parsed["sources"][0]["files"]):
+            cases.append(f"source path:{idx}:{entry['path']}")
+            cases.append(f"source hash:{idx}:{entry['path']}")
+        for name in names:
+            cases.append(f"asset bytes:{name}")
+        for name in names:
+            cases.append(f"source bytes:{name}")
+
+        for kind in cases:
             data = json.loads(original)
             source = data["sources"][0]
-            if kind == "source path": del source["files"][0]["localPath"]
-            if kind == "license id": source["license"]["spdx"] = "GPL-3.0-only"
-            if kind == "license hash": source["license"]["sha256"] = "0"*64
-            if kind == "generated hash": data["generated"][1]["sha256"] = "0"*64
-            if kind == "retained gate": del source["verification"]
-            if kind == "repository": source["repository"] = "https://github.com/AAAA1111-Lab/vnsr-mirror"
-            if kind == "revision": source["revision"] = "0"*40
-            if kind == "version": source["version"] = "0.2.0"
-            if kind == "asset directory": data["assetDirectory"] = "vnsr-rewritten"
-            if kind == "license path": source["license"]["path"] = "LICENSE.txt"
-            if kind == "extra source": data["sources"].append({"description": "descriptive only", "verification": "external-only"})
-            manifest_path.write_text(json.dumps(data),encoding="utf-8")
+            if kind.startswith("source path:"):
+                idx = int(kind.split(":")[1])
+                del source["files"][idx]["localPath"]
+            elif kind == "license id": source["license"]["spdx"] = "GPL-3.0-only"
+            elif kind == "license hash": source["license"]["sha256"] = "0"*64
+            elif kind == "retained gate": del source["verification"]
+            elif kind == "repository": source["repository"] = "https://github.com/AAAA1111-Lab/vnsr-mirror"
+            elif kind == "revision": source["revision"] = "0"*40
+            elif kind == "version": source["version"] = "0.2.0"
+            elif kind == "asset directory": data["assetDirectory"] = "vnsr-rewritten"
+            elif kind == "license path": source["license"]["path"] = "LICENSE.txt"
+            elif kind == "extra source": data["sources"].append({"description": "descriptive only", "verification": "external-only"})
+            elif kind.startswith("generated hash:"):
+                idx = int(kind.split(":")[1])
+                data["generated"][idx]["sha256"] = "0"*64
+            elif kind.startswith("source hash:"):
+                idx = int(kind.split(":")[1])
+                source["files"][idx]["sha256"] = "0"*64
+            manifest_path.write_text(json.dumps(data), encoding="utf-8")
+
             # Restore pinned bytes so each kind fails only for its own tampered surface.
             assets_dir = target/"engine/src/main/assets/vnsr"
             sources_dir = target/"engine/patches/vnsr/sources"
@@ -44,9 +66,16 @@ def main():
             for name in names:
                 shutil.copyfile(root/"engine/patches/vnsr/sources"/name, sources_dir/name)
                 shutil.copyfile(root/"engine/src/main/assets/vnsr"/name, assets_dir/name)
-            if kind == "asset bytes": (assets_dir/names[0]).write_bytes((assets_dir/names[0]).read_bytes()+b" ")
-            if kind == "source bytes": (sources_dir/names[0]).write_bytes((sources_dir/names[0]).read_bytes()+b" ")
-            if kind == "license bytes": (assets_dir/"LICENSE-MIT").write_bytes((assets_dir/"LICENSE-MIT").read_bytes()+b" ")
+
+            if kind.startswith("asset bytes:"):
+                tname = kind.split(":", 1)[1]
+                (assets_dir/tname).write_bytes((assets_dir/tname).read_bytes()+b" ")
+            elif kind.startswith("source bytes:"):
+                tname = kind.split(":", 1)[1]
+                (sources_dir/tname).write_bytes((sources_dir/tname).read_bytes()+b" ")
+            elif kind == "license bytes":
+                (assets_dir/"LICENSE-MIT").write_bytes((assets_dir/"LICENSE-MIT").read_bytes()+b" ")
+
             result = subprocess.run([sys.executable,str(target/"tools/generate-vnsr-filters.py"),"--check"],capture_output=True,text=True)
             assert (result.returncode == 0) == (kind == "valid"), (kind,result.stdout,result.stderr)
             print("PASS: "+kind)

@@ -81,7 +81,7 @@ _Avoid_: 滤镜组（指单个算法分类时）、分类节点
 _Avoid_: 注册枚举、模型规模（指整个贡献时）
 
 **纹理行序**:
-着色器资产声明的逻辑坐标行方向（顶左或底左）；共享执行器按描述符的 `topLeftCoordinates` 与宿主物理行序的差异适配采样与相位，完整契约见 `docs/graphics-filter-coordinates.md`。
+滤镜描述符声明的逻辑坐标行方向（顶左或底左）；共享执行器按描述符的 `topLeftCoordinates` 与宿主物理行序的差异适配采样与相位，完整契约见 `docs/graphics-filter-coordinates.md`。
 _Avoid_: Y 翻转（指整个适配契约时）、图像上下颠倒
 
 **游戏原始帧**:

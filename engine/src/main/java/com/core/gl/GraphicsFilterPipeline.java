@@ -16,7 +16,7 @@ public final class GraphicsFilterPipeline {
     private boolean inputTopLeft;
     private int sourceWidth, sourceHeight, boundWidth, boundHeight;
     private int actualWidth, actualHeight, bypassReason;
-    private long targetBytes;
+    private long targetBytes, extraOwnedBytes;
     private ArtemisGraphicsStats stats;
     private boolean gpuProfiling, profilingStarted;
     private GraphicsGpuTimer timer;
@@ -152,7 +152,6 @@ public final class GraphicsFilterPipeline {
         if (stats == null) return;
         stats.nodeFrame(inputWidths, inputHeights, outputWidths, outputHeights, execute);
     }
-    private long extraOwnedBytes;
     private boolean prepareGeometry(int sw, int sh, int bw, int bh) {
         return prepareGeometry(sw, sh, bw, bh, 0);
     }
