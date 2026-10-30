@@ -206,10 +206,18 @@ public final class FilterCoordinateWrapperTest {
 
         int checkedGlslFiles = 0;
         int wrapperUsingGlslFiles = 0;
+        int legacyGlslFiles = 0;
         try (var stream = Files.walk(assets)) {
             for (Path path : (Iterable<Path>) stream.filter(p -> p.toString().endsWith(".glsl"))::iterator) {
                 String relPath = assets.relativize(path).toString().replace('\\', '/');
                 if (!GraphicsFilterDefinitions.isValidAssetPath(relPath)) {
+                    // Such a path can never be referenced by a filter descriptor (the descriptor
+                    // gate uses the same pattern), so it stays inert - but it must not slip past
+                    // this guard silently. Confine it to the pinned Krkr legacy family and force
+                    // a conscious sync if that set changes.
+                    assertTrue("Shape-noncompliant .glsl path outside the legacy shaders/ family: " + relPath,
+                            relPath.startsWith("shaders/"));
+                    legacyGlslFiles++;
                     continue;
                 }
                 checkedGlslFiles++;
@@ -230,6 +238,9 @@ public final class FilterCoordinateWrapperTest {
         }
         assertTrue("Expected to inspect .glsl files under assets", checkedGlslFiles > 0);
         assertEquals("Expected exactly 15 wrapper-using shaders (12 Anime4k + 3 VN-SR)", 15, wrapperUsingGlslFiles);
+        assertEquals("Legacy (non-descriptor) .glsl count drifted; such paths bypass the orphan and "
+                + "declaration asserts above, so any change must be re-verified consciously",
+                53, legacyGlslFiles);
     }
 
     @Test public void finalPassAlphaClampedToScreenWhileIntermediatePreservesAlpha() {
@@ -267,18 +278,26 @@ public final class FilterCoordinateWrapperTest {
         assertEquals((int) Math.round(0.25 * 255.0), featRgba8[3]);
     }
 
+    /**
+     * Multi-bind evaluation anchored to an absolute oracle stated in logical image space, plus
+     * explicit discrimination guards. hookCoord is an involution, so {@code BIND_tex(BIND_pos)}
+     * cancels any flip; the AUX term therefore samples through a non-zero, size-dependent
+     * texOff ({@code AUX_pt * vec2(1.0, 3.0)}) whose physical direction depends on u_FLIP_Y and
+     * whose magnitude depends on u_AUX_size. A wrongly wired flip or a per-bind size uniform
+     * bound to the wrong texture moves the output, and the guards at the end fail if that
+     * observability ever disappears. Both u_OUTPUT_SIZED branches run across every combination.
+     */
     @Test public void multiBindPassEvaluatesEquivalentlyAcrossCoordinateCombinations() {
         String passCode = "//!DESC feat\n//!BIND MAIN\n//!SAVE AUX\nvec4 hook() { return MAIN_tex(MAIN_pos); }\n"
                 + "//!DESC multi\n//!BIND MAIN\n//!BIND AUX\n//!SAVE MAIN\n"
                 + "vec4 hook() {\n"
                 + "    return MAIN_tex(MAIN_pos) + AUX_tex(AUX_pos) * (u_OUTPUT_SIZED ? (u_SHARPNESS * 0.1) : 0.05)"
-                + "           + AUX_texOff(vec2(0.0)) * (AUX_pt * AUX_size).x * 0.01"
+                + "           + AUX_texOff(AUX_pt * vec2(1.0, 3.0)) * 0.25"
                 + "           + vec4((OUTPUT_size / MAIN_size) * 0.001, 0.0, 0.0);\n"
                 + "}\n";
         List<MpvHookShader.Pass> passes = MpvHookShader.parse(passCode);
         MpvHookShader.Pass pass = passes.get(1);
-        String source = MpvHookShader.fragmentSource(pass);
-        Wrapper wrapper = Wrapper.parse(source, "MAIN", "AUX");
+        Wrapper wrapper = Wrapper.parse(MpvHookShader.fragmentSource(pass), "MAIN", "AUX");
 
         int mainW = 4, mainH = 4;
         int auxW = 2, auxH = 2;
@@ -287,7 +306,9 @@ public final class FilterCoordinateWrapperTest {
         double[] auxSize = {auxW, auxH};
         double[] outputSize = {outW, outH};
 
-        // Create asymmetric logical images
+        // Logical images: row 0 is the image top. The oracle samples these directly; the emitted
+        // path must land on the same logical texels through whatever physical orientation and
+        // u_FLIP_Y each combination produces.
         double[][][] imageMain = new double[mainH][mainW][4];
         for (int r = 0; r < mainH; r++) {
             for (int c = 0; c < mainW; c++) {
@@ -300,58 +321,135 @@ public final class FilterCoordinateWrapperTest {
                 imageAux[r][c] = new double[]{(r * 11.0 + c + 1) / 30.0, (r * 13.0 + c + 2) / 30.0, (r * 17.0 + c + 3) / 30.0, 0.8};
             }
         }
+        Texture2D logicalMain = logicalTexture(imageMain, mainW, mainH);
+        Texture2D logicalAux = logicalTexture(imageAux, auxW, auxH);
 
-        int[][][] referenceOutput = null;
+        // AUX_texOff(AUX_pt * vec2(1.0, 3.0)) resolves to hookCoord(vPos) + off / u_AUX_size with
+        // off = (1.0 / u_AUX_size) * (1, 3): half a texel across, 1.5 texels down in AUX space.
+        double offX = 1.0 / auxW / auxW;
+        double offY = 3.0 / auxH / auxH;
 
-        for (boolean declared : new boolean[]{true, false}) {
-            for (boolean inputTopLeft : new boolean[]{true, false}) {
-                int flip = Anime4kPostProcessor.flipYUniform(declared, inputTopLeft);
+        for (int sized : new int[]{1, 0}) {
+            double featureGain = sized == 1 ? 1.5 * 0.1 : 0.05;
+            for (boolean declared : new boolean[]{true, false}) {
+                for (boolean inputTopLeft : new boolean[]{true, false}) {
+                    int flip = Anime4kPostProcessor.flipYUniform(declared, inputTopLeft);
 
-                // Populate physical OpenGL textures
-                Texture2D texMain = new Texture2D(mainW, mainH, 4);
-                for (int p = 0; p < mainH; p++) {
-                    int logR = inputTopLeft ? p : (mainH - 1 - p);
-                    for (int c = 0; c < mainW; c++) System.arraycopy(imageMain[logR][c], 0, texMain.data[p][c], 0, 4);
-                }
-                Texture2D texAux = new Texture2D(auxW, auxH, 4);
-                for (int p = 0; p < auxH; p++) {
-                    int logR = inputTopLeft ? p : (auxH - 1 - p);
-                    for (int c = 0; c < auxW; c++) System.arraycopy(imageAux[logR][c], 0, texAux.data[p][c], 0, 4);
-                }
-                wrapper.setTexture("u_MAIN", texMain);
-                wrapper.setTexture("u_AUX", texAux);
+                    // Populate physical OpenGL textures according to inputTopLeft.
+                    wrapper.setTexture("u_MAIN", physicalTexture(imageMain, mainW, mainH, inputTopLeft));
+                    wrapper.setTexture("u_AUX", physicalTexture(imageAux, auxW, auxH, inputTopLeft));
 
-                int[][][] currentOutput = new int[outH][outW][4];
-                for (int visR = 0; visR < outH; visR++) {
-                    int physR = inputTopLeft ? visR : (outH - 1 - visR);
-                    double vPosY = (physR + 0.5) / outH;
-                    for (int c = 0; c < outW; c++) {
-                        double vPosX = (c + 0.5) / outW;
-                        Map<String, double[]> vars = new HashMap<>();
-                        vars.put("vPos", new double[]{vPosX, vPosY});
-                        vars.put("u_FLIP_Y", new double[]{flip});
-                        vars.put("u_MAIN_size", mainSize);
-                        vars.put("u_AUX_size", auxSize);
-                        vars.put("u_OUTPUT_size", outputSize);
-                        vars.put("u_OUTPUT_SIZED", new double[]{1.0});
-                        vars.put("u_SHARPNESS", new double[]{1.5});
-
-                        currentOutput[visR][c] = wrapper.evalMainRgba8(vars);
-                    }
-                }
-
-                if (referenceOutput == null) {
-                    referenceOutput = currentOutput;
-                } else {
-                    for (int r = 0; r < outH; r++) {
+                    for (int visR = 0; visR < outH; visR++) {
+                        int physR = inputTopLeft ? visR : (outH - 1 - visR);
+                        double vPosY = (physR + 0.5) / outH;
+                        double logY = (visR + 0.5) / outH;
                         for (int c = 0; c < outW; c++) {
-                            assertArrayEquals("Output mismatch between coordinate combinations at (" + r + "," + c + ") for declared="
-                                    + declared + " input=" + inputTopLeft, referenceOutput[r][c], currentOutput[r][c]);
+                            double vPosX = (c + 0.5) / outW;
+                            // Oracle in logical image space: the fragment sits at logical output
+                            // position (c, visR); texOff(+y) walks toward the image bottom exactly
+                            // when the pass is written in top-left coordinates.
+                            double[] expected = multiBindExpected(logicalMain, logicalAux, vPosX, logY,
+                                    declared, featureGain, offX, offY, mainSize, outputSize);
+                            Map<String, double[]> vars = multiBindVars(new double[]{vPosX, vPosY}, flip,
+                                    mainSize, auxSize, outputSize, sized);
+                            assertVec(wrapper.evalMain(vars), expected);
+                            // Exact bytes: both arithmetic paths land on the same doubles today,
+                            // including one deliberate tie (pixel (7,7) blue = 0.7 exactly ->
+                            // 178.5); a mismatch there signals an evaluator refactor, not a
+                            // coordinate bug.
+                            assertArrayEquals(quantize8(expected), wrapper.evalMainRgba8(vars));
                         }
                     }
                 }
             }
         }
+
+        // Discrimination guards on the declared=TL / input=TL / sized reference: each deliberately
+        // wrong wiring must move some output channel, or this test has gone blind.
+        wrapper.setTexture("u_MAIN", physicalTexture(imageMain, mainW, mainH, true));
+        wrapper.setTexture("u_AUX", physicalTexture(imageAux, auxW, auxH, true));
+        int flip = Anime4kPostProcessor.flipYUniform(true, true);
+        boolean flipMoved = false;
+        boolean sizeMoved = false;
+        boolean modeMoved = false;
+        for (int visR = 0; visR < outH; visR++) {
+            for (int c = 0; c < outW; c++) {
+                double vPosX = (c + 0.5) / outW;
+                double vPosY = (visR + 0.5) / outH;
+                int[] correct = wrapper.evalMainRgba8(multiBindVars(new double[]{vPosX, vPosY}, flip,
+                        mainSize, auxSize, outputSize, 1));
+                flipMoved |= !Arrays.equals(correct, wrapper.evalMainRgba8(multiBindVars(new double[]{vPosX, vPosY}, 1 - flip,
+                        mainSize, auxSize, outputSize, 1)));
+                sizeMoved |= !Arrays.equals(correct, wrapper.evalMainRgba8(multiBindVars(new double[]{vPosX, vPosY}, flip,
+                        mainSize, mainSize, outputSize, 1)));
+                modeMoved |= !Arrays.equals(correct, wrapper.evalMainRgba8(multiBindVars(new double[]{vPosX, vPosY}, flip,
+                        mainSize, auxSize, outputSize, 0)));
+            }
+        }
+        assertTrue("wrong u_FLIP_Y binding stopped being observable in the multi-bind output", flipMoved);
+        assertTrue("u_AUX_size wired to u_MAIN_size stopped being observable in the multi-bind output", sizeMoved);
+        assertTrue("u_OUTPUT_SIZED ternary branches stopped being observable in the multi-bind output", modeMoved);
+    }
+
+    /** Logical-space oracle of the multi-bind hook body; alpha is the final-to-screen clamp. */
+    private static double[] multiBindExpected(Texture2D logicalMain, Texture2D logicalAux, double logX, double logY,
+            boolean declared, double featureGain, double offX, double offY, double[] mainSize, double[] outputSize) {
+        double[] mainSample = logicalMain.sampleBilinear(logX, logY);
+        double[] auxSample = logicalAux.sampleBilinear(logX, logY);
+        double[] auxOffSample = logicalAux.sampleBilinear(logX + offX, logY + offY * (declared ? 1 : -1));
+        return new double[]{
+                mainSample[0] + auxSample[0] * featureGain + auxOffSample[0] * 0.25
+                        + outputSize[0] / mainSize[0] * 0.001,
+                mainSample[1] + auxSample[1] * featureGain + auxOffSample[1] * 0.25
+                        + outputSize[1] / mainSize[1] * 0.001,
+                mainSample[2] + auxSample[2] * featureGain + auxOffSample[2] * 0.25,
+                1.0
+        };
+    }
+
+    private static Map<String, double[]> multiBindVars(double[] vPos, int flip, double[] mainSize,
+            double[] auxSize, double[] outputSize, int sized) {
+        Map<String, double[]> vars = new HashMap<>();
+        vars.put("vPos", vPos);
+        vars.put("u_FLIP_Y", new double[]{flip});
+        vars.put("u_MAIN_size", mainSize);
+        vars.put("u_AUX_size", auxSize);
+        vars.put("u_OUTPUT_size", outputSize);
+        vars.put("u_OUTPUT_SIZED", new double[]{sized});
+        vars.put("u_SHARPNESS", new double[]{1.5});
+        return vars;
+    }
+
+    /** Logical texture whose row index is the image row (row 0 = top). */
+    private static Texture2D logicalTexture(double[][][] image, int width, int height) {
+        Texture2D tex = new Texture2D(width, height, 4);
+        for (int r = 0; r < height; r++) {
+            for (int c = 0; c < width; c++) {
+                System.arraycopy(image[r][c], 0, tex.data[r][c], 0, 4);
+            }
+        }
+        return tex;
+    }
+
+    /** Physical texture storage: row p holds image row p when stored top-left, else the mirrored row. */
+    private static Texture2D physicalTexture(double[][][] image, int width, int height, boolean inputTopLeft) {
+        Texture2D tex = new Texture2D(width, height, 4);
+        for (int p = 0; p < height; p++) {
+            int logicalRow = inputTopLeft ? p : (height - 1 - p);
+            for (int c = 0; c < width; c++) {
+                System.arraycopy(image[logicalRow][c], 0, tex.data[p][c], 0, 4);
+            }
+        }
+        return tex;
+    }
+
+    private static int[] quantize8(double[] color) {
+        int[] rgba8 = new int[4];
+        for (int i = 0; i < 4; i++) {
+            double clamped = Math.max(0.0, Math.min(1.0, color[i]));
+            rgba8[i] = (int) Math.round(clamped * 255.0);
+        }
+        return rgba8;
     }
 
     @Test public void rejectsWrapperStructuresItCannotEvaluate() {
@@ -362,7 +460,42 @@ public final class FilterCoordinateWrapperTest {
             Wrapper.parse(source, "MAIN");
             fail("wrapper syntax outside the evaluated grammar must fail closed, not pass silently");
         } catch (AssertionError expected) {
+            // Distinguish the tokenizer's rejection from a swallowed fail() above.
+            assertTrue("expected the tokenizer to reject the corrupt wrapper syntax, got: " + expected.getMessage(),
+                    expected.getMessage() != null && expected.getMessage().contains("unexpected character"));
             // Structural edits to the wrapper need explicit re-verification of the algebra.
+        }
+    }
+
+    /**
+     * The evaluator must fail closed on vector component shapes the device GLSL compiler
+     * rejects (missing or excess constructor components, mismatched componentwise operands),
+     * so a future wrapper expression can never receive invented math (zero-filled constructor
+     * tails, tail-clamped operands) in place of an explicit failure.
+     */
+    @Test public void evaluatorRejectsGlslIllegalVectorShapes() {
+        MpvHookShader.Pass pass = MpvHookShader.parse(
+                "//!DESC wrapper\n//!BIND MAIN\n//!SAVE MAIN\nvec4 hook(){return MAIN_tex(MAIN_pos);}").get(0);
+        Wrapper wrapper = Wrapper.parse(MpvHookShader.fragmentSource(pass), "MAIN");
+        Map<String, double[]> vars = Wrapper.baseVars(new double[]{0.5, 0.5}, new double[]{4.0, 4.0}, 0);
+        // GLSL has no vec4(vec2) constructor: the missing tail must fail, not zero-fill.
+        assertEvalFails(wrapper, vars, "vec4(vPos)");
+        // GLSL is a compile error for componentwise operands of different lengths: no tail clamp.
+        assertEvalFails(wrapper, vars, "vPos + vec3(1.0, 1.0, 1.0)");
+        // The legal single-scalar fill stays usable.
+        assertArrayEquals(new double[]{1.5, 1.5}, wrapper.evalExpression("vPos + vec2(1.0)", vars), 0.0);
+    }
+
+    private static void assertEvalFails(Wrapper wrapper, Map<String, double[]> vars, String expression) {
+        try {
+            wrapper.evalExpression(expression, vars);
+            fail("evaluator must reject GLSL-illegal expression: " + expression);
+        } catch (AssertionError expected) {
+            // Distinguish the evaluator's shape rejection from a swallowed fail() above: only
+            // the former carries the "GLSL rejects" rule text, so a lenient regression here
+            // fails instead of passing silently.
+            assertTrue("evaluator rejection must name the GLSL shape rule, got: " + expected.getMessage(),
+                    expected.getMessage() != null && expected.getMessage().contains("GLSL rejects"));
         }
     }
 
@@ -555,6 +688,11 @@ public final class FilterCoordinateWrapperTest {
 
         double[] evalHookBody(Map<String, double[]> vars) {
             return hookBody.eval(vars, this);
+        }
+
+        /** Evaluates an arbitrary wrapper-grammar expression against this wrapper (negative-test entry). */
+        double[] evalExpression(String expression, Map<String, double[]> vars) {
+            return FilterCoordinateWrapperTest.parse(expression).eval(vars, this);
         }
 
         double[] evalMain(Map<String, double[]> vars) {
@@ -785,14 +923,21 @@ public final class FilterCoordinateWrapperTest {
                                 for (double d : val) comp.add(d);
                             }
                             if (comp.size() == 1) {
+                                // GLSL's single-scalar fill (vec2(1.0)) stays legal.
                                 double b = comp.get(0);
                                 double[] out = new double[targetLen];
                                 Arrays.fill(out, b);
                                 return out;
                             }
+                            if (comp.size() != targetLen) {
+                                // GLSL ES rejects both missing and excess constructor components:
+                                // fail closed instead of zero-filling or truncating.
+                                throw new AssertionError("GLSL rejects " + name + " built from "
+                                        + comp.size() + " components (expected " + targetLen + ")");
+                            }
                             double[] out = new double[targetLen];
                             for (int k = 0; k < targetLen; k++) {
-                                out[k] = k < comp.size() ? comp.get(k) : 0.0;
+                                out[k] = comp.get(k);
                             }
                             return out;
                         }
@@ -861,11 +1006,17 @@ public final class FilterCoordinateWrapperTest {
         }
 
         private static double[] componentwise(String op, double[] left, double[] right) {
+            if (left.length != right.length && left.length != 1 && right.length != 1) {
+                // GLSL is a compile error for componentwise operands of different lengths:
+                // fail closed instead of clamping to the tail element.
+                throw new AssertionError("GLSL rejects " + op + " on lengths "
+                        + left.length + " and " + right.length);
+            }
             int len = Math.max(left.length, right.length);
             double[] out = new double[len];
             for (int i = 0; i < len; i++) {
-                double a = left.length == 1 ? left[0] : (i < left.length ? left[i] : left[left.length - 1]);
-                double b = right.length == 1 ? right[0] : (i < right.length ? right[i] : right[right.length - 1]);
+                double a = left.length == 1 ? left[0] : left[i];
+                double b = right.length == 1 ? right[0] : right[i];
                 switch (op) {
                     case "+": out[i] = a + b; break;
                     case "-": out[i] = a - b; break;

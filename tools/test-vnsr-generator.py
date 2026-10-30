@@ -23,8 +23,9 @@ def main():
         names = [Path(item["localPath"]).name for item in parsed["sources"][0]["files"]]
         cases = [
             "valid", "license id", "license hash", "retained gate",
-            "repository", "revision", "version", "asset directory", "license path", "extra source",
-            "license bytes"
+            "repository", "revision", "version", "asset directory", "license path",
+            "license local path", "extra source", "license bytes",
+            "generated entry dropped", "generated entry duplicated"
         ]
         for idx, entry in enumerate(parsed["generated"]):
             cases.append(f"generated hash:{idx}:{entry['file']}")
@@ -50,7 +51,10 @@ def main():
             elif kind == "version": source["version"] = "0.2.0"
             elif kind == "asset directory": data["assetDirectory"] = "vnsr-rewritten"
             elif kind == "license path": source["license"]["path"] = "LICENSE.txt"
+            elif kind == "license local path": source["license"]["localPath"] = "engine/src/main/assets/vnsr/LICENSE-OTHER"
             elif kind == "extra source": data["sources"].append({"description": "descriptive only", "verification": "external-only"})
+            elif kind == "generated entry dropped": data["generated"] = data["generated"][:-1]
+            elif kind == "generated entry duplicated": data["generated"].append(dict(data["generated"][0]))
             elif kind.startswith("generated hash:"):
                 idx = int(kind.split(":")[1])
                 data["generated"][idx]["sha256"] = "0"*64
