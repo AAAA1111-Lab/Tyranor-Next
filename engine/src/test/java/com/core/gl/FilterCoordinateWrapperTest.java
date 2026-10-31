@@ -493,6 +493,9 @@ public final class FilterCoordinateWrapperTest {
         assertEvalFails(wrapper, vars, "vec2(1.0, 2.0, 3.0)");
         // GLSL requires a scalar ternary condition; a vector condition must not silently take x.
         assertEvalFails(wrapper, vars, "vPos ? 1.0 : 0.0");
+        // GLSL 5.9 requires a scalar Boolean: a float condition is a device compile error,
+        // and the evaluator models bools as 0.0/1.0 only.
+        assertEvalFails(wrapper, vars, "1.5 ? 1.0 : 0.0");
         // Vector shortening through a partially consumed final argument is legal (5.4.2).
         assertArrayEquals(new double[]{1.0, 2.0}, wrapper.evalExpression("vec2(vec3(1.0, 2.0, 3.0))", vars), 0.0);
         // The legal single-scalar fill stays usable.
@@ -846,6 +849,15 @@ public final class FilterCoordinateWrapperTest {
                     if (condVal.length != 1) {
                         throw new AssertionError("GLSL rejects non-scalar ternary condition (length "
                                 + condVal.length + ")");
+                    }
+                    // GLSL 5.9 requires a scalar Boolean. The grammar has no bool type and
+                    // models bools as 0.0/1.0, so a condition value outside that domain (a
+                    // float such as 1.5) is a device compile error and must not pick a
+                    // branch. A float expression landing on exactly 0.0/1.0 still passes:
+                    // that residual type blindness is inherent to this grammar and recorded.
+                    if (condVal[0] != 0.0 && condVal[0] != 1.0) {
+                        throw new AssertionError("GLSL rejects non-boolean ternary condition value "
+                                + condVal[0]);
                     }
                     return condVal[0] != 0.0 ? whenTrue.eval(vars, wrapper) : whenFalse.eval(vars, wrapper);
                 };
