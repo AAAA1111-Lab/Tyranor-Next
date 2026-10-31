@@ -138,7 +138,8 @@ def main():
         wrong_final = wrong_final[::-1]
         wrong_error = max(abs(a-b) for ra,rb in zip(expected_final,wrong_final) for pa,pb in zip(ra,rb) for a,b in zip(pa,pb))
         assert wrong_error > 1e-5, (name, "negative control failed to distinguish", wrong_error)
-        print(name+": residual & final combine equivalence passed; max error="+str(final_error))
+        print(name+": residual & final combine equivalence passed; residual error="+str(res_error)
+              +", final max error="+str(final_error))
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -208,7 +209,9 @@ public final class FilterCoordinateWrapperTest {
         int wrapperUsingGlslFiles = 0;
         int legacyGlslFiles = 0;
         try (var stream = Files.walk(assets)) {
-            for (Path path : (Iterable<Path>) stream.filter(p -> p.toString().endsWith(".glsl"))::iterator) {
+            // Case-insensitive on purpose: a case-variant suffix would otherwise skip both pins
+            // entirely; this way it lands in the shape gate below and forces a conscious sync.
+            for (Path path : (Iterable<Path>) stream.filter(p -> p.toString().toLowerCase(Locale.ROOT).endsWith(".glsl"))::iterator) {
                 String relPath = assets.relativize(path).toString().replace('\\', '/');
                 if (!GraphicsFilterDefinitions.isValidAssetPath(relPath)) {
                     // Such a path can never be referenced by a filter descriptor (the descriptor
@@ -353,10 +356,12 @@ public final class FilterCoordinateWrapperTest {
                             Map<String, double[]> vars = multiBindVars(new double[]{vPosX, vPosY}, flip,
                                     mainSize, auxSize, outputSize, sized);
                             assertVec(wrapper.evalMain(vars), expected);
-                            // Exact bytes: both arithmetic paths land on the same doubles today,
-                            // including one deliberate tie (pixel (7,7) blue = 0.7 exactly ->
-                            // 178.5); a mismatch there signals an evaluator refactor, not a
-                            // coordinate bug.
+                            // Exact bytes are the canary: the two arithmetic paths differ by up
+                            // to ~1 ulp from bilinear term reordering on mirrored textures, which
+                            // byte quantization absorbs on this platform (pure +,-,*,/ under
+                            // JEP 306), and pixel (7,7) blue sits exactly on the 178.5 rounding
+                            // tie, bit-identical on both paths. A byte mismatch signals an
+                            // evaluator refactor, not a coordinate bug.
                             assertArrayEquals(quantize8(expected), wrapper.evalMainRgba8(vars));
                         }
                     }
@@ -468,10 +473,12 @@ public final class FilterCoordinateWrapperTest {
     }
 
     /**
-     * The evaluator must fail closed on vector component shapes the device GLSL compiler
-     * rejects (missing or excess constructor components, mismatched componentwise operands),
-     * so a future wrapper expression can never receive invented math (zero-filled constructor
-     * tails, tail-clamped operands) in place of an explicit failure.
+     * The evaluator must mirror GLSL ES 3.00 exactly: 5.4.2 vector construction (insufficient
+     * components and extra arguments beyond the last used argument are errors; vector
+     * shortening through a partially consumed final argument is legal) and 5.9 expressions
+     * (mismatched componentwise operands are compile errors) - so a future wrapper expression
+     * can never receive invented math (zero-filled constructor tails, tail-clamped operands)
+     * and never silently loses legal truncation.
      */
     @Test public void evaluatorRejectsGlslIllegalVectorShapes() {
         MpvHookShader.Pass pass = MpvHookShader.parse(
@@ -482,6 +489,12 @@ public final class FilterCoordinateWrapperTest {
         assertEvalFails(wrapper, vars, "vec4(vPos)");
         // GLSL is a compile error for componentwise operands of different lengths: no tail clamp.
         assertEvalFails(wrapper, vars, "vPos + vec3(1.0, 1.0, 1.0)");
+        // Extra arguments beyond the last used constructor argument are an error.
+        assertEvalFails(wrapper, vars, "vec2(1.0, 2.0, 3.0)");
+        // GLSL requires a scalar ternary condition; a vector condition must not silently take x.
+        assertEvalFails(wrapper, vars, "vPos ? 1.0 : 0.0");
+        // Vector shortening through a partially consumed final argument is legal (5.4.2).
+        assertArrayEquals(new double[]{1.0, 2.0}, wrapper.evalExpression("vec2(vec3(1.0, 2.0, 3.0))", vars), 0.0);
         // The legal single-scalar fill stays usable.
         assertArrayEquals(new double[]{1.5, 1.5}, wrapper.evalExpression("vPos + vec2(1.0)", vars), 0.0);
     }
@@ -828,6 +841,12 @@ public final class FilterCoordinateWrapperTest {
                 Node whenFalse = parseTernary();
                 return (vars, wrapper) -> {
                     double[] condVal = condition.eval(vars, wrapper);
+                    // GLSL requires a scalar condition; silently taking component x would
+                    // invent a boolean from a vector.
+                    if (condVal.length != 1) {
+                        throw new AssertionError("GLSL rejects non-scalar ternary condition (length "
+                                + condVal.length + ")");
+                    }
                     return condVal[0] != 0.0 ? whenTrue.eval(vars, wrapper) : whenFalse.eval(vars, wrapper);
                 };
             }
@@ -917,27 +936,44 @@ public final class FilterCoordinateWrapperTest {
                         }
                         if ("vec2".equals(name) || "vec3".equals(name) || "vec4".equals(name)) {
                             int targetLen = "vec2".equals(name) ? 2 : "vec3".equals(name) ? 3 : 4;
-                            List<Double> comp = new ArrayList<>();
+                            List<double[]> argVals = new ArrayList<>();
                             for (Node arg : args) {
-                                double[] val = arg.eval(vars, wrapper);
-                                for (double d : val) comp.add(d);
+                                argVals.add(arg.eval(vars, wrapper));
                             }
-                            if (comp.size() == 1) {
-                                // GLSL's single-scalar fill (vec2(1.0)) stays legal.
-                                double b = comp.get(0);
+                            if (argVals.size() == 1 && argVals.get(0).length == 1) {
+                                // GLSL: a single scalar argument initializes every component.
                                 double[] out = new double[targetLen];
-                                Arrays.fill(out, b);
+                                Arrays.fill(out, argVals.get(0)[0]);
                                 return out;
                             }
-                            if (comp.size() != targetLen) {
-                                // GLSL ES rejects both missing and excess constructor components:
-                                // fail closed instead of zero-filling or truncating.
+                            // GLSL ES 3.00 5.4.2: arguments are consumed left to right; a
+                            // partially consumed final argument shortens the vector legally
+                            // (vec2(vec3)), but extra arguments beyond the last used one are an
+                            // error, and so is running out of components before the target is
+                            // filled.
+                            int filled = 0;
+                            int lastUsedArg = -1;
+                            for (int a = 0; a < argVals.size() && filled < targetLen; a++) {
+                                filled += argVals.get(a).length;
+                                lastUsedArg = a;
+                            }
+                            if (filled < targetLen) {
                                 throw new AssertionError("GLSL rejects " + name + " built from "
-                                        + comp.size() + " components (expected " + targetLen + ")");
+                                        + filled + " components (not enough arguments; expected "
+                                        + targetLen + ")");
+                            }
+                            if (lastUsedArg < argVals.size() - 1) {
+                                throw new AssertionError("GLSL rejects extra arguments beyond the "
+                                        + "last used " + name + " constructor argument ("
+                                        + argVals.size() + " arguments for " + targetLen
+                                        + " components)");
                             }
                             double[] out = new double[targetLen];
-                            for (int k = 0; k < targetLen; k++) {
-                                out[k] = comp.get(k);
+                            int k = 0;
+                            for (double[] arg : argVals) {
+                                for (double d : arg) {
+                                    if (k < targetLen) out[k++] = d;
+                                }
                             }
                             return out;
                         }

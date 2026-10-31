@@ -64,8 +64,7 @@ owner 确认断开显示，再由 engine owner 确认替换私有 producer，最
 
 宿主不恢复密钥、读取 EXE/汉化 `.chs`，不写游戏目录，也不猜默认舞台尺寸。
 尺寸来自配置和原接口契约，不宣称回读库内部 viewport；不重编引擎、不新增舞台 ABI。
-详见 [原库接入说明](../engine/patches/siglus/README.md) 与
-[关闭滤镜路径复核](reviews/PR108-siglus-disabled-review-20261019.md)。本轮没有新的实机验收。
+详见 [原库接入说明](../engine/patches/siglus/README.md)。本轮没有新的实机验收。
 
 ### 官方 Artemis
 
@@ -142,8 +141,6 @@ python tools/generate-cas-filters.py --sources build/filter-sources/cas --check
 官方 Artemis 开启画质处理实际游玩两小时未见问题。上述记录属于原候选功能的历史验收。
 Siglus 原库、配置解析和专用 owner 线程路线候选在 2026-10-18 获提交者测试通过；该结论不覆盖后续 TextureView 窗口所有权修复，也不套用旧重编库结果。
 本轮只通过 CI 执行项目测试与构建，具体候选 SHA 和运行链接记录在本地交付索引。
-
-完整静态复核见 [新基线与原库接入审查报告](reviews/PR108-keytoml-review-20261018.md)。
 
 ## VN-SR
 
