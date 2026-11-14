@@ -30,7 +30,7 @@ import com.tyranor.next.core.settings.AppStorageNames
         GameOverrideEntity::class,
         EngineDetectionEntity::class,
     ],
-    version = 3,
+    version = 5,
     exportSchema = true,
 )
 internal abstract class GameLibraryDatabase : RoomDatabase() {
@@ -51,6 +51,20 @@ internal abstract class GameLibraryDatabase : RoomDatabase() {
             }
         }
 
+        /** v3→v4：新增 Bangumi 条目绑定列（旧行为 null）。 */
+        internal val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE games ADD COLUMN bangumi_id TEXT")
+            }
+        }
+
+        /** v4→v5：新增 Hikarinagi 条目绑定列（旧行为 null）。 */
+        internal val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE games ADD COLUMN hikarinagi_id TEXT")
+            }
+        }
+
         @Volatile
         private var instance: GameLibraryDatabase? = null
 
@@ -64,7 +78,7 @@ internal abstract class GameLibraryDatabase : RoomDatabase() {
                 .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
                 // 仅 v1→v2 历史过渡允许破坏性重建；未来版本缺 Migration 必须显式暴露（m7）。
                 .fallbackToDestructiveMigrationFrom(dropAllTables = true, 1)
-                .addMigrations(MIGRATION_2_3)
+                .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                 .build()
                 .also { instance = it }
         }
