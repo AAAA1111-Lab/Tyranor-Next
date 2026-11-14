@@ -3,6 +3,9 @@ package com.tyranor.next.core.cover
 import android.content.Context
 import android.net.Uri
 import com.tyranor.next.core.game.model.ScanGame
+import com.tyranor.next.core.net.RequestThrottle
+import com.tyranor.next.core.net.httpJsonResult
+import com.tyranor.next.core.net.urlEncode
 import com.tyranor.next.core.settings.AppSettingsStore
 import org.json.JSONArray
 import org.json.JSONObject
